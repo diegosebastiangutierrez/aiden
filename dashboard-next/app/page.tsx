@@ -6,7 +6,7 @@ import {
   type ReactNode, type RefObject, type ChangeEvent, type FormEvent,
 } from 'react'
 import { OnboardingModal } from '../components/OnboardingModal'
-import PricingModal from '../components/PricingModal'
+import PricingModal, { type CommercialWorkbenchStatus } from '../components/PricingModal'
 import WorkflowView from '../components/WorkflowView'
 import LiveExecutionTerminal from '../components/LiveExecutionTerminal'
 import { SafeMarkdown } from '../components/SafeMarkdown'
@@ -597,23 +597,14 @@ interface DevOSCtxType {
   // License / Pro
   pricingOpen:    boolean
   setPricingOpen: (v: boolean) => void
-  licenseStatus:  {
-    active:    boolean
-    isPro:     boolean
-    plan:      string
-    expiresAt: string
-    features:  Record<string, boolean | number>
-    tier:      string
-    email:     string
-    expiry:    number
-  }
+  licenseStatus:  CommercialWorkbenchStatus
   licenseKey:     string
   setLicenseKey:  (v: string) => void
   activatingKey:  boolean
   licenseMsg:     { type: 'success' | 'error'; text: string } | null
   setLicenseMsg:  (v: { type: 'success' | 'error'; text: string } | null) => void
   validateKey:    (key: string) => Promise<{ success: boolean; error?: string }>
-  clearProLicense:() => Promise<void>
+  refreshCommercialStatus: () => Promise<{ success: boolean; error?: string }>
   // Update banner
   updateBanner:    { version: string; url: string } | null
   setUpdateBanner: (v: { version: string; url: string } | null) => void
@@ -5959,6 +5950,7 @@ const SETTINGS_TABS = [
   { id: 'capabilities', label: 'Capabilities', section: 'Tools & connections' },
   { id: 'apps', label: 'Apps', section: 'Tools & connections' },
   { id: 'automations', label: 'Automations', section: 'Tools & connections' },
+  { id: 'pro', label: 'Plan & Billing', section: 'About' },
   { id: 'updates', label: 'Updates', section: 'About' },
   { id: 'support', label: 'Support & diagnostics', section: 'About' },
   { id: 'sponsor', label: 'Sponsor', section: 'About' },
@@ -6202,7 +6194,7 @@ function SettingsDrawer() {
   const {
     settingsTab, setSettingsTab, setSettingsOpen, setConversations, setMessages,
     licenseStatus, licenseKey, setLicenseKey, activatingKey, licenseMsg, setLicenseMsg,
-    validateKey, clearProLicense, setPricingOpen, runtimeVersion, runtimeEdition,
+    validateKey, refreshCommercialStatus, setPricingOpen, runtimeVersion, runtimeEdition,
     activeProvider, activeModel, runtimeConnection, executionAvailable,
     executionQueue, workbenchReadOnly, capabilities, startNewChat, clearCurrentView,
     appearance, setAppearance, density, setDensity, setMainView, openWorkbenchDestination, sessionId,
@@ -6448,180 +6440,41 @@ function SettingsDrawer() {
           {settingsTab === 'ide' && <IdeIntegration />}
 
           {settingsTab === 'pro' && (
-            <SettingsSection title="License">
-
-              {/* ── Status card ──────────────────────────────── */}
-              <div style={{
-                background: licenseStatus.isPro ? 'rgba(249,115,22,0.06)' : 'var(--bg2)',
-                border: `1px solid ${licenseStatus.isPro ? 'rgba(249,115,22,0.3)' : 'var(--border)'}`,
-                borderRadius: 8, padding: '14px 16px', marginBottom: 16,
-                display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10,
-              }}>
-                <div>
-                  <div style={{ fontSize: 11, color: 'var(--muted2)', fontFamily: 'var(--mono)', marginBottom: 6 }}>
-                    Current plan
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    {licenseStatus.isPro ? (
-                      <>
-                        <span style={{
-                          background: 'var(--orange)', color: '#fff', fontSize: 10, fontWeight: 700,
-                          fontFamily: 'var(--mono)', padding: '2px 7px', borderRadius: 4, letterSpacing: '0.05em',
-                        }}>
-                          {(() => {
-                            const p = licenseStatus.plan || ''
-                            if (p.includes('annual')) return 'PRO ANNUAL'
-                            if (p.includes('launch')) return 'PRO LAUNCH'
-                            if (p.includes('legacy')) return 'PRO'
-                            return 'PRO MONTHLY'
-                          })()}
-                        </span>
-                        {licenseStatus.expiresAt && (
-                          <span style={{ fontSize: 11, color: 'var(--muted)', fontFamily: 'var(--mono)' }}>
-                            Expires {new Date(licenseStatus.expiresAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                          </span>
-                        )}
-                        {!licenseStatus.expiresAt && licenseStatus.expiry > 0 && (
-                          <span style={{ fontSize: 11, color: 'var(--muted)', fontFamily: 'var(--mono)' }}>
-                            Expires {new Date(licenseStatus.expiry).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                          </span>
-                        )}
-                      </>
-                    ) : (
-                      <span style={{
-                        border: '1px solid rgba(249,115,22,0.4)', color: 'var(--orange)', fontSize: 10,
-                        fontWeight: 700, fontFamily: 'var(--mono)', padding: '2px 7px', borderRadius: 4,
-                        letterSpacing: '0.05em',
-                      }}>FREE</span>
-                    )}
-                  </div>
-                  {licenseStatus.isPro && (
-                    <div style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)', fontFamily: 'var(--mono)', lineHeight: 1.7 }}>
-                      {licenseStatus.email && <div>Licensed to: {licenseStatus.email}</div>}
-                      <div>Machines: up to {(licenseStatus.features?.maxMachines as number) || 2} allowed</div>
-                    </div>
-                  )}
-                </div>
+            <SettingsSection title="Plan & Billing">
+              <div style={{ padding: '14px 16px', marginBottom: 14, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg2)' }}>
+                <div style={{ color: 'var(--muted2)', font: '11px var(--mono)', marginBottom: 6 }}>Current access</div>
+                <strong style={{ color: 'var(--text)', fontSize: 14 }}>
+                  {({ free: 'Aiden Free', active: 'Aiden Pro Beta · Active', payment_unverified: 'Payment not verified',
+                    payment_needs_attention: 'Payment needs attention', grace: 'Aiden Pro Beta · Grace period',
+                    cancelled: 'Cancelled · active until period end', expired: 'Aiden Pro Beta · Expired',
+                    revoked: 'Aiden Pro Beta · Revoked', community: 'Aiden Free', unavailable: 'Access unavailable',
+                    trial: 'Aiden Pro Beta · Trial' } as Record<string, string>)[licenseStatus.billing?.access ?? licenseStatus.entitlement.state]}
+                </strong>
+                {licenseStatus.billing?.periodEnd && <p style={settingsTextStyle}>Current period ends {new Date(licenseStatus.billing.periodEnd).toLocaleDateString()}</p>}
+                {licenseStatus.deviceId && <p style={settingsTextStyle}>Device: {licenseStatus.deviceId}</p>}
+                <p style={settingsTextStyle}>Content Studio: {licenseStatus.product.activeVersion ? `installed ${licenseStatus.product.activeVersion}` : 'not installed'}</p>
+                {licenseStatus.product.previousVersion && <p style={settingsTextStyle}>Rollback available: {licenseStatus.product.previousVersion}</p>}
               </div>
 
-              {/* ── FREE: activation form ────────────────────── */}
-              {!licenseStatus.isPro && (
-                <>
-                  <div style={{ marginBottom: 12 }}>
-                    <input
-                      value={licenseKey}
-                      onChange={e => setLicenseKey(e.target.value)}
-                      placeholder="AIDEN-PRO-XXXXXX-XXXXXX-XXXXXX"
-                      style={{
-                        width: '100%', background: 'var(--bg3)', border: '1px solid var(--border2)',
-                        borderRadius: 6, padding: '8px 12px', fontFamily: 'var(--mono)', fontSize: 12,
-                        color: 'var(--text)', outline: 'none', marginBottom: 8, letterSpacing: '0.5px',
-                        boxSizing: 'border-box',
-                      }}
-                      onKeyDown={async e => {
-                        if (e.key === 'Enter' && licenseKey.trim()) await validateKey(licenseKey.trim())
-                      }}
-                    />
-                    <button
-                      onClick={async () => { if (licenseKey.trim()) await validateKey(licenseKey.trim()) }}
-                      disabled={activatingKey || !licenseKey.trim()}
-                      style={{
-                        width: '100%', padding: '9px', borderRadius: 6,
-                        background: activatingKey || !licenseKey.trim() ? 'var(--bg3)' : 'var(--orange)',
-                        border: 'none', color: '#fff',
-                        fontFamily: 'var(--mono)', fontSize: 12, fontWeight: 700,
-                        cursor: activatingKey ? 'wait' : (!licenseKey.trim() ? 'default' : 'pointer'),
-                        opacity: !licenseKey.trim() ? 0.5 : 1,
-                        transition: 'background 0.15s',
-                      }}
-                    >
-                      {activatingKey
-                        ? <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
-                            <span style={{
-                              width: 10, height: 10, border: '2px solid rgba(255,255,255,0.3)',
-                              borderTopColor: '#fff', borderRadius: '50%',
-                              animation: 'spin 0.7s linear infinite', display: 'inline-block',
-                            }} />
-                            Activating…
-                          </span>
-                        : 'Activate'}
-                    </button>
-                  </div>
+              {!licenseStatus.deviceId && <div style={{ display: 'grid', gap: 8, marginBottom: 12 }}>
+                <input value={licenseKey} onChange={(event) => setLicenseKey(event.target.value.trim())}
+                  placeholder="One-use activation code" autoComplete="off" spellCheck={false}
+                  style={{ width: '100%', boxSizing: 'border-box', padding: '9px 11px', border: '1px solid var(--border2)', borderRadius: 6, background: 'var(--bg3)', color: 'var(--text)', font: '12px var(--mono)' }} />
+                <button type="button" className="nav-btn" disabled={activatingKey || !licenseKey}
+                  onClick={() => { void validateKey(licenseKey) }}>{activatingKey ? 'Activating…' : 'Activate this device'}</button>
+              </div>}
 
-                  {/* Message */}
-                  {licenseMsg && (
-                    <div style={{
-                      padding: '8px 12px', borderRadius: 6, fontSize: 11, fontFamily: 'var(--mono)',
-                      background: licenseMsg.type === 'success' ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)',
-                      border: `1px solid ${licenseMsg.type === 'success' ? 'rgba(34,197,94,0.25)' : 'rgba(239,68,68,0.25)'}`,
-                      color: licenseMsg.type === 'success' ? '#86efac' : '#fca5a5',
-                      marginBottom: 12, lineHeight: 1.5,
-                    }}>{licenseMsg.text}</div>
-                  )}
-
-                  {/* Get Pro link */}
-                  <a
-                    href="https://aiden.taracod.com"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{
-                      display: 'block', textAlign: 'center', padding: '8px',
-                      borderRadius: 6, border: '1px solid rgba(249,115,22,0.3)',
-                      color: 'var(--orange)', fontFamily: 'var(--mono)', fontSize: 12,
-                      textDecoration: 'none', marginBottom: 14,
-                      transition: 'border-color 0.15s',
-                    }}
-                  >
-                    Get Pro → aiden.taracod.com
-                  </a>
-
-                  {/* Free tier note */}
-                  <div style={{
-                    fontSize: 11, color: 'var(--muted)', fontFamily: 'var(--mono)', lineHeight: 1.7,
-                    padding: '10px 12px', background: 'var(--bg2)', borderRadius: 6,
-                  }}>
-                    Free includes all 44 features with limits on goals (5), memories (50), and routines (10)
-                  </div>
-                </>
-              )}
-
-              {/* ── PRO: active state ────────────────────────── */}
-              {licenseStatus.isPro && (
-                <>
-                  {/* Success/info message */}
-                  {licenseMsg && (
-                    <div style={{
-                      padding: '8px 12px', borderRadius: 6, fontSize: 11, fontFamily: 'var(--mono)',
-                      background: licenseMsg.type === 'success' ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)',
-                      border: `1px solid ${licenseMsg.type === 'success' ? 'rgba(34,197,94,0.25)' : 'rgba(239,68,68,0.25)'}`,
-                      color: licenseMsg.type === 'success' ? '#86efac' : '#fca5a5',
-                      marginBottom: 14, lineHeight: 1.5,
-                    }}>{licenseMsg.text}</div>
-                  )}
-
-                  {/* Pro features note */}
-                  <div style={{
-                    fontSize: 11, color: 'var(--muted)', fontFamily: 'var(--mono)', lineHeight: 1.8,
-                    padding: '10px 12px', background: 'var(--bg2)', borderRadius: 6, marginBottom: 16,
-                  }}>
-                    All limits removed. Night Mode, Watchdog, Persistent Rules, and Persona Engine are active.
-                  </div>
-
-                  {/* Deactivate button */}
-                  <button
-                    onClick={clearProLicense}
-                    style={{
-                      padding: '6px 12px', borderRadius: 5,
-                      background: 'transparent', border: '1px solid rgba(239,68,68,0.35)',
-                      color: '#f87171', fontFamily: 'var(--mono)', fontSize: 11,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    Deactivate This Machine
-                  </button>
-                </>
-              )}
-
+              {licenseMsg && <p role="status" style={{ ...settingsTextStyle, color: licenseMsg.type === 'success' ? 'var(--green)' : 'var(--red)' }}>{licenseMsg.text}</p>}
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                <button type="button" className="nav-btn" disabled={!licenseStatus.deviceId}
+                  onClick={() => { void refreshCommercialStatus().then((result) => setLicenseMsg(result.success
+                    ? { type: 'success', text: 'Access refreshed from verified billing state.' }
+                    : { type: 'error', text: result.error ?? 'Access could not be refreshed.' })) }}>Refresh access</button>
+                <button type="button" className="nav-btn" onClick={() => setPricingOpen(true)}>Open Plan &amp; Billing</button>
+                {licenseStatus.accountUrl && <a className="nav-btn" href={licenseStatus.accountUrl} target="_blank" rel="noopener noreferrer"
+                  style={{ textDecoration: 'none' }}>Manage subscription &amp; devices</a>}
+              </div>
+              <p style={settingsTextStyle}>Aiden Free remains available without payment. Pro Beta is $19 USD per month and includes private Content Studio access on up to two devices.</p>
             </SettingsSection>
           )}
 
@@ -7476,10 +7329,10 @@ export default function Home() {
 
   // ── License / Pro state ──────────────────────────────────────
   const [pricingOpen,    setPricingOpen]    = useState(false)
-  const [licenseStatus,  setLicenseStatus]  = useState<{
-    active: boolean; isPro: boolean; plan: string; expiresAt: string;
-    features: Record<string, boolean | number>; tier: string; email: string; expiry: number
-  }>({ active: false, isPro: false, plan: 'free', expiresAt: '', features: {}, tier: 'free', email: '', expiry: 0 })
+  const [licenseStatus,  setLicenseStatus]  = useState<CommercialWorkbenchStatus>({
+    entitlement: { state: 'community', edition: 'community' },
+    product: { id: 'content-studio', activeVersion: null, previousVersion: null },
+  })
   const [activatingKey,  setActivatingKey]  = useState(false)   // eslint-disable-line @typescript-eslint/no-unused-vars
   const [licenseKey,     setLicenseKey]     = useState('')
   const [licenseMsg,     setLicenseMsg]     = useState<{ type: 'success' | 'error'; text: string } | null>(null)
@@ -7559,24 +7412,7 @@ export default function Home() {
 
   // ── Load license status on mount ────────────────────────────
   useEffect(() => {
-    const refreshLicense = () => {
-      Promise.all([
-        fetch('http://localhost:4200/api/license/status').then(r => r.json()).catch(() => ({})),
-        fetch('http://localhost:4200/api/license/pro-status').then(r => r.json()).catch(() => ({})),
-      ]).then(([old, pro]) => {
-        setLicenseStatus({
-          active:    !!(pro.isPro || old.active),
-          isPro:     !!pro.isPro,
-          plan:      pro.plan      || (old.active ? 'pro_legacy' : 'free'),
-          expiresAt: pro.expiresAt || '',
-          features:  pro.features  || {},
-          tier:      old.tier      || (pro.isPro ? 'pro' : 'free'),
-          email:     old.email     || '',
-          expiry:    old.expiry    || 0,
-        })
-      })
-    }
-    refreshLicense()
+    aiden.loadCommercialStatus<CommercialWorkbenchStatus>().then(setLicenseStatus).catch(() => {})
   }, [])
 
   // ── Load conversations from localStorage + backend ───────────
@@ -7674,43 +7510,20 @@ export default function Home() {
 
   // ── Grid columns ────────────────────────────────────────────
   // ── License helpers ─────────────────────────────────────────
-  const refreshLicenseStatus = useCallback(() => {
-    Promise.all([
-      fetch('http://localhost:4200/api/license/status').then(r => r.json()).catch(() => ({})),
-      fetch('http://localhost:4200/api/license/pro-status').then(r => r.json()).catch(() => ({})),
-    ]).then(([old, pro]) => {
-      setLicenseStatus({
-        active:    !!(pro.isPro || old.active),
-        isPro:     !!pro.isPro,
-        plan:      pro.plan      || (old.active ? 'pro_legacy' : 'free'),
-        expiresAt: pro.expiresAt || '',
-        features:  pro.features  || {},
-        tier:      old.tier      || (pro.isPro ? 'pro' : 'free'),
-        email:     old.email     || '',
-        expiry:    old.expiry    || 0,
-      })
-    })
+  const refreshLicenseStatus = useCallback(async () => {
+    setLicenseStatus(await aiden.loadCommercialStatus<CommercialWorkbenchStatus>())
   }, [])
 
   const validateKey = useCallback(async (key: string): Promise<{ success: boolean; error?: string }> => {
     setActivatingKey(true)
     setLicenseMsg(null)
     try {
-      const res  = await fetch('http://localhost:4200/api/license/activate', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key }),
-      })
-      const data = await res.json()
+      const data = await aiden.activateCommercial<CommercialWorkbenchStatus>(key)
       setActivatingKey(false)
-      if (data.success) {
-        refreshLicenseStatus()
-        setLicenseMsg({ type: 'success', text: '✓ Pro activated! All limits removed.' })
-        setLicenseKey('')
-        return { success: true }
-      } else {
-        setLicenseMsg({ type: 'error', text: data.error || 'Invalid key' })
-        return { success: false, error: data.error }
-      }
+      setLicenseStatus(data)
+      setLicenseMsg({ type: 'success', text: 'Pro activation verified for this device.' })
+      setLicenseKey('')
+      return { success: true }
     } catch (e: any) {
       setActivatingKey(false)
       setLicenseMsg({ type: 'error', text: `Server error: ${e.message}` })
@@ -7718,11 +7531,30 @@ export default function Home() {
     }
   }, [refreshLicenseStatus])
 
-  const clearProLicense = useCallback(async () => {
-    await fetch('http://localhost:4200/api/license/deactivate', { method: 'POST' }).catch(() => {})
-    setLicenseStatus(s => ({ ...s, active: false, isPro: false, plan: 'free', expiresAt: '', features: {} }))
-    setLicenseMsg({ type: 'success', text: 'Machine deactivated. License slot freed.' })
+  const refreshCommercialStatus = useCallback(async (): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const data = await aiden.refreshCommercial<CommercialWorkbenchStatus>()
+      setLicenseStatus(data)
+      return { success: true }
+    } catch (error) { return { success: false, error: (error as Error).message } }
   }, [])
+
+  const openCommercialProduct = useCallback(async (): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const opened = await aiden.openCommercialProduct('content-studio')
+      window.open(opened.url, '_blank', 'noopener,noreferrer')
+      await refreshLicenseStatus()
+      return { success: true }
+    } catch (error) { return { success: false, error: (error as Error).message } }
+  }, [refreshLicenseStatus])
+
+  const closeCommercialProduct = useCallback(async (): Promise<{ success: boolean; error?: string }> => {
+    try {
+      await aiden.closeCommercialProduct('content-studio')
+      await refreshLicenseStatus()
+      return { success: true }
+    } catch (error) { return { success: false, error: (error as Error).message } }
+  }, [refreshLicenseStatus])
 
   // ── Conversation helpers ────────────────────────────────────
   const startNewChat = useCallback(() => {
@@ -8256,7 +8088,7 @@ export default function Home() {
     pricingOpen, setPricingOpen,
     licenseStatus, licenseKey, setLicenseKey,
     activatingKey, licenseMsg, setLicenseMsg,
-    validateKey, clearProLicense,
+    validateKey, refreshCommercialStatus,
     // Update banner
     updateBanner, setUpdateBanner,
     controllerRevision,
@@ -8345,6 +8177,9 @@ export default function Home() {
           <PricingModal
             onClose={() => { setPricingOpen(false); setLicenseMsg(null) }}
             onActivate={validateKey}
+            onRefresh={refreshCommercialStatus}
+            onOpenProduct={openCommercialProduct}
+            onCloseProduct={closeCommercialProduct}
             currentStatus={licenseStatus}
           />
         )}

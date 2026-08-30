@@ -26,6 +26,7 @@ import {
   dismissPresenceItem,
   failedRunAssistantText,
   proposePresenceJob,
+  refreshCommercial,
   acceptPresenceProposal,
   loadProviderSetup,
   loadSystemReadiness,
@@ -155,6 +156,14 @@ describe('Workbench exact task admission and run following', () => {
 
     expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/artifacts', expect.objectContaining({ cache: 'no-store' }));
     expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/artifacts?runId=41', expect.objectContaining({ cache: 'no-store' }));
+  });
+
+  it('bounds a stalled commercial refresh instead of leaving the Workbench busy forever', async () => {
+    vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new Error('refresh aborted')), { once: true });
+    })));
+
+    await expect(refreshCommercial(5)).rejects.toThrow('refresh aborted');
   });
 
   it('loads Live Execution only through the exact durable identity query', async () => {

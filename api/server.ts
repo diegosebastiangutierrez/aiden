@@ -46,6 +46,9 @@ import { pwClose } from '../core/playwrightBridge'
 // runtime lock, crash recovery, health endpoints, signal handlers.
 import { bootstrapDaemon } from '../core/v4/daemon'
 import { resolveAidenPaths } from '../core/v4/paths'
+import { activateCommercialDevice, commercialDeviceStatus, refreshCommercialDevice, resolveCommercialDeviceId,
+  type CommercialBillingProjection } from '../core/v4/commercial/commercialActivation'
+import { TEST_ENTITLEMENT_PUBLIC_KEY } from '../core/v4/commercial/entitlementKeys'
 import { resolveRuntimeStorageRoot } from '../core/v4/runtimeStorage'
 import { daemonDbPath } from '../core/v4/daemon/daemonConfig'
 import { openDaemonDb } from '../core/v4/daemon/db/connection'
@@ -616,6 +619,43 @@ export function createApiServer(): Express {
 
 
   // â”€â”€ License endpoints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+  const workbenchCommercialStatus = async (freshBilling?: CommercialBillingProjection) => {
+    const current = await commercialDeviceStatus({ aidenRoot: aidenPaths.root, entitlementPublicKey: TEST_ENTITLEMENT_PUBLIC_KEY })
+    const entitlement = current.entitlement
+    return {
+      entitlement: { state: entitlement.state, edition: entitlement.edition, expiresAt: entitlement.expiresAt,
+        offlineUntil: entitlement.offlineUntil, reason: entitlement.reason },
+      billing: freshBilling ?? current.billing,
+      deviceId: current.deviceId,
+      accountUrl: current.accountUrl,
+      product: current.product,
+    }
+  }
+
+  app.get('/api/commercial/status', async (_req: Request, res: Response) => {
+    try { res.json(await workbenchCommercialStatus()) }
+    catch { res.status(503).json({ error: 'Commercial status is unavailable.' }) }
+  })
+
+  app.post('/api/commercial/activate', async (req: Request, res: Response) => {
+    const code = typeof req.body?.code === 'string' ? req.body.code : ''
+    if (!/^[A-Za-z0-9_-]{43}$/.test(code)) { res.status(400).json({ error: 'A valid one-use activation code is required.' }); return }
+    const serviceOrigin = process.env.AIDEN_BILLING_ORIGIN ?? ''
+    try {
+      const deviceId = await resolveCommercialDeviceId(aidenPaths.root)
+      await activateCommercialDevice({ serviceOrigin, activationCode: code, deviceId, aidenRoot: aidenPaths.root,
+        entitlementPublicKey: TEST_ENTITLEMENT_PUBLIC_KEY })
+      res.json(await workbenchCommercialStatus())
+    } catch { res.status(400).json({ error: 'Activation could not be completed.' }) }
+  })
+
+  app.post('/api/commercial/refresh', async (_req: Request, res: Response) => {
+    try {
+      const refreshed = await refreshCommercialDevice({ aidenRoot: aidenPaths.root, entitlementPublicKey: TEST_ENTITLEMENT_PUBLIC_KEY })
+      res.json(await workbenchCommercialStatus(refreshed.billing))
+    } catch { res.status(400).json({ error: 'Access could not be refreshed.' }) }
+  })
 
   // POST /api/license/validate â€” activate a license key
   app.post('/api/license/validate', async (req: Request, res: Response) => {

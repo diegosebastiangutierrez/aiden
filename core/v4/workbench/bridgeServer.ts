@@ -229,6 +229,14 @@ export interface WorkbenchBrowserSetupPort {
   grant(input: { confirmed: boolean }): Promise<{ ready: boolean; detail: string; grantRequired: boolean; permissions: string[] }>;
 }
 
+export interface WorkbenchCommercialPort {
+  status(): Promise<unknown>;
+  activate(code: string): Promise<unknown>;
+  refresh(): Promise<unknown>;
+  open(productId: string): Promise<unknown>;
+  close(productId: string): Promise<unknown>;
+}
+
 export interface WorkbenchBridgeOptions {
   /** Read port over the shared run-event store (a RunStore satisfies this). */
   reader:      RunEventReader;
@@ -262,6 +270,9 @@ export interface WorkbenchBridgeOptions {
   liveExecution?: WorkbenchLiveExecutionPort;
   /** Exact browser-plugin grant adapter. */
   browserSetup?: WorkbenchBrowserSetupPort;
+  /** Generic commercial product projection and launcher. Product execution
+   * remains owned by the public product host, never by the renderer. */
+  commercial?: WorkbenchCommercialPort;
   /** Reliable automation projection and commands over canonical SQLite authority. */
   automations?: WorkbenchAutomationPort;
   /** Durable Agentic Presence projection. It cannot execute work directly. */
@@ -506,6 +517,36 @@ export function startWorkbenchBridge(opts: WorkbenchBridgeOptions): Promise<Work
     // non-GET is rejected.
     if (req.method === 'POST' && url.pathname === '/api/tasks') { handlePostTask(req, res); return; }
     if (req.method === 'POST' && url.pathname === '/api/attachments') { handleAttachmentUpload(req, res); return; }
+    if (req.method === 'POST' && url.pathname === '/api/commercial/activate') {
+      if (!passesTokenGate(req, res)) return;
+      if (!opts.commercial) { sendJson(res, 503, { error: 'commercial authority unavailable' }); return; }
+      readJsonBody(req, 4 * 1024).then((body) => {
+        const code = typeof body.code === 'string' ? body.code : '';
+        if (!/^[A-Za-z0-9_-]{43}$/.test(code)) throw new Error('A valid one-use activation code is required');
+        return opts.commercial!.activate(code);
+      }).then((value) => sendJson(res, 200, value)).catch((error) => sendJson(res, 400, {
+        error: error instanceof Error ? error.message : 'Activation could not be completed',
+      }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/commercial/refresh') {
+      if (!passesTokenGate(req, res)) return;
+      if (!opts.commercial) { sendJson(res, 503, { error: 'commercial authority unavailable' }); return; }
+      void opts.commercial.refresh().then((value) => sendJson(res, 200, value)).catch((error) => sendJson(res, 409, {
+        error: error instanceof Error ? error.message : 'Access could not be refreshed',
+      }));
+      return;
+    }
+    const commercialProductMatch = url.pathname.match(/^\/api\/commercial\/products\/([a-z0-9][a-z0-9-]{1,62})\/(open|close)$/);
+    if (req.method === 'POST' && commercialProductMatch) {
+      if (!passesTokenGate(req, res)) return;
+      if (!opts.commercial) { sendJson(res, 503, { error: 'commercial authority unavailable' }); return; }
+      const action = commercialProductMatch[2] as 'open' | 'close';
+      void opts.commercial[action](commercialProductMatch[1]!).then((value) => sendJson(res, 200, value)).catch((error) => sendJson(res, 409, {
+        error: error instanceof Error ? error.message : `Product could not ${action}`,
+      }));
+      return;
+    }
     const cancelMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)\/cancel$/);
     if (req.method === 'POST' && cancelMatch) { handleCancelTask(req, res, cancelMatch[1]); return; }
     const inputMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)\/input$/);
@@ -760,6 +801,14 @@ export function startWorkbenchBridge(opts: WorkbenchBridgeOptions): Promise<Work
       // readOnly unless BOTH a write token and an enqueuer are wired.
       const writeEnabled = Boolean(opts.token && opts.enqueue);
       sendJson(res, 200, { ok: true, service: 'aiden-workbench-bridge', version: VERSION, readOnly: !writeEnabled });
+      return;
+    }
+
+    if (url.pathname === '/api/commercial/status') {
+      if (!opts.commercial) { sendJson(res, 503, { error: 'commercial authority unavailable' }); return; }
+      void opts.commercial.status().then((value) => sendJson(res, 200, value)).catch(() => {
+        sendJson(res, 503, { error: 'Commercial status is unavailable.' });
+      });
       return;
     }
 

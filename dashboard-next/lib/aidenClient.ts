@@ -741,6 +741,52 @@ function token(): string {
 
 export function hasWriteToken(): boolean { return token().length > 0; }
 
+export async function loadCommercialStatus<T>(): Promise<T> {
+  const response = await fetch('/api/commercial/status', { cache: 'no-store' });
+  const body = await response.json() as T & { error?: string };
+  if (!response.ok) throw new Error(body.error || 'Commercial status is unavailable.');
+  return body;
+}
+
+export async function activateCommercial<T>(code: string): Promise<T> {
+  const response = await fetch('/api/commercial/activate', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'x-workbench-token': token() },
+    body: JSON.stringify({ code }),
+  });
+  const body = await response.json() as T & { error?: string };
+  if (!response.ok) throw new Error(body.error || 'Activation could not be completed.');
+  return body;
+}
+
+export async function refreshCommercial<T>(timeoutMs = 15_000): Promise<T> {
+  const response = await fetch('/api/commercial/refresh', {
+    method: 'POST', headers: { 'x-workbench-token': token() }, signal: AbortSignal.timeout(timeoutMs),
+  });
+  const body = await response.json() as T & { error?: string };
+  if (!response.ok) throw new Error(body.error || 'Access could not be refreshed.');
+  return body;
+}
+
+export async function openCommercialProduct(productId: string): Promise<{
+  productId: string; version: string; accessMode: 'FULL' | 'READ_ONLY'; url: string; reused: boolean;
+}> {
+  const response = await fetch(`/api/commercial/products/${encodeURIComponent(productId)}/open`, {
+    method: 'POST', headers: { 'x-workbench-token': token() },
+  });
+  const body = await response.json() as { productId: string; version: string; accessMode: 'FULL' | 'READ_ONLY'; url: string; reused: boolean; error?: string };
+  if (!response.ok) throw new Error(body.error || 'Product could not be opened.');
+  return body;
+}
+
+export async function closeCommercialProduct(productId: string): Promise<{ closed: boolean }> {
+  const response = await fetch(`/api/commercial/products/${encodeURIComponent(productId)}/close`, {
+    method: 'POST', headers: { 'x-workbench-token': token() },
+  });
+  const body = await response.json() as { closed: boolean; error?: string };
+  if (!response.ok) throw new Error(body.error || 'Product could not be closed.');
+  return body;
+}
+
 export async function listSessions(): Promise<SessionSummary[]> {
   try {
     const response = await fetch('/api/sessions');

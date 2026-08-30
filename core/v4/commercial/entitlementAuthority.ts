@@ -4,6 +4,7 @@
  */
 
 import { promises as fs } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type { AidenPaths } from '../paths';
 import {
@@ -12,7 +13,11 @@ import {
   type CommercialCapability,
   type ProductEdition,
 } from './edition';
-import { verifyEd25519Payload } from './signedPayload';
+import { canonicalJson, verifyEd25519Payload } from './signedPayload';
+
+const cacheLock = require('proper-lockfile') as {
+  lock(file: string, options: Record<string, unknown>): Promise<() => Promise<void>>;
+};
 
 export type EntitlementState =
   | 'community'
@@ -57,7 +62,7 @@ export interface EntitlementRefreshProvider {
 }
 
 export interface EntitlementAuthorityOptions {
-  paths: AidenPaths;
+  paths: Pick<AidenPaths, 'root'>;
   publicKeyPem: string;
   product?: string;
   deviceBinding?: string;
@@ -90,19 +95,41 @@ export class EntitlementAuthority {
         ? { ...current, state: 'unavailable', reason: 'entitlement service unavailable' }
         : current;
     }
+    let signed: SignedEntitlement | null;
     try {
-      const signed = await this.options.refreshProvider.refresh();
+      signed = await this.options.refreshProvider.refresh();
+    } catch {
+      const cached = await this.snapshot();
+      if (cached.state === 'active' || cached.state === 'trial' || cached.state === 'grace' || cached.state === 'revoked') return cached;
+      return { state: 'unavailable', edition: 'community', capabilities: [], reason: 'entitlement service unavailable' };
+    }
+    try {
       if (!signed) return { state: 'unavailable', edition: 'community', capabilities: [], reason: 'no entitlement returned' };
       const result = this.evaluate(signed);
-      if (!['active', 'trial', 'grace'].includes(result.state)) return result;
-      await this.writeCache(signed);
-      return result;
-    } catch (error) {
-      const cached = await this.snapshot();
-      if (cached.state === 'active' || cached.state === 'trial' || cached.state === 'grace') return cached;
+      if (result.state === 'unavailable') return result;
+      await fs.mkdir(path.dirname(this.cacheFile), { recursive: true });
+      const release = await cacheLock.lock(this.cacheFile, { realpath: false, retries: 0 });
+      try {
+        const cached = await this.readCache();
+        if (cached && this.evaluate(cached).state !== 'unavailable') {
+          const previousTime = Date.parse(cached.claim.issuedAt);
+          const nextTime = Date.parse(signed.claim.issuedAt);
+          if (nextTime < previousTime) return this.evaluate(cached);
+          if (nextTime === previousTime && canonicalJson(cached.claim) !== canonicalJson(signed.claim)) {
+            if (cached.claim.revoked) return this.evaluate(cached);
+            if (!signed.claim.revoked) return { state: 'unavailable', edition: 'community', capabilities: [], reason: 'conflicting entitlement revision' };
+          }
+        }
+        // Signed terminal states replace cached access just like signed renewals.
+        await this.writeCache(signed);
+        return result;
+      } finally {
+        await release();
+      }
+    } catch {
       return {
         state: 'unavailable', edition: 'community', capabilities: [],
-        reason: error instanceof Error ? error.message : 'entitlement service unavailable',
+        reason: 'entitlement cache unavailable',
       };
     }
   }
@@ -112,10 +139,29 @@ export class EntitlementAuthority {
   }
 
   evaluate(signed: SignedEntitlement): EntitlementSnapshot {
-    if (!verifyEd25519Payload(signed.claim, signed.signature, this.options.publicKeyPem)) {
+    if (!signed || !verifyEd25519Payload(signed.claim, signed.signature, this.options.publicKeyPem)) {
       return { state: 'unavailable', edition: 'community', capabilities: [], reason: 'invalid entitlement signature' };
     }
     const claim = signed.claim;
+    if (!claim || typeof claim !== 'object' || typeof claim.accountId !== 'string' || !claim.accountId.trim()
+      || !['community', 'pro', 'team', 'enterprise'].includes(claim.edition)
+      || !Array.isArray(claim.capabilities) || !claim.capabilities.every(value => typeof value === 'string')
+      || typeof claim.issuedAt !== 'string' || typeof claim.expiresAt !== 'string'
+      || (claim.offlineUntil !== undefined && typeof claim.offlineUntil !== 'string')
+      || (claim.deviceBinding !== undefined && typeof claim.deviceBinding !== 'string')
+      || (claim.revoked !== undefined && typeof claim.revoked !== 'boolean')
+      || (claim.trial !== undefined && typeof claim.trial !== 'boolean')) {
+      return { state: 'unavailable', edition: 'community', capabilities: [], reason: 'invalid entitlement claim' };
+    }
+    const now = this.now().getTime();
+    const issuedAt = Date.parse(claim.issuedAt);
+    const expiresAt = Date.parse(claim.expiresAt);
+    const offlineUntil = claim.offlineUntil ? Date.parse(claim.offlineUntil) : Number.NaN;
+    if (!Number.isFinite(now) || !Number.isFinite(issuedAt) || issuedAt > now
+      || !Number.isFinite(expiresAt)
+      || (claim.offlineUntil !== undefined && (!Number.isFinite(offlineUntil) || offlineUntil < expiresAt))) {
+      return { state: 'unavailable', edition: 'community', capabilities: [], reason: 'invalid entitlement time bounds' };
+    }
     if (claim.product !== (this.options.product ?? 'aiden')) {
       return { state: 'unavailable', edition: 'community', capabilities: [], reason: 'wrong entitlement product' };
     }
@@ -127,9 +173,6 @@ export class EntitlementAuthority {
     }
     const capabilities = claim.capabilities.filter((capability): capability is CommercialCapability =>
       (COMMERCIAL_CAPABILITIES as readonly string[]).includes(capability));
-    const now = this.now().getTime();
-    const expiresAt = Date.parse(claim.expiresAt);
-    const offlineUntil = claim.offlineUntil ? Date.parse(claim.offlineUntil) : Number.NaN;
     const base = {
       edition: claim.edition,
       accountId: claim.accountId,
@@ -138,9 +181,8 @@ export class EntitlementAuthority {
       expiresAt: claim.expiresAt,
       ...(claim.offlineUntil ? { offlineUntil: claim.offlineUntil } : {}),
     };
-    if (!Number.isFinite(expiresAt)) return { state: 'unavailable', edition: 'community', capabilities: [], reason: 'invalid entitlement expiry' };
-    if (now <= expiresAt) return { ...base, state: claim.edition === 'community' ? 'community' : claim.trial ? 'trial' : 'active' };
-    if (Number.isFinite(offlineUntil) && now <= offlineUntil) return { ...base, state: 'grace' };
+    if (now < expiresAt) return { ...base, state: claim.edition === 'community' ? 'community' : claim.trial ? 'trial' : 'active' };
+    if (Number.isFinite(offlineUntil) && now < offlineUntil) return { ...base, state: 'grace' };
     return { ...base, state: 'expired', capabilities: [] };
   }
 
@@ -154,8 +196,12 @@ export class EntitlementAuthority {
 
   private async writeCache(value: SignedEntitlement): Promise<void> {
     await fs.mkdir(path.dirname(this.cacheFile), { recursive: true });
-    const temp = `${this.cacheFile}.${process.pid}.tmp`;
-    await fs.writeFile(temp, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
-    await fs.rename(temp, this.cacheFile);
+    const temp = `${this.cacheFile}.${randomUUID()}.tmp`;
+    try {
+      await fs.writeFile(temp, JSON.stringify(value, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
+      await fs.rename(temp, this.cacheFile);
+    } finally {
+      await fs.rm(temp, { force: true });
+    }
   }
 }

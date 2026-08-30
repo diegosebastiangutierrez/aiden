@@ -90,6 +90,8 @@ import {
 } from '../../core/v4/workbench/providerSetupAuthority';
 import { createSystemReadinessAuthority } from '../../core/v4/workbench/systemReadiness';
 import { buildEditionAuthority, detectProductEdition } from '../../core/v4/commercial/edition';
+import { TEST_ENTITLEMENT_PUBLIC_KEY } from '../../core/v4/commercial/entitlementKeys';
+import { CommercialProductRuntime } from '../../core/v4/commercial/commercialProductRuntime';
 import {
   createLearningAuthority,
   createLearningContextProvider,
@@ -895,6 +897,13 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
         onPresence: (observation) => { presenceAuthority.observe(observation); },
       });
       const presenceReadiness = createPresenceReadinessAuthority({ db, edition: editionAuthority });
+      const commercialRuntime = new CommercialProductRuntime({
+        aidenRoot: paths.root,
+        ownerId: `workbench-${process.pid}`,
+        aidenVersion: VERSION,
+        entitlementPublicKey: TEST_ENTITLEMENT_PUBLIC_KEY,
+        serviceOrigin: process.env.AIDEN_BILLING_ORIGIN ?? '',
+      });
       const automationScheduler = createAutomationScheduler({ db, triggerBus, maxPerScan: 100 });
       const scanAutomations = (): void => {
         try { automationScheduler.scanDue(); }
@@ -1003,6 +1012,13 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
         providerSetup,
         readiness: readiness ? { snapshot: (sessionId?: string) => readiness.snapshot(sessionId) } : undefined,
         browserSetup,
+        commercial: {
+          status: () => commercialRuntime.status(),
+          activate: (code) => commercialRuntime.activate(code),
+          refresh: () => commercialRuntime.refresh(),
+          open: (productId) => commercialRuntime.open(productId),
+          close: (productId) => commercialRuntime.closeProduct(productId),
+        },
         runtime: () => {
           try {
             const cfg = new ConfigManager(paths).loadSync();
@@ -1107,6 +1123,7 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
         shutdownPromise = (async () => {
           clearInterval(automationTimer);
           try { if (executionHost) await executionHost.stop(); } catch { /* best-effort bounded drain */ }
+          try { await commercialRuntime.close(); } catch { /* private products are bounded children */ }
           try { await bridge.close(); } catch { /* listener may already be closed */ }
           try { workbenchRuntime?.processRegistry.cleanup(); } catch { /* best-effort */ }
           try { if (workbenchRuntime?.mcpClient) await workbenchRuntime.mcpClient.closeAll(); } catch { /* best-effort */ }

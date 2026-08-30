@@ -5,11 +5,11 @@ export type WorkbenchDestination =
 
 export type WorkbenchSettingsSection =
   | 'runtime' | 'model' | 'coding' | 'appearance' | 'skills' | 'capabilities'
-  | 'apps' | 'automations' | 'updates' | 'support' | 'about' | 'privacy' | 'legal'
+  | 'apps' | 'automations' | 'pro' | 'updates' | 'support' | 'about' | 'privacy' | 'legal'
 
 const SETTINGS_SECTIONS = new Set<WorkbenchSettingsSection>([
   'runtime', 'model', 'coding', 'appearance', 'skills', 'capabilities',
-  'apps', 'automations', 'updates', 'support', 'about', 'privacy', 'legal',
+  'apps', 'automations', 'pro', 'updates', 'support', 'about', 'privacy', 'legal',
 ])
 
 export function parseWorkbenchDestination(search: string): WorkbenchDestination {

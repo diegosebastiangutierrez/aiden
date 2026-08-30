@@ -43,5 +43,10 @@ describe('commercial Workbench onboarding source contract', () => {
     expect(page).not.toContain('>Aiden Pro</div>');
     expect(bridge).toContain("edition: runtime.edition ?? 'community'");
   });
+
+  it('keeps Plan & Billing reachable through the owned Settings navigation', () => {
+    expect(page).toContain("{ id: 'pro', label: 'Plan & Billing', section: 'About' }");
+    expect(page).toContain("settingsTab === 'pro'");
+  });
 });
 
