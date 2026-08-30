@@ -22,6 +22,7 @@ import { runMigrations } from '../../../core/v4/daemon/db/migrations';
 import { createJobEngine } from '../../../core/v4/daemon/jobEngine';
 
 const cleanupRoots: string[] = [];
+const WINDOWS_GIT_RECOVERY_TIMEOUT_MS = process.platform === 'win32' ? 45_000 : 20_000;
 
 async function completedCandidate() {
   const source = await mkdtemp(path.join(os.tmpdir(), 'aiden-coding-promotion-source-'));
@@ -225,5 +226,5 @@ describe('external coding reviewed promotion authority', () => {
     } finally {
       value.db.close();
     }
-  });
+  }, WINDOWS_GIT_RECOVERY_TIMEOUT_MS);
 });

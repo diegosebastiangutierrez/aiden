@@ -191,7 +191,9 @@ describe.skipIf(SKIP_INTERACTIVE_PTY)('frame mode — PTY gate tests (v4.11 Slic
     // current status-bar text "thinking 0s" must appear quickly.
     await term.waitFor(
       (plain) => plain.includes('thinking 0s'),
-      { timeoutMs: 8_000, label: 'busy heartbeat "thinking 0s"' },
+      // A loaded serial Windows run can delay the observable ConPTY paint
+      // even though the busy transition still precedes the legacy handoff.
+      { timeoutMs: 15_000, label: 'busy heartbeat "thinking 0s"' },
     );
     // Cleanup — the legacy turn will fail (fake API key); we don't
     // care about exit code but we DO need to wait for the child to

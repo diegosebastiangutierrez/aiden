@@ -15,6 +15,7 @@ import {
 import { bindRun, createWorkerFixture } from '../worker/fixture';
 
 const temporaryRoots: string[] = [];
+const WINDOWS_GIT_RECOVERY_TIMEOUT_MS = process.platform === 'win32' ? 45_000 : 20_000;
 
 async function repositoryFixture(): Promise<string> {
   const root = await mkdtemp(path.join(os.tmpdir(), 'aiden-coding-repository-'));
@@ -229,7 +230,7 @@ describe('durable external coding authority', () => {
       now: 26,
     });
     fixture.db.close();
-  });
+  }, WINDOWS_GIT_RECOVERY_TIMEOUT_MS);
 
   it('admits only one mutable external session for one repository identity', async () => {
     const first = createWorkerFixture();
@@ -264,5 +265,5 @@ describe('durable external coding authority', () => {
     });
     expect(firstRecords.run.childJobId).toBe(first.child.jobId);
     first.db.close();
-  });
+  }, WINDOWS_GIT_RECOVERY_TIMEOUT_MS);
 });

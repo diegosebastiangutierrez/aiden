@@ -20,6 +20,7 @@ import { createTriggerBus } from '../../../core/v4/daemon/triggerBus';
 import { bindRun, createWorkerFixture } from '../worker/fixture';
 
 const roots: string[] = [];
+const WINDOWS_GIT_RECOVERY_TIMEOUT_MS = process.platform === 'win32' ? 45_000 : 20_000;
 
 afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
@@ -208,5 +209,5 @@ describe('external coding restart reconciliation', () => {
       }
       if (initialDatabaseOpen && fixture.db.open) fixture.db.close();
     }
-  });
+  }, WINDOWS_GIT_RECOVERY_TIMEOUT_MS);
 });

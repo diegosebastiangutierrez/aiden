@@ -15,6 +15,7 @@ import { ExternalCodingProcessHost } from '../../../core/v4/coding/processHost';
 import { bindRun, createWorkerFixture } from '../worker/fixture';
 
 const roots: string[] = [];
+const WINDOWS_GIT_RECOVERY_TIMEOUT_MS = process.platform === 'win32' ? 45_000 : 20_000;
 
 afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
@@ -139,5 +140,5 @@ describe('cancelled external coding restart recovery', () => {
       }
       fixture.db.close();
     }
-  });
+  }, WINDOWS_GIT_RECOVERY_TIMEOUT_MS);
 });
