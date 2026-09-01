@@ -11,6 +11,7 @@ import { promisify } from 'node:util';
 
 import type { Db } from '../daemon/db/connection';
 import type { AttemptRecord, JobRecord } from '../daemon/jobEngine';
+import { resolveAidenRoot } from '../paths';
 import { isPathAllowed, isWithin, realpathWithFallback } from '../sandboxFs';
 import { resolveWorkspace, type WorkspaceDescriptor } from './workspaceResolver';
 
@@ -31,6 +32,7 @@ export interface RepositoryCapturePolicy {
   maxEntries: number;
   maxFileBytes: number;
   excludedDirectories: readonly string[];
+  excludedPaths: readonly string[];
   explicitlyInspectedPaths: readonly string[];
 }
 
@@ -135,26 +137,41 @@ function classify(relativePath: string): string {
   return 'source';
 }
 
-function policyOf(input?: Partial<RepositoryCapturePolicy>): RepositoryCapturePolicy {
+function ownedRuntimePaths(root: string): string[] {
+  const canonicalRoot = realpathWithFallback(root);
+  const runtimeRoot = realpathWithFallback(resolveAidenRoot());
+  if (!isWithin(runtimeRoot, canonicalRoot) || runtimeRoot === canonicalRoot) return [];
+  const relative = normalizeRelative(path.relative(canonicalRoot, runtimeRoot));
+  return relative && relative !== '.' ? [relative] : [];
+}
+
+function policyOf(root: string, input?: Partial<RepositoryCapturePolicy>): RepositoryCapturePolicy {
   return {
     maxEntries: Math.max(1, Math.min(50_000, input?.maxEntries ?? DEFAULT_MAX_ENTRIES)),
     maxFileBytes: Math.max(1, Math.min(16 * 1024 * 1024, input?.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES)),
     excludedDirectories: uniqueSorted(input?.excludedDirectories ?? [...EXCLUDED_DIRECTORIES]),
+    excludedPaths: uniqueSorted(input?.excludedPaths ?? ownedRuntimePaths(root)),
     explicitlyInspectedPaths: uniqueSorted(input?.explicitlyInspectedPaths ?? []),
   };
 }
 
 function excludedByPolicy(relativePath: string, policy: RepositoryCapturePolicy): boolean {
-  const first = normalizeRelative(relativePath).split('/')[0].toLowerCase();
-  return policy.excludedDirectories.some((item) => item.toLowerCase() === first);
+  const normalized = normalizeRelative(relativePath);
+  const comparable = process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+  const first = comparable.split('/')[0];
+  if (policy.excludedDirectories.some((item) => (process.platform === 'win32' ? item.toLowerCase() : item) === first)) return true;
+  return policy.excludedPaths.some((item) => {
+    const excluded = process.platform === 'win32' ? normalizeRelative(item).toLowerCase() : normalizeRelative(item);
+    return comparable === excluded || comparable.startsWith(`${excluded}/`);
+  });
 }
 
 async function gatherState(requestedPath: string, policyInput?: Partial<RepositoryCapturePolicy>, resolved?: WorkspaceDescriptor): Promise<CaptureState> {
   const descriptor = resolved ?? await resolveWorkspace(requestedPath);
   if (!descriptor.exists) throw new RepositorySnapshotAuthorityError('WORKSPACE_NOT_FOUND', 'Repository snapshot root does not exist');
   const root = descriptor.repositoryRoot ?? descriptor.canonicalPath;
-  const policy = policyOf(policyInput);
-  const capturePolicyDigest = digest({ version: 1, ...policy });
+  const policy = policyOf(root, policyInput);
+  const capturePolicyDigest = digest({ version: 2, ...policy });
   const branch = descriptor.vcsKind === 'git' ? (await git(root, ['symbolic-ref', '--quiet', '--short', 'HEAD'])) : null;
   const headCommit = descriptor.vcsKind === 'git' ? (await git(root, ['rev-parse', '--verify', 'HEAD'])) : null;
   const upstream = descriptor.vcsKind === 'git' ? (await git(root, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'])) : null;
@@ -178,6 +195,10 @@ async function gatherState(requestedPath: string, policyInput?: Partial<Reposito
     for (const child of children) {
       const rel = normalizeRelative(path.join(relative, child.name));
       if (entries.length >= policy.maxEntries) { incompleteReasons.push(`entry_limit:${policy.maxEntries}`); break; }
+      if (excludedByPolicy(rel, { ...policy, excludedDirectories: [] })) {
+        entries.push({ path: child.isDirectory() ? `${rel}/` : rel, canonicalIdentity: normalizeRelative(path.join(root, rel)), classification: child.isDirectory() ? 'excluded_directory' : classify(rel), gitState: null, size: null, modifiedAt: null, mode: null, contentHash: null, captureStatus: 'excluded', reason: 'policy_excluded_path' });
+        continue;
+      }
       if (child.isDirectory()) {
         if (excluded.has(child.name.toLowerCase())) {
           entries.push({ path: `${rel}/`, canonicalIdentity: normalizeRelative(path.join(root, rel)), classification: 'excluded_directory', gitState: null, size: null, modifiedAt: null, mode: null, contentHash: null, captureStatus: 'excluded', reason: 'policy_excluded_directory' });
@@ -210,7 +231,9 @@ async function gatherState(requestedPath: string, policyInput?: Partial<Reposito
     entries.push({ path: gitPath, canonicalIdentity: normalizeRelative(path.join(root, gitPath)), classification: classify(gitPath), gitState, size: null, modifiedAt: null, mode: null, contentHash: null, captureStatus: 'unavailable', reason: 'path_missing_at_capture' });
   }
   entries.sort((a, b) => a.path.localeCompare(b.path));
-  const stableEntries = entries.map(({ modifiedAt: _modifiedAt, ...entry }) => entry);
+  const stableEntries = entries
+    .filter((entry) => entry.captureStatus !== 'excluded')
+    .map(({ modifiedAt: _modifiedAt, ...entry }) => entry);
   const indexDigest = digest(stagedPaths);
   const workingTreeDigest = digest({ dirtyPaths, untrackedPaths, entries: stableEntries });
   const stateDigest = digest({ workspaceId: descriptor.id, repositoryRoot: descriptor.repositoryRoot ?? null, vcsKind: descriptor.vcsKind, branch, headCommit, upstream, indexDigest, workingTreeDigest, capturePolicyDigest, incompleteReasons: uniqueSorted(incompleteReasons) });
@@ -327,7 +350,8 @@ export function createRepositorySnapshotAuthority(deps: Deps): RepositorySnapsho
     compareSnapshots(baseId, currentId) {
       const base = getSnapshot(baseId); const current = getSnapshot(currentId);
       if (!base || !current || base.workspaceId !== current.workspaceId) throw new RepositorySnapshotAuthorityError('SNAPSHOT_NOT_COMPARABLE', 'Snapshots must exist in the same workspace');
-      const a = new Map(entriesFor(baseId).map((entry) => [entry.path, entry])); const b = new Map(entriesFor(currentId).map((entry) => [entry.path, entry]));
+      const a = new Map(entriesFor(baseId).filter((entry) => entry.captureStatus !== 'excluded').map((entry) => [entry.path, entry]));
+      const b = new Map(entriesFor(currentId).filter((entry) => entry.captureStatus !== 'excluded').map((entry) => [entry.path, entry]));
       const added = [...b.keys()].filter((key) => !a.has(key)); const removed = [...a.keys()].filter((key) => !b.has(key));
       const changed = [...a.keys()].filter((key) => b.has(key) && digest(a.get(key)) !== digest(b.get(key)));
       deps.appendJobEvent({ jobId: current.jobId, attemptId: current.attemptId, generation: current.generation, type: 'repository.snapshot_compared', payload: { baseId, currentId, added: added.length, removed: removed.length, changed: changed.length }, producer: 'repository-snapshot', idempotencyKey: `repository-compared:${baseId}:${currentId}` });

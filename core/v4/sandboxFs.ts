@@ -113,6 +113,15 @@ export interface PathPolicyDecision {
   violation?:     FsViolation;
 }
 
+export interface PathPolicyOptions {
+  /**
+   * Exact, approval-bound output targets for this one tool execution. These
+   * targets do not become directory roots and never override the deny list or
+   * symlink-escape checks.
+   */
+  exactWritePaths?: ReadonlyArray<string>;
+}
+
 // ── Internal helpers ────────────────────────────────────────────────────────
 
 /**
@@ -230,6 +239,7 @@ export function isPathAllowed(
   op:      FsOp,
   cwd:     string,
   config:  SandboxConfig = getSandboxConfig(),
+  options: PathPolicyOptions = {},
 ): PathPolicyDecision {
   const requestedPath = rawPath;
   const expandedPath  = expandPathInline(rawPath, cwd);
@@ -296,6 +306,21 @@ export function isPathAllowed(
 
   // ── Allowlist (write/delete only — reads pass through after denylist) ─
   if (op === 'read') {
+    return { ...base, allowed: true };
+  }
+
+  // One exact target may be authorized by the mutation approval boundary even
+  // when it is outside the configured workspace roots. Keep this narrower than
+  // an allow-list extension: siblings and descendants remain denied. Refuse a
+  // lexical path that resolves through a symlink/junction so an approved label
+  // cannot silently name a different physical destination.
+  const lexicalResolved = path.resolve(expandedPath);
+  const crossesLinkBoundary = path.relative(lexicalResolved, resolvedPath) !== '';
+  if (!crossesLinkBoundary && options.exactWritePaths?.some((candidate) => {
+    const expandedCandidate = expandPathInline(candidate, cwd);
+    const resolvedCandidate = realpathWithFallback(expandedCandidate);
+    return path.relative(resolvedCandidate, resolvedPath) === '';
+  })) {
     return { ...base, allowed: true };
   }
 

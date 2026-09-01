@@ -28,7 +28,9 @@ import { fileMoveTool   } from '../../../tools/v4/files/fileMove';
 import { fileCopyTool   } from '../../../tools/v4/files/fileCopy';
 import { resolveAidenPaths } from '../../../core/v4/paths';
 import { _resetSandboxConfigForTests } from '../../../core/v4/sandboxConfig';
-import type { ToolContext } from '../../../core/v4/toolRegistry';
+import { ToolRegistry, type ToolContext } from '../../../core/v4/toolRegistry';
+import { withBuiltInEffectContract } from '../../../tools/v4/effectContracts';
+import { ApprovalEngine } from '../../../moat/approvalEngine';
 
 let tmp: string;
 let ctx: ToolContext;
@@ -254,6 +256,46 @@ describe('sandbox enabled — read outside allowlist permitted (deny-only)', () 
         ctx,
       )) as ToolResult;
       expect(r.sandbox_violation).toBeUndefined();
+    });
+  });
+});
+
+describe('sandbox enabled — exact approved output target', () => {
+  it('permits only the exact external file target approved by the user', async () => {
+    await withSandbox(async () => {
+      const externalRoot = await fsp.mkdtemp(path.join(os.homedir(), 'aiden-approved-output-'));
+      const target = path.join(externalRoot, 'approved.md');
+      const sibling = path.join(externalRoot, 'not-approved.md');
+      try {
+        const decisions: Array<'allow' | 'deny'> = ['allow', 'deny'];
+        const registry = new ToolRegistry();
+        registry.register(withBuiltInEffectContract(fileWriteTool));
+        const execute = registry.buildExecutor({
+          ...ctx,
+          approvalEngine: new ApprovalEngine('manual', {
+            promptUser: async () => decisions.shift() ?? 'deny',
+          }),
+        });
+
+        const approved = await execute({
+          id: 'approved-external-output',
+          name: 'file_write',
+          arguments: { path: target, content: 'verified output' },
+        });
+        expect(approved.error).toBeUndefined();
+        expect(approved.result).toMatchObject({ success: true, path: target, verified: true });
+        await expect(fsp.readFile(target, 'utf8')).resolves.toBe('verified output');
+
+        const denied = await execute({
+          id: 'denied-external-output',
+          name: 'file_write',
+          arguments: { path: sibling, content: 'must not exist' },
+        });
+        expect(denied.error).toMatch(/denied by approval engine/i);
+        await expect(fsp.access(sibling)).rejects.toMatchObject({ code: 'ENOENT' });
+      } finally {
+        await fsp.rm(externalRoot, { recursive: true, force: true });
+      }
     });
   });
 });

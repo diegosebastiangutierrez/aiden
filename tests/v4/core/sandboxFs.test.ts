@@ -225,6 +225,45 @@ describe('isPathAllowed — allowlist (write/delete only)', () => {
   });
 });
 
+describe('isPathAllowed — exact approval-bound write target', () => {
+  let parent: string;
+
+  beforeEach(() => {
+    _clearRealPathCacheForTests();
+    parent = fs.mkdtempSync(path.join(os.homedir(), '.aiden-sbx-exact-'));
+  });
+
+  afterEach(() => { cleanup(parent); });
+
+  it('permits only the exact approved target, not a sibling', () => {
+    const cfg = readSandboxConfig({ AIDEN_SANDBOX: '1' });
+    const target = path.join(parent, 'approved.txt');
+    const sibling = path.join(parent, 'sibling.txt');
+
+    expect(isPathAllowed(target, 'write', process.cwd(), cfg, {
+      exactWritePaths: [target],
+    }).allowed).toBe(true);
+    expect(isPathAllowed(sibling, 'write', process.cwd(), cfg, {
+      exactWritePaths: [target],
+    }).allowed).toBe(false);
+  });
+
+  it('does not let an exact approved label cross a symlink or junction boundary', () => {
+    const actual = path.join(parent, 'actual');
+    const alias = path.join(parent, 'alias');
+    fs.mkdirSync(actual);
+    fs.symlinkSync(actual, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    const target = path.join(alias, 'approved.txt');
+    const cfg = readSandboxConfig({ AIDEN_SANDBOX: '1' });
+
+    const decision = isPathAllowed(target, 'write', process.cwd(), cfg, {
+      exactWritePaths: [target],
+    });
+
+    expect(decision.allowed).toBe(false);
+  });
+});
+
 // Symlink test is OS-conditional: Windows requires elevated rights to
 // create symlinks. Skip on Windows where we can't reliably set one up.
 const symlinkable = process.platform !== 'win32';

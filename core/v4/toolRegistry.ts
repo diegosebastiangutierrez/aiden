@@ -102,6 +102,43 @@ import {
   projectCompletedRepositoryValidation,
 } from './codebase/runtimePlanProjection';
 import { isWithin, realpathWithFallback } from './sandboxFs';
+import { resolveWorkspace } from './codebase/workspaceResolver';
+
+function repositoryBindingPaths(
+  toolName: string,
+  args: Readonly<Record<string, unknown>>,
+  cwd: string,
+): string[] {
+  const value = (key: string): string | undefined => {
+    const raw = args[key];
+    return typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
+  };
+  switch (toolName) {
+    case 'file_read':
+    case 'file_list':
+    case 'file_write':
+    case 'file_patch':
+    case 'file_delete':
+      return [value('path') ?? value('file') ?? (toolName === 'file_list' ? cwd : '')].filter(Boolean);
+    case 'file_move':
+      return [value('from'), value('to')].filter((entry): entry is string => entry !== undefined);
+    default:
+      return [];
+  }
+}
+
+async function targetsCurrentRepository(
+  workspacePath: string,
+  cwd: string,
+  targets: readonly string[],
+): Promise<boolean> {
+  const descriptor = await resolveWorkspace(workspacePath);
+  const root = descriptor.repositoryRoot ?? descriptor.canonicalPath;
+  return targets.some((target) => isWithin(
+    realpathWithFallback(resolvePath(cwd, target)),
+    root,
+  ));
+}
 
 /**
  * Risk profile for a tool. Used by the Phase 9 approval engine to decide
@@ -136,6 +173,8 @@ export type ExecutionContext = 'repl' | 'daemon';
 export interface ToolContext {
   /** Current working directory (for relative paths in file tools). */
   cwd: string;
+  /** Exact file_write target authorized for this one execution after approval. */
+  approvedFileWriteTarget?: string;
   /** Optional immutable repository view for snapshot-aware read-only file tools. */
   repositoryInspection?: {
     snapshotId: string;
@@ -547,6 +586,7 @@ export class ToolRegistry {
       let completedRepositoryValidation: StructuredValidationRun | undefined;
       let effectDescriptor: DurableEffectDescriptor | undefined;
       let approvalWaitId: string | null = null;
+      let approvedFileWriteTarget: string | undefined;
       const emit = (phase: ToolActivityUpdate['phase'], attempt?: number, detail?: string): void => {
         const boundedDetail = typeof detail === 'string'
           ? detail.replace(/[\u0000-\u001f\u007f]+/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, 80)
@@ -599,14 +639,26 @@ export class ToolRegistry {
         }, 'failed');
       }
 
+      let args = call.arguments ?? {};
       const durableJobContext = currentJobExecutionContext();
       let context = baseContext;
       let repositoryChangeAutoBound = false;
-      const needsRepositoryBinding =
+      let needsRepositoryBinding =
         ((call.name === 'file_read' || call.name === 'file_list') && !baseContext.repositoryInspection)
         || (['file_write', 'file_patch', 'file_move', 'file_delete'].includes(call.name)
           && !baseContext.repositoryChange)
         || (call.name === 'shell_exec' && !baseContext.repositoryValidation);
+      const bindingPaths = durableJobContext?.workspacePath
+        ? repositoryBindingPaths(call.name, args, baseContext.cwd)
+        : [];
+      if (
+        needsRepositoryBinding
+        && durableJobContext?.workspacePath
+        && bindingPaths.length > 0
+        && !await targetsCurrentRepository(durableJobContext.workspacePath, baseContext.cwd, bindingPaths)
+      ) {
+        needsRepositoryBinding = false;
+      }
       if (
         durableJobContext
         && needsRepositoryBinding
@@ -631,8 +683,6 @@ export class ToolRegistry {
           }, 'blocked');
         }
       }
-
-      let args = call.arguments ?? {};
 
       // ── Argument-shape guard — JSON that PARSES can still be garbage ───
       // A well-formed argument can carry prose where the schema declares a
@@ -1284,6 +1334,12 @@ export class ToolRegistry {
             error: `Tool execution denied by approval engine — ${why}`,
           }, signal?.aborted ? 'cancelled' : 'denied');
         }
+        if (call.name === 'file_write') {
+          const target = typeof args.path === 'string'
+            ? args.path
+            : typeof args.file === 'string' ? args.file : '';
+          approvedFileWriteTarget = target.trim() || undefined;
+        }
         try {
           recordDurableToolApproval({
             prepared: preparedToolCall ?? null,
@@ -1428,6 +1484,14 @@ export class ToolRegistry {
           value: (detail: string) => emit('running', activeExecutionAttempt, detail),
           writable: false,
         });
+        if (approvedFileWriteTarget) {
+          Object.defineProperty(perCall, 'approvedFileWriteTarget', {
+            configurable: false,
+            enumerable: false,
+            value: approvedFileWriteTarget,
+            writable: false,
+          });
+        }
         return perCall;
       };
       const dispatch = async (a: Record<string, unknown>): Promise<unknown> =>

@@ -73,7 +73,9 @@ export const fileWriteTool: ToolHandler = {
       return { success: false, error: protectedPathMessage(raw) };
     }
     // v4.4 Phase 2 — sandbox preflight (no-op when AIDEN_SANDBOX!=1).
-    const policy = isPathAllowed(raw, 'write', ctx.cwd);
+    const policy = isPathAllowed(raw, 'write', ctx.cwd, undefined, {
+      exactWritePaths: ctx.approvedFileWriteTarget ? [ctx.approvedFileWriteTarget] : [],
+    });
     if (!policy.allowed) {
       return {
         success: false,

@@ -3,7 +3,7 @@
  * Licensed under AGPL-3.0. See LICENSE for details.
  */
 
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -123,6 +123,40 @@ describe('safe change file-tool integration', () => {
     expect(engine.changes.listRecords(context.admission.jobId)).toHaveLength(1);
     expect(context.repositoryChange.baseSnapshotId).not.toBe(fresh.id);
     await expect(readFile(path.join(root, 'source.ts'), 'utf8')).resolves.toBe('after\n');
+  });
+
+  it('keeps owned runtime-state updates outside repository change scope', async () => {
+    const previousHome = process.env.AIDEN_HOME;
+    const runtimeRoot = path.join(root, 'runtime-state');
+    process.env.AIDEN_HOME = runtimeRoot;
+    try {
+      const fresh = await engine.repository.captureSnapshot({
+        jobId: context.admission.jobId, attemptId: context.admission.attemptId,
+        generation: context.lease.generation!, fenceToken: context.lease.fenceToken!,
+        requestedPath: root, previousSnapshotId: context.repositoryChange.baseSnapshotId, producer: 'test',
+      });
+      context.repositoryChange.baseSnapshotId = fresh.id;
+      const execute = context.executor(async () => {
+        await mkdir(runtimeRoot, { recursive: true });
+        await writeFile(path.join(runtimeRoot, 'sessions.db-wal'), 'runtime update');
+        return 'allow';
+      });
+
+      const result = await execute({
+        id: 'provider-file-write-with-runtime-state', name: 'file_write',
+        arguments: { path: 'source.ts', content: 'verified output\n' },
+      });
+
+      expect(result.error).toBeUndefined();
+      expect(result.result).toMatchObject({ success: true, verified: true });
+      await expect(readFile(path.join(root, 'source.ts'), 'utf8')).resolves.toBe('verified output\n');
+      await expect(readFile(path.join(runtimeRoot, 'sessions.db-wal'), 'utf8')).resolves.toBe('runtime update');
+      const [evidence] = engine.proof.listEvidence(context.admission.jobId);
+      expect(evidence?.payload).toMatchObject({ changedScope: ['source.ts'] });
+    } finally {
+      if (previousHome === undefined) delete process.env.AIDEN_HOME;
+      else process.env.AIDEN_HOME = previousHome;
+    }
   });
 
   it('blocks a user edit made while exact approval is pending', async () => {
