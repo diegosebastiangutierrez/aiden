@@ -93,6 +93,8 @@ export interface AutomationDefinitionRecord {
   createdBy: string;
   createdAt: number;
   updatedAt: number;
+  removedAt: number | null;
+  removedBy: string | null;
 }
 
 export interface AutomationRevisionRecord {

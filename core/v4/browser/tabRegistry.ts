@@ -78,6 +78,62 @@ class TabRegistry {
     return meta;
   }
 
+  /**
+   * Rebind a newly-created physical Page to an existing durable tab identity.
+   * Used only when a browser host reconnects the same authoritative session;
+   * it never invents or aliases a durable tab ID.
+   */
+  trackDurable(
+    page: unknown,
+    durable: {
+      tabId: string;
+      createdBy: 'aiden' | 'user';
+      openerId: string | null;
+      browserSessionId: string;
+      controlled: boolean;
+      url: string;
+      title: string;
+      dirtyForm: boolean;
+      lastSnapshotHash: string | null;
+    },
+  ): TabMeta {
+    const tabId = durable.tabId.trim();
+    if (!tabId) throw new Error('Durable browser tab ID is required');
+
+    for (const [otherPage, other] of this.byPage) {
+      if (otherPage === page || other.tab_id !== tabId) continue;
+      if (other.browserSessionId !== null) {
+        throw new Error('Durable browser tab ID is already bound to another physical page');
+      }
+      this.byPage.delete(otherPage);
+    }
+
+    const current = this.byPage.get(page);
+    if (current?.browserSessionId !== null
+      && current?.browserSessionId !== durable.browserSessionId) {
+      throw new Error('Browser tab is already assigned to another durable session');
+    }
+
+    let origin = '';
+    try { origin = durable.url ? new URL(durable.url).origin : ''; } catch { /* invalid URL stays originless */ }
+    const meta: TabMeta = {
+      tab_id: tabId,
+      url: durable.url,
+      title: durable.title,
+      origin,
+      opener_id: durable.openerId,
+      createdBy: durable.createdBy,
+      controlled: durable.controlled,
+      lastSnapshotHash: durable.lastSnapshotHash,
+      dirtyForm: durable.dirtyForm,
+      browserSessionId: durable.browserSessionId,
+    };
+    this.byPage.set(page, meta);
+    const numeric = /^tab-(\d+)$/.exec(tabId);
+    if (numeric) this.counter = Math.max(this.counter, Number(numeric[1]));
+    return meta;
+  }
+
   get(page: unknown): TabMeta | undefined { return this.byPage.get(page); }
   has(page: unknown): boolean { return this.byPage.has(page); }
   remove(page: unknown): void { this.byPage.delete(page); }

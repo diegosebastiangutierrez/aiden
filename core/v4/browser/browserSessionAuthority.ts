@@ -139,8 +139,16 @@ export interface BrowserActionReceipt {
   updatedAt: number;
 }
 
+export interface BrowserSessionContinuation {
+  sourceBrowserSessionId: string;
+  browserSessionId: string;
+  controlledTabId: string;
+  tabs: BrowserTabRecord[];
+}
+
 export interface BrowserSessionAuthority {
   ensureSession(binding: BrowserSessionBinding): BrowserSessionRecord;
+  continueSession(binding: BrowserSessionBinding, sourceBrowserSessionId: string): BrowserSessionContinuation;
   getSession(browserSessionId: string): BrowserSessionRecord | null;
   getSessionForAttempt(jobId: string, attemptId: string, generation: number): BrowserSessionRecord | null;
   getAction(actionId: string): BrowserActionReceipt | null;
@@ -152,6 +160,7 @@ export interface BrowserSessionAuthority {
   }): BrowserTabRecord;
   listTabs(browserSessionId: string): BrowserTabRecord[];
   setControlledTab(binding: BrowserSessionBinding, tabId: string): BrowserTabRecord;
+  setTabPurpose(binding: BrowserSessionBinding, tabId: string, purpose: string): BrowserTabRecord;
   canCloseTab(binding: BrowserSessionBinding, tabId: string): boolean;
   markTabClosed(binding: BrowserSessionBinding, tabId: string): void;
   recordObservation(binding: BrowserSessionBinding, observation: {
@@ -210,7 +219,7 @@ interface TabRow {
 interface ReceiptRow {
   action_id: string; browser_session_id: string; job_id: string; attempt_id: string;
   generation: number; action_sequence: number; tool_call_id: string | null; effect_id: string | null; tab_id: string | null;
-  action_type: string; action_signature: string; state: string; command_ok: number | null;
+  action_type: string; action_signature: string; expected_json: string; state: string; command_ok: number | null;
   semantic_ok: number | null; pre_state_digest: string | null; post_state_digest: string | null;
   verification_json: string | null; evidence_ids_json: string; error_code: string | null;
   created_at: number; updated_at: number;
@@ -309,6 +318,18 @@ function safeUrl(raw: string): string {
     }
     return url.toString();
   } catch { return raw.slice(0, 2_000); }
+}
+
+function continuableUrl(raw: string): string | null {
+  if (!raw || raw.includes('[redacted]')) return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    if (url.username || url.password) return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
 }
 
 function sanitize(value: unknown, key = '', depth = 0): unknown {
@@ -463,6 +484,151 @@ export function createBrowserSessionAuthority(options: {
       return mapSession(sessionRow(browserSessionId)!);
     },
 
+    continueSession(binding, sourceBrowserSessionId) {
+      const current = authority.assertActionable(binding);
+      const sourceId = sourceBrowserSessionId.trim();
+      if (!sourceId || sourceId === current.browserSessionId) {
+        throw new BrowserAuthorityError('SESSION_NOT_ACTIONABLE', 'A different completed browser session is required');
+      }
+
+      const source = db.prepare(
+        `SELECT s.*,t.status AS job_status
+           FROM browser_sessions s JOIN tasks t ON t.id=s.job_id
+          WHERE s.browser_session_id=?`,
+      ).get(sourceId) as (SessionRow & { job_status: string }) | undefined;
+      if (!source
+        || source.state !== 'closed'
+        || source.job_status !== 'completed'
+        || source.recovery_state !== 'durable lifecycle completed') {
+        throw new BrowserAuthorityError(
+          'SESSION_NOT_ACTIONABLE',
+          'Only a successfully completed durable browser session can be continued',
+        );
+      }
+      if (source.workspace_id !== current.workspaceId
+        || source.mode !== current.mode
+        || source.profile_identity !== current.profileIdentity) {
+        throw new BrowserAuthorityError(
+          'SESSION_NOT_AUTHORIZED',
+          'Browser continuation must remain in the same workspace, mode, and profile',
+        );
+      }
+
+      const sourceTabs = (db.prepare(
+        `SELECT * FROM browser_tabs
+          WHERE browser_session_id=? AND created_by='aiden'
+            AND purpose IS NOT NULL AND TRIM(purpose)<>''
+          ORDER BY created_at,tab_id`,
+      ).all(sourceId) as TabRow[]);
+      if (sourceTabs.length === 0) {
+        throw new BrowserAuthorityError('SESSION_NOT_ACTIONABLE', 'Completed browser session has no named tabs to continue');
+      }
+      for (const tab of sourceTabs) {
+        if (tab.closed_at === null || tab.dirty_form === 1 || !continuableUrl(tab.url)) {
+          throw new BrowserAuthorityError(
+            'SESSION_NOT_ACTIONABLE',
+            `Browser tab ${tab.tab_id} cannot be restored automatically`,
+          );
+        }
+        const conflicting = db.prepare(
+          `SELECT browser_session_id FROM browser_tabs
+            WHERE tab_id=? AND browser_session_id<>? AND closed_at IS NULL LIMIT 1`,
+        ).get(tab.tab_id, current.browserSessionId) as { browser_session_id: string } | undefined;
+        if (conflicting) {
+          throw new BrowserAuthorityError('TAB_NOT_OWNED', `Browser tab ${tab.tab_id} is active in another session`);
+        }
+      }
+
+      const currentOpenTabs = (db.prepare(
+        'SELECT * FROM browser_tabs WHERE browser_session_id=? AND closed_at IS NULL ORDER BY created_at,tab_id',
+      ).all(current.browserSessionId) as TabRow[]);
+      if (currentOpenTabs.some((tab) => tab.created_by !== 'aiden'
+        || tab.dirty_form === 1
+        || tab.url !== 'about:blank'
+        || Boolean(tab.purpose?.trim()))) {
+        throw new BrowserAuthorityError(
+          'SESSION_NOT_ACTIONABLE',
+          'Current browser session already contains meaningful state',
+        );
+      }
+
+      const currentRow = sessionRow(current.browserSessionId)!;
+      const usage = mapSession(currentRow).usage;
+      const budget = mapSession(currentRow).budget;
+      if (usage.tabs + sourceTabs.length > budget.tabs) {
+        throw new BrowserAuthorityError('BUDGET_EXHAUSTED', 'Browser tabs budget exhausted by continuation');
+      }
+
+      const candidateIds = new Set(sourceTabs.map((tab) => tab.tab_id));
+      const recentTabs = db.prepare(
+        `SELECT tab_id FROM browser_navigation_history
+          WHERE browser_session_id=?
+          ORDER BY observed_at DESC,navigation_sequence DESC`,
+      ).all(sourceId) as Array<{ tab_id: string }>;
+      const controlledTabId = recentTabs.find((row) => candidateIds.has(row.tab_id))?.tab_id
+        ?? sourceTabs[0].tab_id;
+      const now = Date.now();
+
+      db.transaction(() => {
+        db.prepare(
+          `UPDATE browser_tabs SET controlled=0,closed_at=COALESCE(closed_at,?),updated_at=?
+            WHERE browser_session_id=? AND closed_at IS NULL`,
+        ).run(now, now, current.browserSessionId);
+
+        const insert = db.prepare(
+          `INSERT INTO browser_tabs (
+             browser_session_id,tab_id,owner_job_id,owner_attempt_id,owner_generation,
+             created_by,controlled,opener_tab_id,purpose,url,normalized_url,title,
+             dirty_form,last_state_digest,last_observed_at,last_evidence_at,close_policy,
+             created_at,updated_at,closed_at
+           ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)
+           ON CONFLICT(browser_session_id,tab_id) DO UPDATE SET
+             owner_job_id=excluded.owner_job_id,
+             owner_attempt_id=excluded.owner_attempt_id,
+             owner_generation=excluded.owner_generation,
+             created_by=excluded.created_by,
+             controlled=excluded.controlled,
+             opener_tab_id=excluded.opener_tab_id,
+             purpose=excluded.purpose,
+             url=excluded.url,
+             normalized_url=excluded.normalized_url,
+             title=excluded.title,
+             dirty_form=excluded.dirty_form,
+             last_state_digest=excluded.last_state_digest,
+             last_observed_at=excluded.last_observed_at,
+             last_evidence_at=excluded.last_evidence_at,
+             close_policy=excluded.close_policy,
+             created_at=excluded.created_at,
+             updated_at=excluded.updated_at,
+             closed_at=NULL`,
+        );
+        sourceTabs.forEach((tab, index) => {
+          const url = continuableUrl(tab.url)!;
+          insert.run(
+            current.browserSessionId, tab.tab_id, binding.jobId, binding.attemptId, binding.generation,
+            'aiden', tab.tab_id === controlledTabId ? 1 : 0,
+            tab.opener_tab_id && candidateIds.has(tab.opener_tab_id) ? tab.opener_tab_id : null,
+            tab.purpose, url, normalizeUrl(url), tab.title,
+            0, tab.last_state_digest, tab.last_observed_at, tab.last_evidence_at, 'aiden_owned',
+            now + index, now,
+          );
+        });
+
+        usage.tabs += sourceTabs.length;
+        db.prepare(
+          `UPDATE browser_sessions SET controlled_tab_id=?,usage_json=?,recovery_state='none',
+                  lease_epoch=lease_epoch+1,updated_at=? WHERE browser_session_id=?`,
+        ).run(controlledTabId, JSON.stringify(usage), now, current.browserSessionId);
+      }).immediate();
+
+      return {
+        sourceBrowserSessionId: sourceId,
+        browserSessionId: current.browserSessionId,
+        controlledTabId,
+        tabs: authority.listTabs(current.browserSessionId).filter((tab) => tab.closedAt === null),
+      };
+    },
+
     getSession(browserSessionId) {
       const row = sessionRow(browserSessionId);
       return row ? mapSession(row) : null;
@@ -572,6 +738,18 @@ export function createBrowserSessionAuthority(options: {
         db.prepare('UPDATE browser_sessions SET controlled_tab_id=?,lease_epoch=lease_epoch+1,updated_at=? WHERE browser_session_id=?')
           .run(tabId, now, session.browserSessionId);
       }).immediate();
+      return mapTab(tabRow(session.browserSessionId, tabId)!);
+    },
+
+    setTabPurpose(binding, tabId, purpose) {
+      const session = authority.assertActionable(binding, tabId);
+      const normalizedPurpose = String(sanitize(purpose)).trim().slice(0, 120);
+      if (!normalizedPurpose) {
+        throw new BrowserAuthorityError('TAB_NOT_OWNED', 'Browser tab name must not be empty');
+      }
+      db.prepare(
+        'UPDATE browser_tabs SET purpose=?,updated_at=? WHERE browser_session_id=? AND tab_id=? AND closed_at IS NULL',
+      ).run(normalizedPurpose, Date.now(), session.browserSessionId, tabId);
       return mapTab(tabRow(session.browserSessionId, tabId)!);
     },
 
@@ -718,12 +896,26 @@ export function createBrowserSessionAuthority(options: {
         authority.assertActionable(binding, row.tab_id);
       } catch (error) {
         if (!(error instanceof BrowserAuthorityError)) throw error;
+        const expected = parseJson<{ allowClosedTabSettlement?: boolean }>(row.expected_json, {});
+        const closedTarget = row.tab_id && expected.allowClosedTabSettlement === true
+          ? tabRow(row.browser_session_id, row.tab_id)
+          : undefined;
+        if (closedTarget?.closed_at !== null
+          && closedTarget?.owner_job_id === binding.jobId
+          && closedTarget?.owner_attempt_id === binding.attemptId
+          && closedTarget?.owner_generation === binding.generation) {
+          // Closing an exact Aiden-owned tab is the one action whose verified
+          // postcondition makes that target non-actionable before settlement.
+          // The Job/Attempt/session authority must still be current.
+          authority.assertActionable(binding);
+        } else {
         const now = Date.now();
         db.prepare(
           `UPDATE browser_action_receipts SET state='stale_rejected',error_code=?,returned_at=?,updated_at=?
             WHERE action_id=? AND state NOT IN ('verified','failed','not_applied','cancelled','stale_rejected')`,
         ).run(error.code, now, now, actionId);
         return { applied: false, late: true, receipt: mapReceipt(receiptRow(actionId)!) };
+        }
       }
       if (['verified', 'failed', 'not_applied', 'cancelled', 'stale_rejected'].includes(row.state)) {
         return { applied: false, late: false, receipt: mapReceipt(row) };
@@ -750,9 +942,10 @@ export function createBrowserSessionAuthority(options: {
             coverage: result.outcome === 'unknown' || result.outcome === 'reconciling' ? 'unknown' : 'full',
             verificationResult: result.outcome === 'verified' ? 'verified'
               : result.outcome === 'failed' || result.outcome === 'not_applied' ? 'failed' : 'unknown',
-            payload: sanitize({
-              browserActionId: actionId,
-              toolCallId: row.tool_call_id,
+             payload: sanitize({
+               browserActionId: actionId,
+               browserSessionId: row.browser_session_id,
+               toolCallId: row.tool_call_id,
               tabId: row.tab_id,
               observation: result.evidencePayload,
             }),

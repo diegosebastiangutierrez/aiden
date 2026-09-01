@@ -5,7 +5,8 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import path from 'node:path';
 
 import type { JobEngine, TransitionResult } from './jobEngine';
 import type { JobControlAuthority } from './jobControlAuthority';
@@ -16,6 +17,7 @@ import type {
   StructuredValidationAuthority,
   ValidationEnvironment,
 } from '../codebase/structuredValidationAuthority';
+import { runtimeArtifactDirectory } from '../runtimeStorage';
 
 export interface RepositoryExecutionBinding {
   rootPath: string;
@@ -52,6 +54,8 @@ export interface JobExecutionContext {
   repositoryPromise?: Promise<RepositoryExecutionBinding>;
   /** Source keys already promoted to Evidence during this Attempt. */
   researchEvidenceKeys?: Set<string>;
+  /** Exact persisted model-call identities allowed to recover once after host restart. */
+  resumableToolCallIds?: Set<string>;
 }
 
 const storage = new AsyncLocalStorage<JobExecutionContext>();
@@ -63,6 +67,15 @@ export function runWithJobExecutionContext<T>(context: JobExecutionContext, oper
 
 export function currentJobExecutionContext(): JobExecutionContext | undefined {
   return storage.getStore();
+}
+
+export function bindResumableDurableToolCalls(toolCallIds: readonly string[]): void {
+  const context = currentJobExecutionContext();
+  if (!context) {
+    if (toolCallIds.length > 0) throw new Error('Durable tool-call resume requires an active Job execution context');
+    return;
+  }
+  context.resumableToolCallIds = new Set(toolCallIds);
 }
 
 /** Exact persisted ToolCall currently dispatching physical work. */
@@ -262,9 +275,11 @@ export function prepareDurableToolCall(command: {
     } : undefined,
     producer: context.producer,
   });
+  const persistedResumeAuthorized = context.resumableToolCallIds?.has(command.toolCallId) === true;
+  context.resumableToolCallIds?.delete(command.toolCallId);
   let recoveryDisposition: PreparedDurableToolCall['recoveryDisposition'];
   if (result.duplicate && command.mutates) {
-    if (!command.allowExactMutationRecovery) {
+    if (!command.allowExactMutationRecovery && !persistedResumeAuthorized) {
       throw new DurableToolCallConflictError('duplicate mutation', result);
     }
     recoveryDisposition = result.existingToolCallState === 'prepared'
@@ -352,6 +367,109 @@ function captureDurableFileProof(
   });
 }
 
+function isInside(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+function captureDurableArtifactProof(
+  context: JobExecutionContext,
+  prepared: PreparedDurableToolCall,
+  toolName: string,
+  result: unknown,
+): void {
+  const effect = prepared.effect;
+  if (!prepared.effectId || effect?.kind !== 'artifact.capture' || !effect.verificationSupported) return;
+  const claim = context.engine.proof.createClaim({
+    jobId: context.jobId,
+    attemptId: context.attemptId,
+    generation: context.generation,
+    category: 'contract',
+    statement: `runtime artifact was captured and read back: ${toolName}`,
+    required: true,
+  });
+  const record = result && typeof result === 'object' ? result as Record<string, unknown> : {};
+  const resultPath = typeof record.path === 'string' ? record.path.trim() : '';
+  const observedAt = Date.now();
+  const browserState = record.browserState && typeof record.browserState === 'object'
+    ? record.browserState as Record<string, unknown>
+    : null;
+  const postState = browserState?.post_state && typeof browserState.post_state === 'object'
+    ? browserState.post_state as Record<string, unknown>
+    : null;
+  const browserMetadata = {
+    ...(typeof record.browserSessionId === 'string' ? { browserSessionId: record.browserSessionId } : {}),
+    ...(typeof record.tabId === 'string' ? { tabId: record.tabId } : {}),
+    ...(typeof postState?.normalized_url === 'string' ? { capturedUrl: postState.normalized_url } : {}),
+    ...(typeof postState?.title === 'string' ? { capturedTitle: postState.title } : {}),
+    capturedAt: observedAt,
+  };
+  let payload: Record<string, unknown> = {
+    tool: toolName,
+    sourceName: resultPath ? path.basename(resultPath.replace(/\\/g, '/')) : null,
+    exists: false,
+    exact: false,
+    ...browserMetadata,
+  };
+  let coverage: 'full' | 'unknown' = 'full';
+  let verificationResult: 'verified' | 'failed' | 'unknown' = 'failed';
+  try {
+    if (!resultPath) throw new Error('missing_artifact_path');
+    const unresolvedCandidate = path.resolve(resultPath);
+    const sourceStat = lstatSync(unresolvedCandidate);
+    if (sourceStat.isSymbolicLink()) throw new Error('artifact_symlink_rejected');
+    const candidate = realpathSync(unresolvedCandidate);
+    const allowedRoots = [runtimeArtifactDirectory('screenshots'), runtimeArtifactDirectory('downloads')]
+      .flatMap((root) => {
+        try { return [realpathSync(root)]; } catch { return []; }
+      });
+    if (!sourceStat.isFile() || !allowedRoots.some((root) => isInside(root, candidate))) {
+      payload = { ...payload, exists: sourceStat.isFile(), exact: false, reason: 'outside_runtime_artifact_authority' };
+    } else {
+      const bytes = readFileSync(candidate);
+      payload = {
+        tool: toolName,
+        sourceName: path.basename(candidate),
+        exists: true,
+        size: bytes.byteLength,
+        contentSha256: createHash('sha256').update(bytes).digest('hex'),
+        exact: true,
+        ...browserMetadata,
+      };
+      verificationResult = 'verified';
+    }
+  } catch (error) {
+    if (resultPath && !existsSync(resultPath)) {
+      payload = { ...payload, exists: false, exact: false, reason: 'artifact_missing' };
+    } else if (resultPath) {
+      coverage = 'unknown';
+      verificationResult = 'unknown';
+      payload = { ...payload, exists: null, exact: null, reason: error instanceof Error ? error.name : 'Error' };
+    }
+  }
+  const evidence = context.engine.proof.recordEvidence({
+    jobId: context.jobId,
+    attemptId: context.attemptId,
+    generation: context.generation,
+    fenceToken: context.fenceToken,
+    effectId: prepared.effectId,
+    source: 'artifact.readback',
+    producer: context.producer,
+    observedAt,
+    freshUntil: null,
+    coverage,
+    verificationResult,
+    payload,
+  });
+  context.engine.proof.checkClaim({
+    claimId: claim.claimId,
+    attemptId: context.attemptId,
+    generation: context.generation,
+    evidenceIds: [evidence.evidenceId],
+    state: verificationResult,
+  });
+}
+
 export function recordDurableToolApproval(command: {
   prepared: PreparedDurableToolCall | null;
   state: 'not_required' | 'pending' | 'approved' | 'denied' | 'interrupted' | 'timed_out' | 'blocked';
@@ -412,7 +530,10 @@ export async function executeWithDurableToolCall<T>(command: {
       resultRef: opaqueReference('tool-result', result),
       producer: context.producer,
     }));
-    if (succeeded && command.captureFilesystemProof !== false) captureDurableFileProof(context, prepared);
+    if (succeeded && command.captureFilesystemProof !== false) {
+      captureDurableFileProof(context, prepared);
+      captureDurableArtifactProof(context, prepared, command.toolName, result);
+    }
     return result;
   } catch (error) {
     const completion = context.engine.completeToolCall({
@@ -451,6 +572,7 @@ export function recordDurableToolVerification(toolCallId: string, verification: 
 
 const RESEARCH_EVIDENCE_TOOLS = new Set([
   'web_search',
+  'deep_research',
   'fetch_url',
   'fetch_page',
   'youtube_search',
@@ -461,7 +583,7 @@ const SENSITIVE_QUERY_PARAMETER = /^(?:token|api[_-]?key|access[_-]?token|auth(?
 function redactResearchText(value: string, limit = 2000): string {
   return value
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
-    .replace(/\b(?:api[_-]?key|access[_-]?token|token|authorization|secret|password)\s*[:=]\s*[^\s,;]+/gi, '$1: [redacted]')
+    .replace(/\b(api[_-]?key|access[_-]?token|token|authorization|secret|password)\s*[:=]\s*[^\s,;]+/gi, '$1: [redacted]')
     .replace(/\s+/g, ' ')
     .slice(0, limit);
 }
@@ -480,6 +602,21 @@ function sanitizeResearchValue(value: unknown, depth = 0): unknown {
   return String(value);
 }
 
+function normalizeResearchUrl(candidate: string): string | null {
+  if (!/^https?:\/\//i.test(candidate)) return null;
+  try {
+    const url = new URL(candidate);
+    url.hash = '';
+    for (const key of Array.from(url.searchParams.keys())) {
+      if (SENSITIVE_QUERY_PARAMETER.test(key)) url.searchParams.delete(key);
+    }
+    url.searchParams.sort();
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return null;
+  }
+}
+
 function normalizedResearchSource(toolName: string, args: Record<string, unknown>): {
   key: string;
   source: string;
@@ -489,19 +626,9 @@ function normalizedResearchSource(toolName: string, args: Record<string, unknown
     : typeof args.query === 'string'
       ? args.query.trim()
       : '';
-  if (candidate && /^https?:\/\//i.test(candidate)) {
-    try {
-      const url = new URL(candidate);
-      url.hash = '';
-      for (const key of Array.from(url.searchParams.keys())) {
-        if (SENSITIVE_QUERY_PARAMETER.test(key)) url.searchParams.delete(key);
-      }
-      url.searchParams.sort();
-      const normalized = url.toString().replace(/\/$/, '');
-      return { key: `url:${normalized.toLowerCase()}`, source: normalized };
-    } catch {
-      // Fall through to a bounded tool/query key when the input is not a URL.
-    }
+  const normalizedUrl = normalizeResearchUrl(candidate);
+  if (normalizedUrl) {
+    return { key: `url:${normalizedUrl.toLowerCase()}`, source: normalizedUrl };
   }
   const query = redactResearchText(candidate, 500).toLowerCase();
   return { key: `${toolName}:${query}`, source: query || toolName };
@@ -521,9 +648,15 @@ export function recordDurableResearchEvidence(command: {
   toolName: string;
   args: Record<string, unknown>;
   result: unknown;
+  verification?: { ok: boolean; code?: string };
   observedAt?: number;
 }): void {
-  if (!RESEARCH_EVIDENCE_TOOLS.has(command.toolName) || !researchResultSucceeded(command.result)) return;
+  if (
+    !RESEARCH_EVIDENCE_TOOLS.has(command.toolName)
+    || !researchResultSucceeded(command.result)
+    || command.verification?.ok !== true
+    || command.verification.code !== 'ok'
+  ) return;
   const context = currentJobExecutionContext();
   if (!context) return;
   const source = normalizedResearchSource(command.toolName, command.args);
@@ -532,6 +665,7 @@ export function recordDurableResearchEvidence(command: {
   keys.add(source.key);
   try {
     const observedAt = command.observedAt ?? Date.now();
+    const directSourceCapture = command.toolName === 'fetch_url' || command.toolName === 'fetch_page';
     context.engine.proof.recordEvidence({
       jobId: context.jobId,
       attemptId: context.attemptId,
@@ -541,9 +675,11 @@ export function recordDurableResearchEvidence(command: {
       source: `research.${command.toolName}`,
       producer: context.producer,
       observedAt,
-      freshUntil: observedAt + 300_000,
-      coverage: 'partial',
-      verificationResult: 'unknown',
+      // Interactive approval pauses must not make a source read stale before
+      // the same Attempt can prove its final cited response.
+      freshUntil: observedAt + RESEARCH_EVIDENCE_FRESHNESS_MS,
+      coverage: directSourceCapture ? 'full' : 'partial',
+      verificationResult: directSourceCapture ? 'verified' : 'unknown',
       payload: {
         source: source.source,
         toolCallId: command.toolCallId,
@@ -555,4 +691,125 @@ export function recordDurableResearchEvidence(command: {
   } catch {
     // Evidence projection must never turn a successful read into a failed Job.
   }
+}
+
+const RESEARCH_CITATION_CLAIM = 'research response cites at least two captured source URLs';
+const RESEARCH_EVIDENCE_FRESHNESS_MS = 30 * 60_000;
+
+function citedResearchUrls(content: string): string[] {
+  const values = content.match(/https?:\/\/[^\s\])}>,"']+/gu) ?? [];
+  const normalized = values
+    .map((value) => normalizeResearchUrl(value.replace(/[.;:!?]+$/u, '')))
+    .filter((value): value is string => value !== null);
+  return [...new Set(normalized.map((value) => value.toLowerCase()))];
+}
+
+function verifiedDurableResearchSources(
+  context: JobExecutionContext,
+  now: number,
+): Map<string, ReturnType<JobEngine['proof']['listEvidence']>[number]> {
+  const sources = new Map<string, ReturnType<JobEngine['proof']['listEvidence']>[number]>();
+  const evidence = context.engine.proof.listEvidence(context.jobId)
+    .slice()
+    .sort((a, b) => a.capturedAt - b.capturedAt || a.evidenceId.localeCompare(b.evidenceId));
+  for (const item of evidence) {
+    if (
+      item.attemptId !== context.attemptId
+      || item.generation !== context.generation
+      || item.verificationResult !== 'verified'
+      || item.coverage !== 'full'
+      || !/^research\.(?:fetch_url|fetch_page)$/.test(item.source)
+      || (item.freshUntil !== null && item.freshUntil < now)
+    ) continue;
+    const payload = item.payload && typeof item.payload === 'object'
+      ? item.payload as Record<string, unknown>
+      : null;
+    const source = typeof payload?.source === 'string' ? normalizeResearchUrl(payload.source) : null;
+    if (!source) continue;
+    const key = source.toLowerCase();
+    if (!sources.has(key)) sources.set(key, item);
+  }
+  return sources;
+}
+
+/** Add exact verifier-backed source links when the response names sources but omits their URLs. */
+export function appendDurableResearchSourceLinks(finalContent: string): string {
+  const context = currentJobExecutionContext();
+  if (!context || !finalContent.trim()) return finalContent;
+  const sources = verifiedDurableResearchSources(context, Date.now());
+  if (sources.size < 2) return finalContent;
+  const cited = new Set(citedResearchUrls(finalContent));
+  const matchedCount = [...sources.keys()].filter((source) => cited.has(source)).length;
+  if (matchedCount >= 2) return finalContent;
+  const missing = [...sources.entries()]
+    .filter(([source]) => !cited.has(source))
+    .map(([, evidence]) => normalizeResearchUrl((evidence.payload as { source: string }).source))
+    .filter((source): source is string => source !== null);
+  if (missing.length === 0) return finalContent;
+  return `${finalContent.trimEnd()}\n\n## Sources\n${missing.map((source) => `- ${source}`).join('\n')}`;
+}
+
+/**
+ * Verify the observable research contract against durable source captures.
+ * Assistant prose alone is never proof: every cited URL must resolve to a
+ * full, verifier-ok Evidence record from this exact Attempt.
+ */
+export function finalizeDurableResearchProof(finalContent: string): {
+  verified: boolean;
+  sourceCount: number;
+} {
+  const context = currentJobExecutionContext();
+  if (!context || !finalContent.trim()) return { verified: false, sourceCount: 0 };
+  const cited = new Set(citedResearchUrls(finalContent));
+  if (cited.size < 2) return { verified: false, sourceCount: 0 };
+  const now = Date.now();
+  const sources = verifiedDurableResearchSources(context, now);
+  const matched = new Map(
+    [...sources.entries()].filter(([source]) => cited.has(source)),
+  );
+  if (matched.size < 2) return { verified: false, sourceCount: matched.size };
+
+  const sourceEvidence = [...matched.values()].sort((a, b) => a.evidenceId.localeCompare(b.evidenceId));
+  const existing = context.engine.proof.listClaims(context.jobId).find((claim) =>
+    claim.category === 'contract'
+    && claim.required
+    && claim.statement === RESEARCH_CITATION_CLAIM
+    && claim.attemptId === context.attemptId
+    && claim.generation === context.generation);
+  if (existing?.state === 'verified') return { verified: true, sourceCount: matched.size };
+  const claim = existing ?? context.engine.proof.createClaim({
+    jobId: context.jobId,
+    attemptId: context.attemptId,
+    generation: context.generation,
+    category: 'contract',
+    statement: RESEARCH_CITATION_CLAIM,
+    required: true,
+  });
+  const sourceEvidenceIds = sourceEvidence.map((evidence) => evidence.evidenceId);
+  const citationEvidence = context.engine.proof.recordEvidence({
+    jobId: context.jobId,
+    attemptId: context.attemptId,
+    generation: context.generation,
+    fenceToken: context.fenceToken,
+    effectId: null,
+    source: 'research.citation_readback',
+    producer: context.producer,
+    observedAt: now,
+    freshUntil: null,
+    coverage: 'full',
+    verificationResult: 'verified',
+    payload: {
+      answerSha256: createHash('sha256').update(finalContent).digest('hex'),
+      sourceEvidenceIds,
+      sources: sourceEvidence.map((evidence) => (evidence.payload as { source: string }).source),
+    },
+  });
+  context.engine.proof.checkClaim({
+    claimId: claim.claimId,
+    attemptId: context.attemptId,
+    generation: context.generation,
+    evidenceIds: [...sourceEvidenceIds, citationEvidence.evidenceId],
+    state: 'verified',
+  });
+  return { verified: true, sourceCount: matched.size };
 }

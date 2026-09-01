@@ -87,13 +87,21 @@ const _backendHealth: { searxng: BackendHealth | null; brave: BackendHealth | nu
   brave:   null,
 }
 
-async function _isSearxNGAvailable(): Promise<boolean> {
+function requestSignal(timeoutMs: number, outer?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs)
+  if (!outer) return timeout
+  if (outer.aborted) return outer
+  return AbortSignal.any([outer, timeout])
+}
+
+async function _isSearxNGAvailable(signal?: AbortSignal): Promise<boolean> {
   const cached = _backendHealth.searxng
   if (cached && Date.now() - cached.checkedAt < BACKEND_TTL_MS) {
     return cached.available
   }
   // checkSearxNG already has a 3s timeout. Cache the result either way.
-  const available = await checkSearxNG()
+  const available = await checkSearxNG(signal)
+  if (signal?.aborted) return false
   _backendHealth.searxng = { available, checkedAt: Date.now() }
   return available
 }
@@ -122,12 +130,12 @@ const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 
 // ── METHOD 1: SearxNG ──────────────────────────────────────────
 
-async function searchViaSearxNG(query: string): Promise<SearchResponse | null> {
+async function searchViaSearxNG(query: string, signal?: AbortSignal): Promise<SearchResponse | null> {
   try {
     const url = `${SEARXNG_URL}/search?q=${encodeURIComponent(query)}&format=json&language=en&categories=general`
     const res = await fetch(url, {
       headers: { 'User-Agent': USER_AGENT, 'Accept': 'application/json' },
-      signal:  AbortSignal.timeout(SEARCH_TIMEOUT),
+      signal: requestSignal(SEARCH_TIMEOUT, signal),
     })
     if (!res.ok) {
       debugWarn(`[webSearch] SearxNG returned ${res.status}`)
@@ -154,7 +162,7 @@ async function searchViaSearxNG(query: string): Promise<SearchResponse | null> {
 
 // ── METHOD 2: Brave Search API ────────────────────────────────
 
-async function searchViaBrave(query: string): Promise<SearchResponse | null> {
+async function searchViaBrave(query: string, signal?: AbortSignal): Promise<SearchResponse | null> {
   if (!BRAVE_API_KEY) return null
   try {
     const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=10`
@@ -164,7 +172,7 @@ async function searchViaBrave(query: string): Promise<SearchResponse | null> {
         'Accept-Encoding':      'gzip',
         'X-Subscription-Token': BRAVE_API_KEY,
       },
-      signal: AbortSignal.timeout(SEARCH_TIMEOUT),
+      signal: requestSignal(SEARCH_TIMEOUT, signal),
     })
     if (!res.ok) {
       debugWarn(`[webSearch] Brave API returned ${res.status}`)
@@ -192,7 +200,7 @@ async function searchViaBrave(query: string): Promise<SearchResponse | null> {
 
 // ── METHOD 3: DuckDuckGo (Instant API + HTML scrape) ──────────
 
-async function searchViaDDG(query: string): Promise<SearchResponse | null> {
+async function searchViaDDG(query: string, signal?: AbortSignal): Promise<SearchResponse | null> {
   const parts: string[] = []
 
   // DDG Instant Answer API
@@ -200,7 +208,7 @@ async function searchViaDDG(query: string): Promise<SearchResponse | null> {
     const ddgUrl  = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`
     const ddgRes  = await fetch(ddgUrl, {
       headers: { 'User-Agent': USER_AGENT },
-      signal:  AbortSignal.timeout(8000),
+      signal: requestSignal(8000, signal),
     })
     const ddgData = await ddgRes.json() as any
     if (ddgData.Answer)       parts.push(`Answer: ${ddgData.Answer}`)
@@ -223,7 +231,7 @@ async function searchViaDDG(query: string): Promise<SearchResponse | null> {
       `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`,
       {
         headers: { 'User-Agent': USER_AGENT },
-        signal:  AbortSignal.timeout(10000),
+        signal: requestSignal(10000, signal),
       },
     )
     const html = await htmlRes.text()
@@ -250,7 +258,7 @@ async function searchViaDDG(query: string): Promise<SearchResponse | null> {
       try {
         const r = await fetch(url, {
           headers: { 'User-Agent': USER_AGENT },
-          signal:  AbortSignal.timeout(7000),
+          signal: requestSignal(7000, signal),
         })
         if (!r.ok) return null
         const text  = await r.text()
@@ -283,11 +291,11 @@ async function searchViaDDG(query: string): Promise<SearchResponse | null> {
 
 // ── METHOD 4: Wikipedia ───────────────────────────────────────
 
-async function searchViaWikipedia(query: string): Promise<SearchResponse | null> {
+async function searchViaWikipedia(query: string, signal?: AbortSignal): Promise<SearchResponse | null> {
   try {
     const searchRes  = await fetch(
       `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&srlimit=5&format=json&origin=*`,
-      { signal: AbortSignal.timeout(6000) },
+      { signal: requestSignal(6000, signal) },
     )
     const searchData = await searchRes.json() as any
     const hits       = searchData?.query?.search || []
@@ -296,7 +304,7 @@ async function searchViaWikipedia(query: string): Promise<SearchResponse | null>
     const topTitle   = hits[0].title
     const summaryRes = await fetch(
       `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(topTitle)}`,
-      { signal: AbortSignal.timeout(6000) },
+      { signal: requestSignal(6000, signal) },
     )
     if (!summaryRes.ok) return null
 
@@ -320,14 +328,14 @@ async function searchViaWikipedia(query: string): Promise<SearchResponse | null>
 
 // ── Weather shortcut ──────────────────────────────────────────
 
-async function fetchWeather(query: string): Promise<SearchResponse | null> {
+async function fetchWeather(query: string, signal?: AbortSignal): Promise<SearchResponse | null> {
   const city = query
     .replace(/what(?:'s| is) the weather/gi, '')
     .replace(/\b(weather|forecast|today|current|temperature|rain|snow|sunny|cloudy|humidity|wind|in|for)\b/gi, '')
     .replace(/\s+/g, ' ')
     .trim() || 'auto'
   try {
-    const wr   = await fetch(`https://wttr.in/${encodeURIComponent(city)}?format=j1`, { signal: AbortSignal.timeout(8000) })
+    const wr   = await fetch(`https://wttr.in/${encodeURIComponent(city)}?format=j1`, { signal: requestSignal(8000, signal) })
     const data = await wr.json() as any
     const cc   = data.current_condition?.[0]
     const area = data.nearest_area?.[0]
@@ -357,13 +365,14 @@ async function fetchWeather(query: string): Promise<SearchResponse | null> {
 
 // ── Main exported function ────────────────────────────────────
 
-export async function reliableWebSearch(query: string): Promise<{ success: boolean; output: string; error?: string }> {
+export async function reliableWebSearch(query: string, signal?: AbortSignal): Promise<{ success: boolean; output: string; error?: string }> {
   if (!query?.trim()) return { success: false, output: '', error: 'No query provided' }
+  if (signal?.aborted) return { success: false, output: '', error: 'Search cancelled' }
   debugLog(`[webSearch] Query: "${query}"`)
 
   // Weather shortcut
   if (/weather|temperature|forecast|rain|snow|sunny|cloudy|humidity|wind/i.test(query)) {
-    const weather = await fetchWeather(query)
+    const weather = await fetchWeather(query, signal)
     if (weather) return { success: true, output: weather.output }
   }
 
@@ -371,8 +380,8 @@ export async function reliableWebSearch(query: string): Promise<{ success: boole
   // timeout, cached 5min); Brave is a sync env-var read. Both writes
   // populate the cache for subsequent calls in the same session.
   // Method 1 — SearxNG (skip when probe says unavailable)
-  if (await _isSearxNGAvailable()) {
-    const searxResult = await searchViaSearxNG(query)
+  if (await _isSearxNGAvailable(signal)) {
+    const searxResult = await searchViaSearxNG(query, signal)
     if (searxResult) {
       debugLog(`[webSearch] ✓ SearxNG succeeded`)
       return { success: true, output: searxResult.output.slice(0, 10000) }
@@ -383,7 +392,7 @@ export async function reliableWebSearch(query: string): Promise<{ success: boole
 
   // Method 2 — Brave (skip when API key missing)
   if (_isBraveAvailable()) {
-    const braveResult = await searchViaBrave(query)
+    const braveResult = await searchViaBrave(query, signal)
     if (braveResult) {
       debugLog(`[webSearch] ✓ Brave succeeded`)
       return { success: true, output: braveResult.output.slice(0, 10000) }
@@ -393,14 +402,16 @@ export async function reliableWebSearch(query: string): Promise<{ success: boole
   }
 
   // Method 3 — DDG
-  const ddgResult = await searchViaDDG(query)
+  if (signal?.aborted) return { success: false, output: '', error: 'Search cancelled' }
+  const ddgResult = await searchViaDDG(query, signal)
   if (ddgResult) {
     debugLog(`[webSearch] ✓ DDG succeeded`)
     return { success: true, output: ddgResult.output.slice(0, 10000) }
   }
 
   // Method 4 — Wikipedia
-  const wikiResult = await searchViaWikipedia(query)
+  if (signal?.aborted) return { success: false, output: '', error: 'Search cancelled' }
+  const wikiResult = await searchViaWikipedia(query, signal)
   if (wikiResult) {
     debugLog(`[webSearch] ✓ Wikipedia fallback`)
     return { success: true, output: wikiResult.output }
@@ -414,52 +425,149 @@ export async function reliableWebSearch(query: string): Promise<{ success: boole
   }
 }
 
-// ── Deep research — 3-pass synthesis ─────────────────────────
+// ── Deep research — bounded multi-pass synthesis ─────────────
 
-export async function deepResearch(topic: string): Promise<{ success: boolean; output: string; error?: string }> {
-  if (!topic?.trim()) return { success: false, output: '', error: 'No topic provided' }
-  debugLog(`[deepResearch] Topic: "${topic}"`)
+export type ResearchPhase =
+  | 'planning' | 'searching_broad' | 'searching_recent'
+  | 'comparing_sources' | 'preparing_result'
+  | 'completed' | 'partial' | 'cancelled' | 'failed'
 
+export interface BoundedResearchResult {
+  success: boolean
+  output: string
+  error?: string
+  status: 'completed' | 'partial' | 'cancelled' | 'failed'
+  found: number
+  sources: string[]
+  failed: string[]
+  uncertain: string[]
+  next: string | null
+  phases: ResearchPhase[]
+}
+
+export interface BoundedResearchOptions {
+  /** Reviewed wall-clock ceiling for the whole operation. */
+  budgetMs?: number
+  /** Bounded research passes; the current reviewed deep mode uses three. */
+  maxPasses?: number
+  signal?: AbortSignal
+  search?: (query: string, signal: AbortSignal) => Promise<{ success: boolean; output: string; error?: string }>
+  onPhase?: (phase: ResearchPhase) => void
+}
+
+function researchSources(text: string): string[] {
+  const matches = text.match(/https?:\/\/[^\s\])}>,"']+/gu) ?? []
+  return matches.map((value) => value.replace(/[.;:!?]+$/u, ''))
+}
+
+export async function runBoundedResearch(
+  topic: string,
+  options: BoundedResearchOptions = {},
+): Promise<BoundedResearchResult> {
+  const normalizedTopic = topic?.trim()
+  const phases: ResearchPhase[] = []
+  const emit = (phase: ResearchPhase): void => {
+    phases.push(phase)
+    options.onPhase?.(phase)
+  }
+  if (!normalizedTopic) {
+    emit('failed')
+    return {
+      success: false, output: '', error: 'No topic provided', status: 'failed',
+      found: 0, sources: [], failed: ['No topic provided'], uncertain: [], next: null, phases,
+    }
+  }
+
+  const budgetMs = Math.max(1, options.budgetMs ?? 60_000)
+  const maxPasses = Math.max(1, Math.min(3, Math.floor(options.maxPasses ?? 3)))
+  const controller = new AbortController()
+  const abortFromOuter = (): void => controller.abort(options.signal?.reason)
+  if (options.signal?.aborted) abortFromOuter()
+  else options.signal?.addEventListener('abort', abortFromOuter, { once: true })
+  const deadline = setTimeout(() => controller.abort(new Error('research_budget_exhausted')), budgetMs)
+  deadline.unref?.()
+
+  const search = options.search ?? ((query: string, signal: AbortSignal) => reliableWebSearch(query, signal))
+  const year = new Date().getFullYear()
+  const plan: Array<{ phase: ResearchPhase; title: string; query: string }> = [
+    { phase: 'searching_broad', title: 'BROAD RESEARCH', query: normalizedTopic },
+    { phase: 'searching_recent', title: `LATEST (${year})`, query: `${normalizedTopic} ${year} latest` },
+    { phase: 'comparing_sources', title: 'COMPARISON & REVIEWS', query: `best top ${normalizedTopic} comparison review` },
+  ]
   const parts: string[] = []
+  const failed: string[] = []
+  const sources = new Set<string>()
 
-  // Pass 1: Broad
-  debugLog(`[deepResearch] Pass 1: broad`)
-  const broad = await reliableWebSearch(topic)
-  if (broad.success && broad.output.length > 100) {
-    parts.push(`=== PASS 1: BROAD RESEARCH ===\n${broad.output}`)
+  try {
+    emit('planning')
+    for (const pass of plan.slice(0, maxPasses)) {
+      if (controller.signal.aborted) break
+      emit(pass.phase)
+      debugLog(`[deepResearch] ${pass.phase}: "${pass.query}"`)
+      let result: { success: boolean; output: string; error?: string }
+      try {
+        const aborted = new Promise<{ success: false; output: ''; error: string }>((resolve) => {
+          controller.signal.addEventListener('abort', () => resolve({
+            success: false, output: '', error: options.signal?.aborted ? 'Research cancelled' : 'Research budget exhausted',
+          }), { once: true })
+        })
+        result = await Promise.race([search(pass.query, controller.signal), aborted])
+      } catch (error) {
+        result = { success: false, output: '', error: error instanceof Error ? error.message : String(error) }
+      }
+      if (result.success && result.output.length > 100) {
+        parts.push(`=== ${pass.title} ===\n${result.output}`)
+        for (const source of researchSources(result.output)) sources.add(source)
+      } else {
+        failed.push(`${pass.title}: ${result.error ?? 'insufficient results'}`)
+      }
+    }
+
+    const cancelled = Boolean(options.signal?.aborted)
+    const exhausted = controller.signal.aborted && !cancelled
+    if (parts.length === 0) {
+      const status = cancelled ? 'cancelled' : 'failed'
+      emit(status)
+      return {
+        success: false, output: '',
+        error: cancelled ? 'Research cancelled' : exhausted ? 'Research budget exhausted before a usable result' : `No research results found for: ${normalizedTopic}`,
+        status, found: 0, sources: [...sources], failed, uncertain: failed.slice(),
+        next: cancelled ? null : 'Try a narrower query or continue with another bounded pass.', phases,
+      }
+    }
+
+    emit('preparing_result')
+    const partial = exhausted || cancelled || parts.length < maxPasses
+    const status = partial ? 'partial' : 'completed'
+    emit(status)
+    const output = parts.join('\n\n').slice(0, 15_000)
+    debugLog(`[deepResearch] ${status}: ${output.length} chars across ${parts.length} passes`)
+    return {
+      success: true, output, status, found: parts.length, sources: [...sources],
+      failed, uncertain: failed.slice(),
+      next: partial ? 'Continue with another bounded pass to cover the remaining uncertainty.' : null,
+      phases,
+    }
+  } finally {
+    clearTimeout(deadline)
+    options.signal?.removeEventListener('abort', abortFromOuter)
   }
+}
 
-  // Pass 2: Latest 2026
-  const latestQ = `${topic} 2026 latest`
-  debugLog(`[deepResearch] Pass 2: latest — "${latestQ}"`)
-  const latest = await reliableWebSearch(latestQ)
-  if (latest.success && latest.output.length > 100) {
-    parts.push(`=== PASS 2: LATEST (2026) ===\n${latest.output}`)
-  }
-
-  // Pass 3: Comparison / review
-  const compareQ = `best top ${topic} comparison review`
-  debugLog(`[deepResearch] Pass 3: comparison — "${compareQ}"`)
-  const compare = await reliableWebSearch(compareQ)
-  if (compare.success && compare.output.length > 100) {
-    parts.push(`=== PASS 3: COMPARISON & REVIEWS ===\n${compare.output}`)
-  }
-
-  if (parts.length === 0) {
-    return { success: false, output: '', error: `No research results found for: ${topic}` }
-  }
-
-  const combined = parts.join('\n\n')
-  debugLog(`[deepResearch] Complete: ${combined.length} chars across ${parts.length} passes`)
-  return { success: true, output: combined.slice(0, 15000) }
+export async function deepResearch(
+  topic: string,
+  options: Pick<BoundedResearchOptions, 'signal' | 'onPhase'> = {},
+): Promise<BoundedResearchResult> {
+  debugLog(`[deepResearch] Topic: "${topic}"`)
+  return runBoundedResearch(topic, { ...options, budgetMs: 60_000, maxPasses: 3 })
 }
 
 // ── SearxNG health check ──────────────────────────────────────
 
-export async function checkSearxNG(): Promise<boolean> {
+export async function checkSearxNG(signal?: AbortSignal): Promise<boolean> {
   try {
     const res = await fetch(`${SEARXNG_URL}/search?q=test&format=json`, {
-      signal: AbortSignal.timeout(3000),
+      signal: requestSignal(3000, signal),
     })
     return res.ok
   } catch {

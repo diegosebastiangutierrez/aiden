@@ -19,6 +19,7 @@
 
 import type { ToolHandler } from '../../../core/v4/toolRegistry';
 import { pwScreenshot } from '../../../core/playwrightBridge';
+import { currentBrowserExecutionScope } from '../../../core/v4/browser/browserExecutionScope';
 import { withBrowserState } from './_observer';
 
 const _browserScreenshotTool: ToolHandler = {
@@ -44,7 +45,16 @@ const _browserScreenshotTool: ToolHandler = {
   },
   async execute() {
     const r = await pwScreenshot();
-    if (r.ok) return { success: true, path: r.path };
+    if (r.ok) {
+      const scope = currentBrowserExecutionScope();
+      const session = scope?.authority.getSession(scope.session.browserSessionId);
+      return {
+        success: true,
+        path: r.path,
+        ...(scope ? { browserSessionId: scope.session.browserSessionId } : {}),
+        ...(session?.controlledTabId ? { tabId: session.controlledTabId } : {}),
+      };
+    }
     return { success: false, error: r.error };
   },
 };

@@ -181,6 +181,7 @@ type DefinitionRow = {
   automation_id: string; name: string; enabled: number; current_revision_id: string;
   owner_id: string; workspace_id: string | null; commercial_context: string;
   created_by: string; created_at: number; updated_at: number;
+  removed_at: number | null; removed_by: string | null;
 };
 type RevisionRow = {
   revision_id: string; automation_id: string; revision_number: number; spec_json: string;
@@ -194,6 +195,7 @@ function definition(row: DefinitionRow): AutomationDefinitionRecord {
     workspaceId: row.workspace_id, commercialContext: row.commercial_context,
     createdBy: row.created_by,
     createdAt: row.created_at, updatedAt: row.updated_at,
+    removedAt: row.removed_at, removedBy: row.removed_by,
   };
 }
 
@@ -218,6 +220,7 @@ export interface AutomationAuthority {
   get(automationId: string): AutomationDefinitionRecord | null;
   getRevision(revisionId: string): AutomationRevisionRecord | null;
   setEnabled(automationId: string, enabled: boolean, now?: number): AutomationDefinitionRecord;
+  remove(automationId: string, options: { removedBy: string; now?: number }): AutomationDefinitionRecord;
 }
 
 export function createAutomationAuthority(options: { db: Database.Database }): AutomationAuthority {
@@ -308,6 +311,7 @@ export function createAutomationAuthority(options: { db: Database.Database }): A
       validateSpec(spec);
       const owner = get(automationId);
       if (!owner) throw new Error(`Automation not found: ${automationId}`);
+      if (owner.removedAt !== null) throw new Error(`Automation was removed: ${automationId}`);
       validateCredentialRefs(spec.credentialRefs, owner.ownerId, owner.workspaceId);
       const now = options2.now ?? Date.now();
       const revisionId = id('automation_revision');
@@ -333,9 +337,31 @@ export function createAutomationAuthority(options: { db: Database.Database }): A
     getRevision,
     setEnabled(automationId, enabled, now = Date.now()) {
       const result = db.prepare(
-        'UPDATE automation_definitions SET enabled = ?, updated_at = ? WHERE automation_id = ?',
+        'UPDATE automation_definitions SET enabled = ?, updated_at = ? WHERE automation_id = ? AND removed_at IS NULL',
       ).run(enabled ? 1 : 0, now, automationId);
-      if (result.changes !== 1) throw new Error(`Automation not found: ${automationId}`);
+      if (result.changes !== 1) {
+        const existing = get(automationId);
+        if (existing && existing.removedAt !== null) throw new Error(`Automation was removed: ${automationId}`);
+        throw new Error(`Automation not found: ${automationId}`);
+      }
+      return get(automationId)!;
+    },
+    remove(automationId, options2) {
+      const existing = get(automationId);
+      if (!existing) throw new Error(`Automation not found: ${automationId}`);
+      if (existing.removedAt !== null) return existing;
+      if (!options2.removedBy.trim()) throw new Error('Automation removal actor is required');
+      const now = options2.now ?? Date.now();
+      db.transaction(() => {
+        db.prepare(
+          `UPDATE automation_definitions
+              SET enabled = 0,removed_at = ?,removed_by = ?,updated_at = ?
+            WHERE automation_id = ? AND removed_at IS NULL`,
+        ).run(now, options2.removedBy.trim(), now, automationId);
+        db.prepare(
+          'UPDATE automation_trigger_bindings SET enabled = 0,updated_at = ? WHERE automation_id = ? AND enabled = 1',
+        ).run(now, automationId);
+      }).immediate();
       return get(automationId)!;
     },
   };

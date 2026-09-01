@@ -465,6 +465,55 @@ export class SessionStore {
     return rows.map(rowToMessage);
   }
 
+  /**
+   * Replace the non-user projection for one active turn atomically.
+   *
+   * The original user message is the durable turn anchor. Checkpoints may
+   * replace only the assistant/tool/system tail attached to that anchor; they
+   * cannot rewrite an older turn or interleave behind a newer user message.
+   */
+  replaceTurnMessages(
+    sessionId: string,
+    turnNumber: number,
+    messages: readonly AppendMessageInput[],
+  ): MessageRecord[] {
+    if (!Number.isInteger(turnNumber)) throw new Error('turn number must be an integer');
+    const first = messages[0];
+    if (!first || first.role !== 'user') {
+      throw new Error('turn checkpoint must begin with its durable user message');
+    }
+    if (messages.slice(1).some((message) => message.role === 'user')) {
+      throw new Error('turn checkpoint cannot contain a second user message');
+    }
+
+    return this.db.transaction(() => {
+      if (!this.getSession(sessionId)) throw new Error('session not found');
+      const latestUser = this.db.prepare(
+        `SELECT * FROM messages
+          WHERE session_id = ? AND role = 'user'
+          ORDER BY id DESC LIMIT 1`,
+      ).get(sessionId) as MessageRow | undefined;
+      if (latestUser && latestUser.turn_number !== turnNumber) {
+        throw new Error('turn checkpoint is not the latest durable user turn');
+      }
+      if (latestUser && latestUser.content !== first.content) {
+        throw new Error('turn checkpoint user message does not match durable history');
+      }
+      if (!latestUser) {
+        this.appendMessage(sessionId, { ...first, turnNumber });
+      }
+
+      this.db.prepare(
+        `DELETE FROM messages
+          WHERE session_id = ? AND turn_number = ? AND role <> 'user'`,
+      ).run(sessionId, turnNumber);
+      for (const message of messages.slice(1)) {
+        this.appendMessage(sessionId, { ...message, turnNumber });
+      }
+      return this.getMessages(sessionId).filter((message) => message.turnNumber === turnNumber);
+    }).immediate();
+  }
+
   setActiveState(sessionId: string, state: ActiveSessionState): void {
     this.db.prepare(
       `INSERT INTO session_active_state (

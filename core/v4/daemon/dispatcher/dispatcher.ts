@@ -472,9 +472,13 @@ export function createDispatcher(opts: CreateDispatcherOptions): Dispatcher {
           goal: message,
           triggerEventId: event.id,
         }) : undefined);
+      const executionSessionId = admission && opts.jobEngine
+        ? opts.jobEngine.getJob(admission.jobId)?.sessionId ?? sessionId
+        : sessionId;
+      inflightRow.sessionId = executionSessionId;
       const executionMessage = admittedOccurrence?.goal ?? message;
       const input: DaemonAgentInput = {
-        sessionId,
+        sessionId:        executionSessionId,
         instanceId:     opts.instanceId,
         triggerEventId: event.id,
         triggerContext: context,

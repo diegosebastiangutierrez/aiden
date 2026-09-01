@@ -38,9 +38,21 @@ export const deepResearchTool: ToolHandler = {
   mutates: false,
   toolset: 'web',
   riskTier: 'safe',   // v4.4 Phase 1
-  async execute(args) {
+  async execute(args, context) {
     const topic = String(args.topic ?? '').trim();
     if (!topic) return { success: false, error: 'No topic provided' };
-    return deepResearch(topic);
+    const labels = {
+      planning: 'Planning research',
+      searching_broad: 'Searching broadly',
+      searching_recent: 'Checking recent sources',
+      comparing_sources: 'Comparing sources',
+      preparing_result: 'Preparing result',
+    } as const;
+    return deepResearch(topic, {
+      signal: context.signal,
+      onPhase: (phase) => {
+        if (phase in labels) context.reportActivity?.(labels[phase as keyof typeof labels]);
+      },
+    });
   },
 };

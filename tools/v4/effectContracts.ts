@@ -124,6 +124,13 @@ const BROWSER_ACTION = contract({
   approvalRequirement: 'none', sensitiveFields: ['text', 'value', 'values', 'files'],
   redactionRules: ['digest_arguments', 'omit_sensitive_values'], targetFields: ['selector', 'ref', 'url'],
 });
+const BROWSER_TAB_ACTION = contract({
+  classification: 'reconcilable_mutation', kind: 'browser.action',
+  retrySafety: 'reconcile_before_retry', idempotencySupported: false,
+  reconciliationSupported: true, verificationSupported: true,
+  approvalRequirement: 'none', sensitiveFields: [],
+  redactionRules: ['digest_arguments'], targetFields: ['action', 'tab_id', 'url'],
+});
 const INTERNAL_STATE = contract({
   classification: 'idempotent_mutation', kind: 'aiden.state',
   retrySafety: 'same_idempotency_key', idempotencySupported: true,
@@ -169,6 +176,7 @@ const CONTRACTS: Readonly<Record<string, ToolEffectContract>> = Object.freeze({
   browser_upload: BROWSER_ACTION,
   browser_control: BROWSER_ACTION,
   browser_download: ARTIFACT_WRITE,
+  browser_tab: BROWSER_TAB_ACTION,
   memory_add: INTERNAL_STATE,
   memory_replace: INTERNAL_STATE,
   memory_remove: INTERNAL_STATE,

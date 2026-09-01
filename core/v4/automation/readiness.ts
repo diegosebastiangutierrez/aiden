@@ -8,6 +8,7 @@ import type { EditionAuthority } from '../commercial/edition';
 
 export interface AutomationReadinessSnapshot {
   ready: boolean;
+  schedulerReady: boolean;
   entitled: boolean;
   detail: string;
   tablesReady: boolean;
@@ -22,6 +23,7 @@ export interface AutomationReadinessSnapshot {
 export function snapshotAutomationReadiness(options: {
   db: Database.Database;
   entitled: boolean;
+  schedulerReady?: boolean;
 }): AutomationReadinessSnapshot {
   const required = ['automation_definitions', 'automation_revisions', 'automation_occurrences', 'automation_trigger_bindings'];
   const existing = options.db.prepare(
@@ -73,14 +75,16 @@ export function snapshotAutomationReadiness(options: {
   let timezoneReady = true;
   try { new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata' }).format(new Date()); }
   catch { timezoneReady = false; }
-  const ready = options.entitled && tablesReady && timezoneReady && credentialsAttention === 0;
+  const schedulerReady = options.schedulerReady === true;
+  const ready = options.entitled && tablesReady && timezoneReady && credentialsAttention === 0 && schedulerReady;
   return {
-    ready, entitled: options.entitled, tablesReady, schedulerBindings, enabledAutomations,
+    ready, schedulerReady, entitled: options.entitled, tablesReady, schedulerBindings, enabledAutomations,
     credentialsReady, credentialsAttention, timezoneReady, occurrencesAttention,
     detail: !options.entitled ? 'Reliable Automations require Aiden Pro.'
       : !tablesReady ? 'Automation database migration is incomplete.'
       : !timezoneReady ? 'IANA timezone support is unavailable.'
       : credentialsAttention > 0 ? `${credentialsAttention} automation credential reference(s) require reconnection.`
+      : !schedulerReady ? 'Automation execution host is unavailable.'
       : `${enabledAutomations} enabled automation(s) · ${schedulerBindings} active trigger binding(s) · ${occurrencesAttention} occurrence(s) need attention.`,
   };
 }
@@ -88,12 +92,14 @@ export function snapshotAutomationReadiness(options: {
 export function createAutomationReadinessAuthority(options: {
   db: Database.Database;
   edition: EditionAuthority;
+  schedulerReady?: () => boolean;
 }): { snapshot(): AutomationReadinessSnapshot } {
   return {
     snapshot() {
       return snapshotAutomationReadiness({
         db: options.db,
         entitled: options.edition.can('automation.create'),
+        schedulerReady: options.schedulerReady?.() === true,
       });
     },
   };

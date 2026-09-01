@@ -87,6 +87,7 @@ import {
   type TraceEntryLike,
 } from '../artifactStore';
 import type { JobEngine } from '../jobEngine';
+import { bindResumableDurableToolCalls } from '../jobExecutionContext';
 import { createJobControlAuthority, type JobControlAuthority } from '../jobControlAuthority';
 import {
   createDurableJobLifecycleScope,
@@ -213,6 +214,9 @@ export interface CreateRealAgentRunnerOptions {
   executionSignal?: AbortSignal;
   /** Optional owner that drains canonical lifecycle work before durable stores close. */
   lifecycleScope?: DurableJobLifecycleScope;
+  /** A restartable entry point detaches active Attempts during host shutdown so
+   * the same generation/fence can be reclaimed instead of changing user intent. */
+  detachJobsOnDispose?: boolean;
   /** Entry-point adapter for an exact interactive approval surface. */
   approvalCallbacksFactory?: (input: {
     policy: DaemonApprovalPolicy;
@@ -420,7 +424,15 @@ export function createRealAgentRunner(
       }) ?? fallbackApprovalCallbacks;
 
       // ── 6: initial history ────────────────────────────────────────────
-      const history: Message[] = loadDurableHistory(opts.sessionStore, input);
+      if (opts.sessionStore) {
+        const title = input.initialMessage.trim().split(/\r?\n/, 1)[0]?.slice(0, 120) ?? '';
+        opts.sessionStore.ensureSession(input.sessionId, title ? { title } : {});
+      }
+      const durableHistory = loadDurableHistory(opts.sessionStore, input);
+      const history: Message[] = durableHistory.messages;
+      if (durableHistory.resumePendingToolCallIds.length > 0 && durableJobId) {
+        bindResumableDurableToolCalls(durableHistory.resumePendingToolCallIds);
+      }
 
       // ── 7: build agent via injected factory ───────────────────────────
       let agent: AidenAgent;
@@ -496,6 +508,10 @@ export function createRealAgentRunner(
           runId,
           entryPoint: 'daemon',
           signal: invocationSignal,
+          resumePendingToolCallIds: durableHistory.resumePendingToolCallIds,
+          onConversationCheckpoint: (messages) => {
+            persistDurableConversationCheckpoint(opts.sessionStore, input, messages);
+          },
           waitForResumeIfPaused: async () => {
             if (!jobControls || !durableJobId) return;
             const paused = jobControls.commands.applyPendingAtBoundary({ jobId: durableJobId, now: now() });
@@ -764,24 +780,77 @@ function messageFromDurableRecord(record: MessageRecord): Message {
   return { role: 'user', content: record.content };
 }
 
-function loadDurableHistory(store: SessionStore | undefined, input: DaemonAgentInput): Message[] {
-  if (!store) return buildInitialHistory(input);
-  try {
-    const records = store.getMessages(input.sessionId);
-    const history = records.map(messageFromDurableRecord);
-    const currentTurnRecorded = records.some((record) =>
-      record.role === 'user' && record.turnNumber === input.triggerEventId,
-    );
-    if (!currentTurnRecorded) {
-      const last = history[history.length - 1];
-      if (last?.role !== 'user' || last.content !== input.initialMessage) {
-        history.push({ role: 'user', content: input.initialMessage });
-      }
+function loadDurableHistory(
+  store: SessionStore | undefined,
+  input: DaemonAgentInput,
+): { messages: Message[]; resumePendingToolCallIds: string[] } {
+  if (!store) return { messages: buildInitialHistory(input), resumePendingToolCallIds: [] };
+  const records = store.getMessages(input.sessionId);
+  const history = records.map(messageFromDurableRecord);
+  let currentTurnStart = records.findIndex((record) =>
+    record.role === 'user' && record.turnNumber === input.triggerEventId,
+  );
+  if (currentTurnStart < 0) {
+    const last = history[history.length - 1];
+    if (last?.role !== 'user' || last.content !== input.initialMessage) {
+      history.push({ role: 'user', content: input.initialMessage });
     }
-    return history.length > 0 ? history : buildInitialHistory(input);
-  } catch {
-    return buildInitialHistory(input);
+    currentTurnStart = history.length - 1;
   }
+  const messages = history.length > 0 ? history : buildInitialHistory(input);
+  return {
+    messages,
+    resumePendingToolCallIds: unansweredTailToolCallIds(messages.slice(currentTurnStart)),
+  };
+}
+
+function unansweredTailToolCallIds(turnMessages: readonly Message[]): string[] {
+  const answered = new Set(turnMessages.flatMap((message) =>
+    message.role === 'tool' && message.toolCallId ? [message.toolCallId] : [],
+  ));
+  let pendingBatch: { index: number; ids: string[] } | null = null;
+  for (let index = 0; index < turnMessages.length; index += 1) {
+    const message = turnMessages[index];
+    if (message.role !== 'assistant' || !message.toolCalls?.length) continue;
+    const ids = message.toolCalls.map((call) => call.id).filter((id) => !answered.has(id));
+    if (ids.length > 0) {
+      if (pendingBatch) throw new Error('Durable turn contains more than one unanswered tool-call batch');
+      pendingBatch = { index, ids };
+    }
+  }
+  if (!pendingBatch) return [];
+  if (turnMessages.slice(pendingBatch.index + 1).some((message) => message.role === 'assistant' || message.role === 'user')) {
+    throw new Error('Durable unanswered tool-call batch is not the active turn tail');
+  }
+  return pendingBatch.ids;
+}
+
+function persistDurableConversationCheckpoint(
+  store: SessionStore | undefined,
+  input: DaemonAgentInput,
+  messages: readonly Message[],
+): void {
+  if (!store) return;
+  if (!store.getSession(input.sessionId)) throw new Error('Durable checkpoint session not found');
+  let userIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role === 'user' && message.content === input.initialMessage) {
+      userIndex = index;
+      break;
+    }
+  }
+  if (userIndex < 0) throw new Error('Durable checkpoint user anchor not found');
+  store.replaceTurnMessages(
+    input.sessionId,
+    input.triggerEventId,
+    messages.slice(userIndex).map((message) => ({
+      role: message.role,
+      content: message.content,
+      ...('toolCalls' in message && message.toolCalls ? { toolCalls: message.toolCalls } : {}),
+      ...(message.role === 'tool' ? { toolCallId: message.toolCallId } : {}),
+    })),
+  );
 }
 
 function durableConversationError(error: string): string {
@@ -949,8 +1018,9 @@ async function invokeDurableDaemon(
       leaseTtlMs: 60_000,
       admission,
       controlAuthority: jobControls,
-      ...(input.automationScriptSpec ? {
+      ...(opts.detachJobsOnDispose || input.automationScriptSpec ? {
         detachOnDispose: (handle: DurableJobHandle) => {
+          if (opts.detachJobsOnDispose) return true;
           if (!automationApprovalContinuations.hasPendingForAttempt(
             handle.jobId,
             handle.attemptId,
@@ -1176,9 +1246,10 @@ function registerArtifacts(
         action: artifact.action,
         sessionId,
         runId,
-        taskId,
-        bytes: artifact.bytes,
-      });
+         taskId,
+         bytes: artifact.bytes,
+         preview: artifact.preview,
+       });
       if (taskId && opts.taskStore) opts.taskStore.appendArtifactId(taskId, artifactId);
     } catch { /* artifact projection must never rewrite durable Job truth */ }
   }

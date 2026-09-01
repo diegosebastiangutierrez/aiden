@@ -345,20 +345,26 @@ export function createActionAuthority(options: { db: Db; jobEngine: JobEngine })
       now,
     );
   };
-  const appendApprovalEvent = (record: ApprovalRecord, type: string, producer: string): void => {
+  const appendApprovalEvent = (
+    record: ApprovalRecord,
+    type: string,
+    producer: string,
+    idempotencySuffix?: string,
+  ): void => {
     const result = jobEngine.appendJobEvent({
       jobId: record.jobId,
       attemptId: record.attemptId,
       generation: record.generation,
       type,
       producer,
-      idempotencyKey: `approval:${record.approvalId}:${type}`,
+      idempotencyKey: `approval:${record.approvalId}:${type}${idempotencySuffix ? `:${idempotencySuffix}` : ''}`,
       payload: {
         approvalId: record.approvalId,
         toolCallId: record.toolCallId,
         effectId: record.effectId,
         actionDigest: record.actionDigest,
         policySnapshotId: record.policySnapshotId,
+        fenceDigest: record.fenceDigest,
         state: record.state,
       },
     });
@@ -409,15 +415,28 @@ export function createActionAuthority(options: { db: Db; jobEngine: JobEngine })
           command.toolCallId,
         ) as ApprovalRow | undefined;
         if (existing) {
-          const record = mapApproval(existing);
+          let record = mapApproval(existing);
+          const requestedFenceDigest = sha(command.fenceToken);
           if (
             record.effectId !== (command.effectId ?? null)
             || record.toolName !== command.toolName
             || record.riskTier !== command.riskTier
             || record.actionDigest !== command.normalized.actionDigest
             || record.policySnapshotId !== command.normalized.policySnapshot.policySnapshotId
-            || record.fenceDigest !== sha(command.fenceToken)
           ) throw new Error('Existing durable approval identity does not match the requested action');
+          if (record.fenceDigest !== requestedFenceDigest) {
+            if (!['created', 'displayed', 'approved'].includes(record.state)) {
+              throw new Error('Existing durable approval identity does not match the requested action');
+            }
+            const changed = db.prepare(
+              `UPDATE approvals SET fence_token_digest = ?
+                WHERE approval_id = ? AND fence_token_digest = ?
+                  AND state IN ('created','displayed','approved')`,
+            ).run(requestedFenceDigest, record.approvalId, record.fenceDigest);
+            if (changed.changes !== 1) throw new Error('Approval fence rebind lost its authority race');
+            record = get(record.approvalId)!;
+            appendApprovalEvent(record, 'approval.rebound', 'approval', requestedFenceDigest);
+          }
           return record;
         }
         const sequence = (db.prepare(

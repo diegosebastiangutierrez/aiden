@@ -126,6 +126,8 @@ export interface CreateArtifactStoreOptions {
   contentRoot?: string;
   /** Base for relative tool-result paths. */
   sourceRoot?: string;
+  /** Additional Aiden-owned roots whose verified output bytes may be archived. */
+  trustedSourceRoots?: string[];
   maxContentBytes?: number;
 }
 
@@ -135,6 +137,7 @@ export interface ExtractedArtifact {
   kind:   ArtifactKind;
   action: ArtifactAction;
   bytes:  number | null;
+  preview?: string | null;
 }
 
 /**
@@ -151,6 +154,7 @@ const FILE_TOOLS: Readonly<Record<string, { kind: ArtifactKind; action: Artifact
     file_copy:    { kind: 'file',  action: 'copy',      pathField: 'to'   },
     skill_manage: { kind: 'skill', action: 'create',    pathField: 'path' },
     browser_download: { kind: 'file', action: 'create', pathField: 'path' },
+    browser_screenshot: { kind: 'file', action: 'create', pathField: 'path' },
   });
 
 /**
@@ -169,7 +173,22 @@ export function extractFileArtifact(toolName: string, result: unknown): Extracte
   const p = r[spec.pathField];
   if (typeof p !== 'string' || p.trim().length === 0) return null;
   const bytes = typeof r.bytes === 'number' ? r.bytes : null;
-  return { path: p, kind: spec.kind, action: spec.action, bytes };
+  let preview: string | null = null;
+  if (toolName === 'browser_screenshot') {
+    const browserState = r.browserState && typeof r.browserState === 'object'
+      ? r.browserState as Record<string, unknown>
+      : null;
+    const postState = browserState?.post_state && typeof browserState.post_state === 'object'
+      ? browserState.post_state as Record<string, unknown>
+      : null;
+    const title = typeof postState?.title === 'string' ? postState.title.trim() : '';
+    const url = typeof postState?.normalized_url === 'string' ? postState.normalized_url.trim() : '';
+    preview = title ? `Screenshot: ${title}` : url ? `Screenshot: ${url}` : 'Browser screenshot';
+  }
+  return {
+    path: p, kind: spec.kind, action: spec.action, bytes,
+    ...(preview ? { preview } : {}),
+  };
 }
 
 /** Minimal per-turn trace-entry shape the capture gate inspects. */
@@ -215,23 +234,33 @@ export function createArtifactStore(opts: CreateArtifactStoreOptions): ArtifactS
   const db = opts.db;
   const contentRoot = path.resolve(opts.contentRoot ?? runtimeArtifactDirectory('files'));
   const sourceRoot = path.resolve(opts.sourceRoot ?? process.cwd());
+  const trustedSourceRoots = (opts.trustedSourceRoots ?? [
+    runtimeArtifactDirectory('screenshots'),
+    runtimeArtifactDirectory('downloads'),
+  ]).map((root) => path.resolve(root));
   const maxContentBytes = Math.max(1, opts.maxContentBytes ?? DEFAULT_CONTENT_LIMIT);
 
-  const archiveContent = (id: string, sourcePath: string): void => {
+  const archiveContent = (id: string, sourcePath: string): number | null => {
     try {
-      const candidate = path.resolve(sourceRoot, sourcePath);
+      const candidate = path.isAbsolute(sourcePath)
+        ? path.resolve(sourcePath)
+        : path.resolve(sourceRoot, sourcePath);
       const stat = fs.lstatSync(candidate);
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > maxContentBytes) return;
-      const realSourceRoot = fs.realpathSync(sourceRoot);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > maxContentBytes) return null;
       const realCandidate = fs.realpathSync(candidate);
-      if (!isInside(realSourceRoot, realCandidate)) return;
+      const allowedRoots = [sourceRoot, ...trustedSourceRoots].flatMap((root) => {
+        try { return [fs.realpathSync(root)]; } catch { return []; }
+      });
+      if (!allowedRoots.some((root) => isInside(root, realCandidate))) return null;
       const directory = path.join(contentRoot, id);
       const destination = path.join(directory, 'content');
       fs.mkdirSync(directory, { recursive: true });
       fs.copyFileSync(realCandidate, destination, fs.constants.COPYFILE_EXCL);
+      return stat.size;
     } catch {
       // Artifact metadata remains useful when a bounded durable copy cannot be
       // captured. Older records continue through the safe workspace fallback.
+      return null;
     }
   };
 
@@ -265,7 +294,12 @@ export function createArtifactStore(opts: CreateArtifactStoreOptions): ArtifactS
     create({ path, kind, tool, action, sessionId, runId, taskId, bytes, preview }) {
       const id = newArtifactId();
       insertArtifact(id, { path, kind, tool, action, sessionId, runId, taskId, bytes, preview });
-      if (kind === 'file') archiveContent(id, path);
+      if (kind === 'file') {
+        const archivedBytes = archiveContent(id, path);
+        if (typeof bytes !== 'number' && archivedBytes !== null) {
+          db.prepare('UPDATE artifacts SET bytes = ? WHERE id = ? AND bytes IS NULL').run(archivedBytes, id);
+        }
+      }
       return id;
     },
     createFromVerifiedContent({ artifactId, bytes, ...metadata }) {

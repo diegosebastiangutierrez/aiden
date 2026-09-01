@@ -23,6 +23,7 @@ import {
   currentBrowserExecutionScope,
   type BrowserExecutionScope,
 } from './v4/browser/browserExecutionScope'
+import type { BrowserTabRecord } from './v4/browser/browserSessionAuthority'
 
 // ── Lazy-import Playwright so the server boots even if playwright
 //    is not installed (tools will return a clear error message).
@@ -52,6 +53,7 @@ let _cdpEndpoint:    string | null = null
 let _controlledPage: any = null     // Aiden's OWN tab in the attached context (only tab Aiden may close)
 const _sessionPages = new Map<string, any>()
 const _pageScopes = new WeakMap<object, BrowserExecutionScope>()
+let _preserveDurableTabsDuringHostClose = false
 
 const IDLE_MS         = 5 * 60 * 1000                                  // 5 min
 const NAV_TIMEOUT     = parseInt(process.env.AIDEN_BROWSER_TIMEOUT ?? '15000', 10)
@@ -221,7 +223,8 @@ async function ensurePage(): Promise<any> {
   if (scope) {
     let page = _sessionPages.get(scope.session.browserSessionId)
     if (!page || page.isClosed()) {
-      page = await ctx.newPage()
+      page = await rehydrateDurableSessionPages(ctx, scope)
+      if (!page) page = await ctx.newPage()
       _sessionPages.set(scope.session.browserSessionId, page)
     }
     _activePage = page
@@ -279,11 +282,14 @@ function wirePageClose(page: any): void {
     const meta = getTabRegistry().get(page)
     if (scope && meta) {
       try {
-        if (scope.authority.canCloseTab(scope.binding, meta.tab_id)) {
+        if (!_preserveDurableTabsDuringHostClose
+          && scope.authority.canCloseTab(scope.binding, meta.tab_id)) {
           scope.authority.markTabClosed(scope.binding, meta.tab_id)
         }
       } catch { /* stale Attempt or teardown */ }
-      _sessionPages.delete(scope.session.browserSessionId)
+      if (_sessionPages.get(scope.session.browserSessionId) === page) {
+        _sessionPages.delete(scope.session.browserSessionId)
+      }
     }
     getTabRegistry().remove(page)
   }) } catch { /* mock/teardown */ }
@@ -295,9 +301,22 @@ function bindPageToScope(
   createdBy: 'aiden' | 'user',
   openerId: string | null,
   controlled: boolean,
+  durableTab?: BrowserTabRecord,
 ): TabMeta {
   const registry = getTabRegistry()
-  const meta = registry.track(page, createdBy, openerId, scope.session.browserSessionId)
+  const meta = durableTab
+    ? registry.trackDurable(page, {
+      tabId: durableTab.tabId,
+      createdBy: durableTab.createdBy,
+      openerId: durableTab.openerTabId,
+      browserSessionId: scope.session.browserSessionId,
+      controlled,
+      url: durableTab.url,
+      title: durableTab.title,
+      dirtyForm: durableTab.dirtyForm,
+      lastSnapshotHash: durableTab.lastStateDigest,
+    })
+    : registry.track(page, createdBy, openerId, scope.session.browserSessionId)
   _pageScopes.set(page, scope)
   if (controlled) registry.markControlled(page, scope.session.browserSessionId)
   scope.authority.bindTab(scope.binding, {
@@ -305,11 +324,145 @@ function bindPageToScope(
     createdBy: meta.createdBy,
     controlled,
     openerTabId: meta.opener_id,
-    url: typeof page.url === 'function' ? page.url() : '',
-    title: meta.title,
+    purpose: durableTab?.purpose ?? null,
+    url: durableTab?.url ?? (typeof page.url === 'function' ? page.url() : ''),
+    title: durableTab?.title ?? meta.title,
   })
   wirePageClose(page)
   return meta
+}
+
+function reconnectUrl(tab: BrowserTabRecord): string | null {
+  if (tab.dirtyForm || tab.createdBy !== 'aiden' || tab.url.includes('[redacted]')) return null
+  if (tab.url === 'about:blank') return tab.url
+  try {
+    const parsed = new URL(tab.url)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.toString() : null
+  } catch {
+    return null
+  }
+}
+
+async function rehydrateDurableSessionPages(
+  ctx: any,
+  scope: BrowserExecutionScope,
+): Promise<any | null> {
+  const durableTabs = scope.authority.listTabs(scope.session.browserSessionId)
+    .filter((tab) => tab.closedAt === null)
+  if (durableTabs.length === 0) return null
+  if (scope.session.state !== 'ready') {
+    throw new Error(`Browser session requires reconciliation: ${scope.session.recoveryState}`)
+  }
+
+  const urls = new Map<string, string>()
+  for (const tab of durableTabs) {
+    const url = reconnectUrl(tab)
+    if (!url) {
+      scope.authority.requireUserControl(scope.binding, `browser_reconnect_requires_control:${tab.tabId}`)
+      throw new Error(`Browser tab ${tab.tabId} cannot be restored automatically; user control is required`)
+    }
+    urls.set(tab.tabId, url)
+  }
+
+  const registry = getTabRegistry()
+  const available = (ctx.pages() as any[]).filter((candidate) => !candidate.isClosed())
+  const claimed = new Set<any>()
+  const rebound = new Map<string, any>()
+
+  for (const tab of durableTabs) {
+    const targetUrl = urls.get(tab.tabId)!
+    let page = available.find((candidate) => !claimed.has(candidate) && candidate.url() === targetUrl)
+    if (!page) page = available.find((candidate) => !claimed.has(candidate) && candidate.url() === 'about:blank')
+    if (!page) page = await ctx.newPage()
+    claimed.add(page)
+
+    bindPageToScope(page, scope, tab.createdBy, tab.openerTabId, tab.controlled, tab)
+    wireDialogHandler(page)
+    const receipt = scope.authority.beginAction(scope.binding, {
+      toolCallId: null,
+      effectId: null,
+      tabId: tab.tabId,
+      actionType: 'reconnect',
+      args: { url: targetUrl },
+      expectedOutcome: { tabId: tab.tabId, url: targetUrl },
+      preStateDigest: tab.lastStateDigest,
+    })
+    scope.authority.markActionDispatched(scope.binding, receipt.actionId)
+
+    try {
+      if (page.url() !== targetUrl) {
+        await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT })
+      }
+      const observedUrl = page.url() as string
+      const observedTitle = await page.title().catch(() => '') as string
+      const stateDigest = crypto.createHash('sha256').update(JSON.stringify({
+        url: observedUrl,
+        title: observedTitle,
+      })).digest('hex')
+      const exactUrl = observedUrl === targetUrl
+      const completion = scope.authority.completeAction(scope.binding, receipt.actionId, {
+        outcome: exactUrl ? 'verified' : 'failed',
+        commandOk: true,
+        semanticOk: exactUrl,
+        postStateDigest: stateDigest,
+        verification: { expectedUrl: targetUrl, observedUrl, title: observedTitle },
+        evidencePayload: { reconnected: exactUrl, tabId: tab.tabId, url: observedUrl, title: observedTitle },
+        errorCode: exactUrl ? null : 'RECONNECT_URL_MISMATCH',
+      })
+      if (!completion.applied || !exactUrl) {
+        scope.authority.requireUserControl(scope.binding, `browser_reconnect_mismatch:${tab.tabId}`)
+        throw new Error(`Browser tab ${tab.tabId} did not restore to its durable URL`)
+      }
+      scope.authority.recordObservation(scope.binding, {
+        tabId: tab.tabId,
+        url: observedUrl,
+        title: observedTitle,
+        stateDigest,
+        purpose: tab.purpose,
+      })
+      const meta = registry.get(page)
+      if (meta) {
+        meta.url = observedUrl
+        meta.title = observedTitle
+        try { meta.origin = new URL(observedUrl).origin } catch { meta.origin = '' }
+      }
+      rebound.set(tab.tabId, page)
+    } catch (error) {
+      const current = scope.authority.getAction(receipt.actionId)
+      if (current && !['verified', 'failed', 'not_applied', 'cancelled', 'stale_rejected'].includes(current.state)) {
+        scope.authority.completeAction(scope.binding, receipt.actionId, {
+          outcome: 'failed',
+          commandOk: false,
+          semanticOk: false,
+          postStateDigest: null,
+          verification: { restored: false },
+          evidencePayload: { reconnected: false, tabId: tab.tabId },
+          errorCode: 'RECONNECT_FAILED',
+        })
+      }
+      const session = scope.authority.getSession(scope.session.browserSessionId)
+      if (session && session.state === 'ready') {
+        scope.authority.requireUserControl(scope.binding, `browser_reconnect_failed:${tab.tabId}`)
+      }
+      throw error
+    }
+  }
+
+  const controlled = durableTabs.find((tab) => tab.controlled)
+    ?? durableTabs.find((tab) => tab.tabId === scope.session.controlledTabId)
+    ?? durableTabs[0]
+  const page = rebound.get(controlled.tabId)!
+  registry.markControlled(page, scope.session.browserSessionId)
+  scope.authority.setControlledTab(scope.binding, controlled.tabId)
+
+  for (const candidate of available) {
+    if (claimed.has(candidate) || candidate.isClosed() || candidate.url() !== 'about:blank') continue
+    const meta = registry.get(candidate)
+    if (meta?.browserSessionId !== null) continue
+    try { await candidate.close() } catch { /* unused startup page */ }
+    registry.remove(candidate)
+  }
+  return page
 }
 
 // B4.2a — register the dialog/file-event supervisor on a page (idempotent).
@@ -482,7 +635,20 @@ export async function pwListTabs(): Promise<{ ok: boolean; tabs: TabMeta[]; erro
     await ensurePage() // ensure the context + controlled tab are seeded
     await refreshTabMeta()
     const scope = currentBrowserExecutionScope()
-    return { ok: true, tabs: getTabRegistry().list(scope?.session.browserSessionId) }
+    const tabs = getTabRegistry().list(scope?.session.browserSessionId)
+    if (scope) {
+      for (const tab of tabs) {
+        scope.authority.bindTab(scope.binding, {
+          tabId: tab.tab_id,
+          createdBy: tab.createdBy,
+          controlled: tab.controlled,
+          openerTabId: tab.opener_id,
+          url: tab.url,
+          title: tab.title,
+        })
+      }
+    }
+    return { ok: true, tabs }
   } catch (e: any) { return { ok: false, tabs: [], error: e.message } }
 }
 
@@ -513,13 +679,14 @@ export async function pwSwitchControl(
   }
   _controlledPage = page
   _activePage = page
+  if (scope) _sessionPages.set(scope.session.browserSessionId, page)
   reg.markControlled(page, scope?.session.browserSessionId ?? null)
   if (scope) scope.authority.setControlledTab(scope.binding, tabId)
   return { ok: true }
 }
 
 /** Open a new Aiden-created (controllable + closeable) tab; optionally navigate it. */
-export async function pwOpenTab(url?: string): Promise<{ ok: boolean; tab_id?: string; error?: string }> {
+export async function pwOpenTab(url?: string, purpose?: string): Promise<{ ok: boolean; tab_id?: string; error?: string }> {
   const available = await checkPwAvailable()
   if (!available) return { ok: false, error: PLAYWRIGHT_MISSING_ERROR }
   const release = await pwAcquire()
@@ -533,6 +700,17 @@ export async function pwOpenTab(url?: string): Promise<{ ok: boolean; tab_id?: s
     wirePageClose(page)
     wireDialogHandler(page)
     if (url) { try { await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT }) } catch { /* surfaced via list */ } }
+    if (scope) {
+      scope.authority.bindTab(scope.binding, {
+        tabId: meta.tab_id,
+        createdBy: meta.createdBy,
+        controlled: false,
+        openerTabId: meta.opener_id,
+        purpose: purpose?.trim() || null,
+        url: typeof page.url === 'function' ? page.url() : url ?? '',
+        title: typeof page.title === 'function' ? await page.title().catch(() => '') : '',
+      })
+    }
     return { ok: true, tab_id: meta.tab_id }
   } catch (e: any) { return { ok: false, error: e.message } }
   finally { release() }
@@ -1345,8 +1523,56 @@ export async function pwGetUrl(): Promise<{ ok: boolean; url?: string; error?: s
   } catch (e: any) { return { ok: false, error: e.message } }
 }
 
+/**
+ * Replace the current Attempt's throwaway physical surface with the durable
+ * tabs already admitted by BrowserSessionAuthority.continueSession(). The
+ * durable rows are preserved while their old physical pages are released;
+ * rehydration then verifies every restored URL before control returns.
+ */
+export async function pwRehydrateCurrentDurableSession(): Promise<{
+  ok: boolean;
+  browser_session_id?: string;
+  controlled_tab_id?: string;
+  error?: string;
+}> {
+  const scope = currentBrowserExecutionScope()
+  if (!scope) return { ok: false, error: 'Durable browser session is required to reconnect tabs' }
+
+  const sessionId = scope.session.browserSessionId
+  const registry = getTabRegistry()
+  const currentPages = registry.list(sessionId)
+    .map((tab) => registry.pageById(tab.tab_id) as any)
+    .filter(Boolean)
+
+  _preserveDurableTabsDuringHostClose = true
+  try {
+    for (const page of currentPages) {
+      if (!(page.isClosed && page.isClosed())) {
+        try { await page.close() } catch { /* rehydration below remains authoritative */ }
+      }
+      registry.remove(page)
+      if (page === _controlledPage) _controlledPage = null
+      if (page === _activePage) _activePage = null
+    }
+  } finally {
+    _preserveDurableTabsDuringHostClose = false
+  }
+  _sessionPages.delete(sessionId)
+
+  try {
+    const page = await ensurePage()
+    await refreshTabMeta()
+    const controlledTabId = registry.get(page)?.tab_id
+      ?? scope.authority.getSession(sessionId)?.controlledTabId
+      ?? undefined
+    return { ok: true, browser_session_id: sessionId, controlled_tab_id: controlledTabId }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
 /** Close the browser context and release all resources (call on server shutdown). */
-export async function pwClose(): Promise<void> {
+export async function pwClose(options: { announce?: boolean } = {}): Promise<void> {
   const scope = currentBrowserExecutionScope()
   if (scope) {
     const registry = getTabRegistry()
@@ -1372,12 +1598,15 @@ export async function pwClose(): Promise<void> {
     return
   }
   if (_browserContext) {
+    _preserveDurableTabsDuringHostClose = true
     try { await _browserContext.close() } catch {}
+    finally { _preserveDurableTabsDuringHostClose = false }
     _browserContext = null
     _activePage     = null
     _sessionPages.clear()
+    getTabRegistry().clear()
     clearDialogSupervisors()
-    console.log('[Browser] Closed on shutdown')
+    if (options.announce !== false) console.log('[Browser] Closed on shutdown')
   }
 }
 

@@ -14,7 +14,8 @@ export const automationStatusTool: ToolHandler = {
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['capabilities', 'list', 'preview'] },
+        action: { type: 'string', enum: ['capabilities', 'list', 'inspect', 'history', 'preview'] },
+        automation_id: { type: 'string', description: 'Exact automation identity for inspection or history.' },
         expression: { type: 'string', description: 'Cron, interval, or one-shot schedule expression for preview.' },
         timezone: { type: 'string', description: 'IANA timezone for preview.' },
       },
@@ -41,6 +42,21 @@ export const automationStatusTool: ToolHandler = {
         attention: snapshot.attention.slice(0, 50),
       };
     }
+    if (action === 'inspect' || action === 'history') {
+      const automationId = String(args.automation_id ?? '').trim();
+      if (!automationId) return { available: false, reason: 'Automation identity is required.' };
+      const snapshot = ctx.automation.snapshot();
+      if (action === 'inspect') {
+        const automation = snapshot.automations.find((item) => item.automationId === automationId);
+        return automation
+          ? { automation, history: snapshot.history.filter((item) => item.automationId === automationId).slice(0, 50) }
+          : { available: false, reason: `Automation not found: ${automationId}` };
+      }
+      return {
+        automationId,
+        history: snapshot.history.filter((item) => item.automationId === automationId).slice(0, 100),
+      };
+    }
     if (action === 'preview') {
       const expression = String(args.expression ?? '').trim();
       const timezone = String(args.timezone ?? '').trim();
@@ -55,16 +71,20 @@ export const automationManageTool: ToolHandler = {
   schema: {
     name: 'automation_manage',
     description:
-      'Create, enable, disable, or run an Aiden Reliable Automation through the durable v4.22 authority. Use only when the user explicitly asks to mutate an Aiden Automation. Do not use for a preview or for an explicit Windows Task Scheduler request.',
+      'Create, enable, disable, run, or remove an Aiden Reliable Automation through the durable authority. Use only when the user explicitly asks to mutate an Aiden Automation. Removal preserves durable execution history. Do not use for a preview or for an explicit Windows Task Scheduler request.',
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['create', 'enable', 'disable', 'run_now'] },
+        action: { type: 'string', enum: ['create', 'enable', 'disable', 'run_now', 'remove'] },
         automation_id: { type: 'string' },
         name: { type: 'string' },
         prompt: { type: 'string' },
-        expression: { type: 'string' },
-        timezone: { type: 'string' },
+        trigger_kind: {
+          type: 'string', enum: ['manual', 'schedule'],
+          description: 'Use manual for an Automation that runs only when explicitly triggered. Use schedule for recurring or later work.',
+        },
+        expression: { type: 'string', description: 'Required only for a schedule trigger.' },
+        timezone: { type: 'string', description: 'Required only for a schedule trigger.' },
       },
       required: ['action'],
     },
@@ -93,13 +113,21 @@ export const automationManageTool: ToolHandler = {
       const prompt = String(args.prompt ?? '').trim();
       const expression = String(args.expression ?? '').trim();
       const timezone = String(args.timezone ?? '').trim();
-      if (!name || !prompt || !expression || !timezone) {
-        return { success: false, error: 'Name, prompt, schedule expression, and IANA timezone are required.' };
+      const requestedTrigger = String(args.trigger_kind ?? '').trim();
+      const manual = requestedTrigger === 'manual'
+        || (!requestedTrigger && (!expression || expression.toLowerCase() === 'manual'));
+      if (!name || !prompt) {
+        return { success: false, error: 'Name and prompt are required.' };
+      }
+      if (!manual && (!expression || !timezone)) {
+        return { success: false, error: 'Schedule expression and IANA timezone are required for a schedule trigger.' };
       }
       return ctx.automation.create({
         name: name.slice(0, 256), createdBy: 'local-user',
         action: { kind: 'prompt', prompt: prompt.slice(0, 100_000) },
-        trigger: { kind: 'schedule', expression: expression.slice(0, 512), timezone: timezone.slice(0, 128) },
+        trigger: manual
+          ? { kind: 'manual' }
+          : { kind: 'schedule', expression: expression.slice(0, 512), timezone: timezone.slice(0, 128) },
         policies: {
           misfire: { kind: 'run_once', maxAgeMs: 3_600_000 },
           overlap: 'skip', retry: { maxAttempts: 1 },
@@ -112,6 +140,7 @@ export const automationManageTool: ToolHandler = {
     if (action === 'enable') return ctx.automation.setEnabled(automationId, true);
     if (action === 'disable') return ctx.automation.setEnabled(automationId, false);
     if (action === 'run_now') return ctx.automation.runNow(automationId);
+    if (action === 'remove') return ctx.automation.remove(automationId, 'local-user');
     return { success: false, error: 'Unknown Reliable Automations action.' };
   },
 };

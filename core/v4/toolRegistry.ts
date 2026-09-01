@@ -164,6 +164,8 @@ export interface ToolContext {
    * leaving it running. Absent → no cancellation (short tools ignore it).
    */
   signal?: AbortSignal;
+  /** Project a truthful, bounded semantic step through the shared activity surface. */
+  reportActivity?: (detail: string) => void;
   /**
    * v4.4 Phase 3 — opaque session identifier used by the docker
    * sandbox to cache one long-lived container per session and reuse
@@ -545,8 +547,16 @@ export class ToolRegistry {
       let completedRepositoryValidation: StructuredValidationRun | undefined;
       let effectDescriptor: DurableEffectDescriptor | undefined;
       let approvalWaitId: string | null = null;
-      const emit = (phase: ToolActivityUpdate['phase'], attempt?: number): void => {
-        try { onActivity?.({ phase, at: Date.now(), attempt, timing }); } catch { /* observational */ }
+      const emit = (phase: ToolActivityUpdate['phase'], attempt?: number, detail?: string): void => {
+        const boundedDetail = typeof detail === 'string'
+          ? detail.replace(/[\u0000-\u001f\u007f]+/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, 80)
+          : '';
+        try {
+          onActivity?.({
+            phase, at: Date.now(), attempt, timing,
+            ...(boundedDetail ? { detail: boundedDetail } : {}),
+          });
+        } catch { /* observational */ }
       };
       const finish = (
         result: ToolCallResult,
@@ -913,6 +923,21 @@ export class ToolRegistry {
           const message = error instanceof Error ? error.message : String(error);
           return finish({ id: call.id, name: call.name, result: null, error: message }, 'blocked');
         }
+      }
+      if (preparedToolCall?.recoveryDisposition === 'committed' && !context.automationApprovalContinuation) {
+        return finish({
+          id: call.id,
+          name: call.name,
+          result: { recovered: true, status: 'already_completed' },
+        }, 'completed');
+      }
+      if (preparedToolCall?.recoveryDisposition === 'unknown' && !context.automationApprovalContinuation) {
+        return finish({
+          id: call.id,
+          name: call.name,
+          result: null,
+          error: 'Prior mutating execution has an unknown outcome and requires reconciliation',
+        }, 'unknown');
       }
       if (
         effectiveMutates && durableJobContext &&
@@ -1389,6 +1414,22 @@ export class ToolRegistry {
       // Deliver the per-call turn signal to the tool. Spread a per-call context
       // only when a signal is present, so a normal call allocates nothing and a
       // child agent's own signal never leaks into the shared session context.
+      let activeExecutionAttempt: number | undefined;
+      const executionContext = (): ToolContext => {
+        const perCall: ToolContext = {
+          ...context,
+          ...(signal ? { signal } : {}),
+        };
+        // Semantic progress is execution-scoped and must not alter the public,
+        // enumerable ToolContext contract observed by existing handlers.
+        Object.defineProperty(perCall, 'reportActivity', {
+          configurable: false,
+          enumerable: false,
+          value: (detail: string) => emit('running', activeExecutionAttempt, detail),
+          writable: false,
+        });
+        return perCall;
+      };
       const dispatch = async (a: Record<string, unknown>): Promise<unknown> =>
         executeWithDurableToolCall({
           toolCallId: call.id,
@@ -1484,7 +1525,7 @@ export class ToolRegistry {
                     environment,
                     producer: jobContext.producer,
                   });
-                  value = await handler.execute(a, signal ? { ...context, signal } : context);
+                  value = await handler.execute(a, executionContext());
                   const result = value && typeof value === 'object'
                     ? value as Record<string, unknown> : {};
                   const rawOutput = getRawValidationOutput(value);
@@ -1510,7 +1551,7 @@ export class ToolRegistry {
                     jobContext.repository?.advance(completion.run.resultingSnapshotId);
                   }
                 } else {
-                  value = await handler.execute(a, signal ? { ...context, signal } : context);
+                  value = await handler.execute(a, executionContext());
                 }
               }
               if (waitId && jobContext?.controlAuthority) {
@@ -1620,6 +1661,7 @@ export class ToolRegistry {
         attempt: context.attempt ?? 1,
         startedAt: Date.now(),
       } as ToolActivityTiming['executionAttempts'][number];
+      activeExecutionAttempt = executionAttempt.attempt;
       timing.executionAttempts.push(executionAttempt);
       emit('running', executionAttempt.attempt);
       try {

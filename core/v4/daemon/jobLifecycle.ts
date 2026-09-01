@@ -209,8 +209,8 @@ export interface ExecuteDurableJobOptions<T> {
   onLeaseLost?: (error: DurableJobLifecycleError) => void;
   onPhase?: (event: DurableJobLifecyclePhaseEvent) => void;
   lifecycleScope?: DurableJobLifecycleScope;
-  /** Host shutdown may detach an Automation approval wait without changing
-   * user intent. The callback is evaluated synchronously at disposal. */
+  /** A restartable host may detach an active Attempt without changing user
+   * intent. The callback is evaluated synchronously at disposal. */
   detachOnDispose?: (handle: DurableJobHandle) => boolean;
   /** Optional durable continuity projection. It records references at lifecycle
    * boundaries and never participates in Job/Attempt transitions. */
@@ -271,8 +271,28 @@ function applyRequiredProof(
     fenceToken: handle.fenceToken,
     cancelled: finalization.status === 'cancelled',
   });
-  if (finalization.status !== 'completed' || proof.verdict === 'verified') return finalization;
   const evidence = engine.proof.exportJson(handle.jobId);
+  if (proof.verdict === 'verified') {
+    if (finalization.status === 'completed') return finalization;
+    // A normally returned execution may contain a failed optional helper in
+    // its trace even though its required durable claims were later verified.
+    // Only that completed-execution shape is eligible for Proof authority;
+    // cancellation, blocking, unknown outcomes, and execution errors retain
+    // their existing disposition.
+    if (finalization.status !== 'failed' || finalization.finishReason !== 'stop') return finalization;
+    return {
+      status: 'completed',
+      attemptStatus: 'succeeded',
+      outcome: 'verified',
+      finishReason: finalization.finishReason,
+      evidence,
+      ...('jobCard' in finalization && finalization.jobCard ? { jobCard: finalization.jobCard } : {}),
+    };
+  }
+  if (finalization.status !== 'completed'
+    && !(finalization.status === 'failed' && finalization.finishReason === 'stop')) {
+    return finalization;
+  }
   if (proof.verdict === 'failed') {
     return {
       status: 'failed',
@@ -832,12 +852,13 @@ export async function executeDurableJob<T>(
   } finally {
     stopAsyncResources();
     try {
+      const hostDetached = disposalError instanceof DurableJobHostDetachedError;
       const browserSession = options.engine.browser.getSessionForAttempt(
         handle.jobId,
         handle.attemptId,
         handle.generation,
       );
-      if (browserSession) {
+      if (browserSession && !hostDetached) {
         try {
           const { pwCloseBrowserSessionResources } = await import('../../playwrightBridge');
           await pwCloseBrowserSessionResources(browserSession.browserSessionId);

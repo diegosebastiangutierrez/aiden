@@ -44,6 +44,7 @@ import { detectBlocker, type BlockerSurface } from './browserBlocker';
 import { pwClose, pwSnapshot } from '../../../core/playwrightBridge';
 import { reResolveAndRetry } from './reResolve';
 import {
+  browserNavigationPreflightError,
   currentBrowserExecutionScope,
   runWithAuthorizedBrowserSession,
 } from '../../../core/v4/browser/browserExecutionScope';
@@ -246,6 +247,12 @@ export function withBrowserState(
 ): ToolHandler {
   return {
     ...handler,
+    validateArguments(args) {
+      const handlerError = handler.validateArguments?.(args) ?? null;
+      if (handlerError) return handlerError;
+      if (handler.schema.name !== 'browser_navigate' || typeof args.url !== 'string') return null;
+      return browserNavigationPreflightError(normalizeUrl(args.url));
+    },
     async execute(args, ctx) {
       return runWithAuthorizedBrowserSession(ctx.signal, async () => {
         const activeState = scopedBrowserState(state);
@@ -273,12 +280,30 @@ export function withBrowserState(
             throw new BrowserAuthorityError('NO_PROGRESS', `Browser session already observed ${target}`);
           }
         }
+        const actionArgs = (args ?? {}) as Record<string, unknown>;
+        const tabAction = handler.schema.name === 'browser_tab' ? String(actionArgs.action ?? '') : '';
+        const exactTabId = handler.schema.name === 'browser_tab'
+          && ['switch', 'rename', 'close'].includes(tabAction)
+          && typeof actionArgs.tab_id === 'string'
+          ? actionArgs.tab_id.trim() || null
+          : null;
+        const sessionScopedAction = handler.schema.name === 'browser_close'
+          || (handler.schema.name === 'browser_tab' && tabAction === 'reconnect');
         const receipt = scope?.authority.beginAction(scope.binding, {
           toolCallId: prepared?.toolCallId ?? null,
           effectId: prepared?.effectId ?? null,
-          tabId: session?.controlledTabId ?? null,
+          // Closing the browser is a session-scoped action. Its physical work
+          // intentionally closes the controlled tab before the receipt can be
+          // completed, so binding the receipt to that tab would make the
+          // successful close look stale at settlement time.
+          tabId: sessionScopedAction
+            ? null
+            : exactTabId ?? session?.controlledTabId ?? null,
           actionType: handler.schema.name,
-          args: (args ?? {}) as Record<string, unknown>,
+          args: actionArgs,
+          expectedOutcome: handler.schema.name === 'browser_tab' && tabAction === 'close'
+            ? { allowClosedTabSettlement: true }
+            : undefined,
           preStateDigest: snapshotDigest(pre),
         });
         if (scope && receipt) scope.authority.markActionDispatched(scope.binding, receipt.actionId);
@@ -307,7 +332,7 @@ export function withBrowserState(
           const successful = isSuccessResult(result);
           const typedFailure = classifyBrowserResult(result, handler.schema.name);
           if (scope && receipt) {
-            scope.authority.completeAction(scope.binding, receipt.actionId, {
+            const completion = scope.authority.completeAction(scope.binding, receipt.actionId, {
               outcome: handler.mutates ? 'returned' : successful ? 'verified' : 'failed',
               commandOk: successful,
               semanticOk: handler.mutates ? null : successful,
@@ -316,6 +341,10 @@ export function withBrowserState(
               evidencePayload: null,
               errorCode: typedFailure?.code ?? (successful ? null : 'UNEXPECTED_PAGE_STATE'),
             });
+            if (handler.schema.name === 'browser_close' && successful && completion.applied && !completion.late) {
+              scope.authority.closeSession(scope.binding, 'explicit close');
+              clearBrowserObservationSession(scope.session.browserSessionId);
+            }
           }
           if (handler.mutates === true && successful) currentBrowserLeaseStore().invalidate();
           return typedFailure && result && typeof result === 'object' && !Array.isArray(result)
@@ -436,7 +465,7 @@ export function withBrowserState(
         const outcome = !successful ? 'failed'
           : mutates && !explicitlyVerified && observerMeta?.maybe_noop !== false ? 'returned'
           : 'verified';
-        scope.authority.completeAction(scope.binding, receipt.actionId, {
+        const completion = scope.authority.completeAction(scope.binding, receipt.actionId, {
           outcome,
           commandOk: successful,
           semanticOk: mutates && observerMeta === null ? null : semanticOk,
@@ -458,6 +487,10 @@ export function withBrowserState(
           } : null,
           errorCode: typedFailure?.code ?? (successful ? null : 'UNEXPECTED_PAGE_STATE'),
         });
+        if (handler.schema.name === 'browser_close' && successful && completion.applied && !completion.late) {
+          scope.authority.closeSession(scope.binding, 'explicit close');
+          clearBrowserObservationSession(scope.session.browserSessionId);
+        }
         const controlledTabId = scope.authority.getSession(scope.session.browserSessionId)?.controlledTabId;
         if (controlledTabId && post) {
           scope.authority.recordObservation(scope.binding, {

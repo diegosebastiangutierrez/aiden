@@ -262,6 +262,8 @@ export interface ToolActivityUpdate {
   at: number;
   attempt?: number;
   timing?: ToolActivityTiming;
+  /** Bounded observable operation detail; never hidden reasoning or progress percentage. */
+  detail?: string;
 }
 
 /**

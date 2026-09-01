@@ -28,6 +28,50 @@ export function currentBrowserExecutionScope(): BrowserExecutionScope | undefine
   return storage.getStore();
 }
 
+/**
+ * Reject a navigation whose exact normalized destination is already present
+ * in the current durable session history. This check intentionally runs at
+ * the ToolHandler argument boundary, before ToolCall/Effect admission: no
+ * browser command has been dispatched, so the known no-progress outcome must
+ * not be persisted as an unknown external effect.
+ */
+export function browserNavigationPreflightError(normalizedUrl: string): string | null {
+  const scoped = currentBrowserExecutionScope();
+  if (scoped) {
+    try {
+      return scoped.authority.canRepeatNavigation(scoped.binding, normalizedUrl)
+        ? null
+        : `Browser session already observed ${normalizedUrl}`;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  }
+  const context = currentJobExecutionContext();
+  if (!context) return null;
+  const session = context.engine.browser.getSessionForAttempt(
+    context.jobId,
+    context.attemptId,
+    context.generation,
+  );
+  if (!session) return null;
+  const binding: BrowserSessionBinding = {
+    jobId: context.jobId,
+    attemptId: context.attemptId,
+    generation: context.generation,
+    fenceToken: context.fenceToken,
+    workspaceId: session.workspaceId,
+    mode: session.mode,
+    profileIdentity: session.profileIdentity,
+  };
+  try {
+    return context.engine.browser.canRepeatNavigation(binding, normalizedUrl)
+      ? null
+      : `Browser session already observed ${normalizedUrl}`;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
 function bindingFor(context: JobExecutionContext): BrowserSessionBinding {
   const job = context.engine.getJob(context.jobId);
   return {
@@ -76,7 +120,8 @@ export async function runWithAuthorizedBrowserSession<T>(
     const value = await operation();
     assertNotAborted(activeSignal);
     const current = authority.getSession(session.browserSessionId);
-    if (current?.state !== 'user_control_required' && current?.state !== 'user_control') {
+    const explicitlyClosed = current?.state === 'closed' && current.recoveryState === 'explicit close';
+    if (!explicitlyClosed && current?.state !== 'user_control_required' && current?.state !== 'user_control') {
       authority.assertActionable(binding);
     }
     return value;

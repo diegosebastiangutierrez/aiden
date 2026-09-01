@@ -59,10 +59,13 @@ export function migrateLegacyMemorySnapshot(input: {
       const provenance = match[1]!.toLowerCase() as 'said' | 'saw' | 'guess';
       const content = match[2]!.trim();
       const lineDigest = digest(`${namespace}\0${index + 1}\0${content}`);
+      const type = learningTypeFor(namespace);
+      const existing = input.authority.list({ scopes: [scope] }).find((entry) =>
+        entry.type === type && entry.content === content && entry.lifecycle !== 'DELETED');
       const captured = input.authority.capture({
         scope,
-        type: learningTypeFor(namespace),
-        subjectKey: `legacy.${namespace}.${lineDigest.slice(0, 24)}`,
+        type,
+        subjectKey: existing?.subjectKey ?? `legacy.${namespace}.${lineDigest.slice(0, 24)}`,
         content,
         source: {
           kind: 'LEGACY_MEMORY',
@@ -76,7 +79,7 @@ export function migrateLegacyMemorySnapshot(input: {
           },
         },
       });
-      if (captured.duplicate) result.duplicates += 1;
+      if (existing || captured.duplicate) result.duplicates += 1;
       else result.imported += 1;
     });
   }

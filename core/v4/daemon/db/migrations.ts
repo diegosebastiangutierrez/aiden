@@ -3865,6 +3865,18 @@ function applyV54(db: Database.Database): void {
   `);
 }
 
+function applyV55(db: Database.Database): void {
+  addMissingColumns(db, 'automation_definitions', [
+    ['removed_at', 'INTEGER'],
+    ['removed_by', 'TEXT'],
+  ]);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_automation_definitions_active
+      ON automation_definitions(updated_at DESC)
+      WHERE removed_at IS NULL;
+  `);
+}
+
 const MIGRATIONS: ReadonlyArray<Migration> = [
   { version: 1, name: 'phase 1 — daemon foundation',                  sql: V1_SQL },
   { version: 2, name: 'phase 2 — file watcher observations',          sql: V2_SQL },
@@ -3920,6 +3932,7 @@ const MIGRATIONS: ReadonlyArray<Migration> = [
   { version: 52, name: 'secure capability SDK foundation', apply: applyV52 },
   { version: 53, name: 'durable Skill Intelligence authority', apply: applyV53 },
   { version: 54, name: 'secure external protocol authority', apply: applyV54 },
+  { version: 55, name: 'durable automation removal tombstones', apply: applyV55 },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

@@ -22,11 +22,16 @@ import type { ToolHandler } from '../../../core/v4/toolRegistry';
 import { truncatePreview } from '../../../core/v4/dryRun';
 import { normalizeMemoryFile, fileLabel } from './namespaceNormalize';
 import { isMemorySource, type MemorySource } from '../../../core/v4/memory/provenance';
+import { createHash } from 'node:crypto';
 
 /** Model-supplied source, defaulting to the honest lower-trust `guess`. A
  *  lower-trust source cannot overwrite a higher-trust entry (enforced below). */
 function pickSource(raw: unknown): MemorySource {
   return isMemorySource(raw) ? raw : 'guess';
+}
+
+function learningScopeKind(file: 'memory' | 'user' | 'project') {
+  return file === 'user' ? 'USER_GLOBAL' : file === 'project' ? 'REPOSITORY' : 'WORKSPACE';
 }
 
 export const memoryReplaceTool: ToolHandler = {
@@ -81,6 +86,91 @@ export const memoryReplaceTool: ToolHandler = {
     const source = pickSource(args.source);
     try {
       const r = await ctx.memoryGuard.guardedReplace(file, oldText, newText, source);
+      if (r.ok && r.verified && source === 'said' && ctx.learning) {
+        const scopeKind = learningScopeKind(file);
+        const scope = ctx.learning.scopes.find((candidate) => candidate.kind === scopeKind);
+        if (!scope) {
+          return {
+            success: false,
+            verified: false,
+            error: `Learning scope ${scopeKind} is unavailable`,
+            file,
+            fileLength: r.fileLength,
+          };
+        }
+        const type = file === 'user' ? 'USER_PREFERENCE' : 'WORKSPACE_CONVENTION';
+        const correctionDigest = createHash('sha256')
+          .update([file, oldText.trim(), newText.trim()].join('\0'))
+          .digest('hex');
+        const correctionSource = {
+          kind: 'USER_CORRECTION' as const,
+          identity: `memory_replace:${file}:${correctionDigest}`,
+          revision: correctionDigest,
+          independentKey: `user:${scope.ownerId}`,
+          metadata: { namespace: file, provenance: 'said', provenanceVerified: true },
+        };
+        try {
+          const entries = ctx.learning.authority.list({ scopes: [scope] });
+          const matches = entries
+            .filter((entry) => entry.type === type
+              && entry.lifecycle !== 'DELETED'
+              && entry.content?.includes(oldText))
+            .sort((left, right) => {
+              const leftExplicit = left.subjectKey.startsWith(`explicit.${file}.`) ? 1 : 0;
+              const rightExplicit = right.subjectKey.startsWith(`explicit.${file}.`) ? 1 : 0;
+              return rightExplicit - leftExplicit || left.createdAt - right.createdAt || left.id.localeCompare(right.id);
+            });
+          let winner = matches[0];
+          if (winner) {
+            winner = ctx.learning.authority.correct({
+              entryId: winner.id,
+              expectedVersion: winner.version,
+              content: newText,
+              source: correctionSource,
+            });
+            for (const duplicate of matches.slice(1)) {
+              const current = ctx.learning.authority.get(duplicate.id);
+              if (current && current.lifecycle !== 'DEMOTED' && current.lifecycle !== 'DELETED') {
+                ctx.learning.authority.demote({
+                  entryId: current.id,
+                  expectedVersion: current.version,
+                  reason: 'duplicate_superseded_by_explicit_user_correction',
+                  source: correctionSource,
+                });
+              }
+            }
+          } else {
+            const sameContent = entries.find((entry) => entry.type === type
+              && entry.lifecycle !== 'DELETED'
+              && entry.content === newText);
+            if (sameContent) {
+              ctx.learning.authority.correct({
+                entryId: sameContent.id,
+                expectedVersion: sameContent.version,
+                content: newText,
+                source: correctionSource,
+              });
+            } else {
+              const contentDigest = createHash('sha256').update(newText.trim()).digest('hex');
+              ctx.learning.authority.capture({
+                scope,
+                type,
+                subjectKey: `explicit.${file}.${contentDigest.slice(0, 32)}`,
+                content: newText,
+                source: correctionSource,
+              });
+            }
+          }
+        } catch (error) {
+          return {
+            success: false,
+            verified: false,
+            error: `Learning correction failed: ${error instanceof Error ? error.message : String(error)}`,
+            file,
+            fileLength: r.fileLength,
+          };
+        }
+      }
       return {
         success: r.ok,
         verified: r.verified,

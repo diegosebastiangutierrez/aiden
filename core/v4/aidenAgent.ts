@@ -58,7 +58,9 @@ import {
 } from './toolResultBoundary';
 import { selectEconomyTools } from './usagePolicy';
 import {
+  appendDurableResearchSourceLinks,
   currentJobExecutionContext,
+  finalizeDurableResearchProof,
   recordDurableResearchEvidence,
   recordDurableToolVerification,
 } from './daemon/jobExecutionContext';
@@ -208,6 +210,9 @@ async function invokeToolWithTiming(
   try {
     result = await executor(call, signal, onActivity);
   } catch (error) {
+    if (error instanceof Error && error.name === 'DurableJobHostDetachedError') {
+      throw error;
+    }
     result = {
       id: call.id,
       name: call.name,
@@ -555,6 +560,17 @@ export interface RunConversationOptions {
   onDelta?:          (text: string) => void;
   onFirstDelta?:     () => void;
   onToolCallStart?:  (call: ToolCallRequest) => void;
+  /** Exact unanswered model-call identities restored from a durable checkpoint. */
+  resumePendingToolCallIds?: readonly string[];
+  /**
+   * Durable conversation projection hook. A pending-tools checkpoint is
+   * emitted before physical dispatch; balanced after every complete result
+   * batch; terminal after the final assistant state is reconciled.
+   */
+  onConversationCheckpoint?: (
+    messages: readonly Message[],
+    phase: 'pending_tools' | 'balanced' | 'terminal',
+  ) => void | Promise<void>;
   /**
    * v4.1.4 Part 1.6 — incremental output-token progress callback.
    * Fires whenever the streaming adapter emits a `progress` event
@@ -1196,7 +1212,11 @@ export class AidenAgent {
     // finalization owner, so model content stays clean for every consumer.
     let honestyFindings: HonestyFinding[] | undefined;
     const approvalFacts = projectApprovalFacts(loopResult.toolCallTrace);
-    const finalContent = reconcileApprovalResponse(loopResult.finalContent, approvalFacts);
+    const reconciledContent = reconcileApprovalResponse(loopResult.finalContent, approvalFacts);
+    const finalContent = loopResult.finishReason === 'stop'
+      ? appendDurableResearchSourceLinks(reconciledContent)
+      : reconciledContent;
+    if (loopResult.finishReason === 'stop') finalizeDurableResearchProof(finalContent);
     const resultMessages = learningContextMessage
       ? loopResult.messages.filter((message) => message !== learningContextMessage)
       : [...loopResult.messages];
@@ -1210,6 +1230,7 @@ export class AidenAgent {
         break;
       }
     }
+    await effectiveOptions.onConversationCheckpoint?.(resultMessages, 'terminal');
     if (this.honestyEnforcement && loopResult.finishReason === 'stop') {
       try {
         const scan = await this.honestyEnforcement.check(
@@ -1486,6 +1507,7 @@ export class AidenAgent {
     this._currentTurnContext = runOptions.turnContext;
 
     const messages: Message[]              = [...initialMessages];
+    let resumeBatch = resolveDurableResumeBatch(messages, runOptions.resumePendingToolCallIds);
     const toolCallTrace: HonestyTraceEntry[] = [];
     // v4.11 Slice 2 — structured ui-event claims emitted this turn, for
     // the post-loop honesty claim-contradiction check.
@@ -1617,7 +1639,7 @@ export class AidenAgent {
 
       // ── v4.12 BE.1 — per-session TOKEN cap (money-safety), enforced BEFORE
       // the provider call so spend never crosses the cap. Unset → no-op. ──
-      if (this.sessionTokenCap && this.sessionTokenCap > 0) {
+      if (!resumeBatch && this.sessionTokenCap && this.sessionTokenCap > 0) {
         const cap  = this.sessionTokenCap;
         const used = (runOptions.sessionTokensSoFar ?? 0) + totalUsage.inputTokens + totalUsage.outputTokens;
         // token warn-ladder (once each, before the limit)
@@ -1665,7 +1687,7 @@ export class AidenAgent {
       // Estimated-cost cap uses the same durable physical-attempt ledger as
       // reporting. When catalog pricing is unavailable the amount remains
       // unknown and is never coerced to zero or used to block execution.
-      if (this.sessionCostCap && this.sessionCostCap > 0 && runOptions.sessionId) {
+      if (!resumeBatch && this.sessionCostCap && this.sessionCostCap > 0 && runOptions.sessionId) {
         const ledger = currentProviderAttemptLedger();
         const pricing = findModel(this.providerId ?? '', this.modelId ?? '')?.pricing;
         if (ledger && pricing) {
@@ -1697,6 +1719,16 @@ export class AidenAgent {
       }
 
       let output: ProviderCallOutput;
+      const resumedAssistant = resumeBatch;
+      resumeBatch = null;
+      if (resumedAssistant) {
+        output = {
+          content: resumedAssistant.content,
+          toolCalls: resumedAssistant.toolCalls,
+          finishReason: 'tool_use',
+          usage: { inputTokens: 0, outputTokens: 0 },
+        };
+      } else {
       // Once this turn has authoritative approval facts, hold subsequent
       // streamed prose until the provider segment completes. Contradictory
       // text cannot be repaired after it has already reached the terminal.
@@ -1804,6 +1836,7 @@ export class AidenAgent {
         }
         throw error;
       }
+      }
 
       totalUsage.inputTokens  += output.usage?.inputTokens  ?? 0;
       totalUsage.outputTokens += output.usage?.outputTokens ?? 0;
@@ -1829,10 +1862,12 @@ export class AidenAgent {
       turnState.captureCheckpoint(messages, turnCount);
 
       // ── Append assistant message ──────────────────────────────────────
-      const assistantMsg: Message = output.toolCalls.length > 0
-        ? { role: 'assistant', content: output.content ?? '', toolCalls: output.toolCalls }
-        : { role: 'assistant', content: output.content ?? '' };
-      messages.push(assistantMsg);
+      if (!resumedAssistant) {
+        const assistantMsg: Message = output.toolCalls.length > 0
+          ? { role: 'assistant', content: output.content ?? '', toolCalls: output.toolCalls }
+          : { role: 'assistant', content: output.content ?? '' };
+        messages.push(assistantMsg);
+      }
 
       // ── Empty-response guard (cap=1 per turn) ─────────────────────────
       const isEmpty = (output.content ?? '').length === 0 && output.toolCalls.length === 0;
@@ -1908,6 +1943,8 @@ export class AidenAgent {
         turnCount -= 1;
         continue;
       }
+
+      await runOptions.onConversationCheckpoint?.(messages, 'pending_tools');
 
       // ── Dispatch tools sequentially ──────────────────────────────────
       const turnToolMessages: Message[] = [];
@@ -2147,12 +2184,6 @@ export class AidenAgent {
               ok: result.error == null,
               attempt: attemptNo,
             });
-            recordDurableResearchEvidence({
-              toolCallId: call.id,
-              toolName: call.name,
-              args: call.arguments,
-              result: result.result,
-            });
             if (process.env.AIDEN_PERF_DIAG === '1') {
               writeNonInteractiveDiagnostic(
                 `[perf:iter=${turnCount + 1} tool=${call.name} ms=${toolMs} src=${source} ok=${result.error == null} attempt=${attemptNo}]`,
@@ -2197,6 +2228,13 @@ export class AidenAgent {
             ) {
               recordDurableToolVerification(call.id, verification);
             }
+            recordDurableResearchEvidence({
+              toolCallId: call.id,
+              toolName: call.name,
+              args: call.arguments,
+              result: result.result,
+              verification,
+            });
             const verificationEndedAt = Date.now();
             runtimeTrace('performance', 'verification.end', {
               iteration: turnCount,
@@ -2707,6 +2745,7 @@ export class AidenAgent {
       }
 
       messages.push(...turnToolMessages);
+      await runOptions.onConversationCheckpoint?.(messages, 'balanced');
       p2aDiag('agent.tool_results.appended', {
         iteration: turnCount,
         appended: turnToolMessages.length,
@@ -3007,6 +3046,32 @@ function countMemoryFacts(snapshot: unknown): number {
     }
   }
   return count;
+}
+
+function resolveDurableResumeBatch(
+  messages: readonly Message[],
+  requestedIds: readonly string[] | undefined,
+): { content: string | null; toolCalls: ToolCallRequest[] } | null {
+  if (!requestedIds || requestedIds.length === 0) return null;
+  const requested = new Set(requestedIds);
+  if (requested.size !== requestedIds.length) {
+    throw new Error('Durable resume tool-call identities must be unique');
+  }
+  const answered = new Set(messages.flatMap((message) =>
+    message.role === 'tool' && message.toolCallId ? [message.toolCallId] : [],
+  ));
+  if (requestedIds.some((id) => answered.has(id))) {
+    throw new Error('Durable resume requested a tool call that already has a result');
+  }
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== 'assistant' || !message.toolCalls?.length) continue;
+    const matching = message.toolCalls.filter((call) => requested.has(call.id));
+    if (matching.length === requested.size) {
+      return { content: message.content, toolCalls: matching };
+    }
+  }
+  throw new Error('Durable resume tool-call identities do not match one persisted assistant batch');
 }
 
 function lastUserMessageContent(history: Message[]): string {

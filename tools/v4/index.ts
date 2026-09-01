@@ -56,6 +56,7 @@ import { browserDialogTool } from './browser/browserDialog';
 import { browserUploadTool } from './browser/browserUpload';
 import { browserControlTool } from './browser/browserControl';
 import { browserDownloadTool } from './browser/browserDownload';
+import { browserTabsTool, browserTabTool } from './browser/browserTabs';
 
 import { sessionSearchTool } from './sessions/sessionSearch';
 import { sessionListTool } from './sessions/sessionList';
@@ -151,6 +152,7 @@ export function registerReadOnlyTools(registry: ToolRegistry): void {
   register(browserSeeTool);
   register(browserExtractTool);
   register(browserGetUrlTool);
+  register(browserTabsTool);
 
   register(sessionSearchTool);
   register(sessionListTool);
@@ -287,6 +289,7 @@ export function registerWriteTools(registry: ToolRegistry): void {
   register(browserUploadTool);
   register(browserControlTool);
   register(browserDownloadTool);
+  register(browserTabTool);
 
   register(executeCodeTool);
 
@@ -456,6 +459,7 @@ export { browserTypeTool } from './browser/browserType';
 export { browserFillTool } from './browser/browserFill';
 export { browserScrollTool } from './browser/browserScroll';
 export { browserCloseTool } from './browser/browserClose';
+export { browserTabsTool, browserTabTool } from './browser/browserTabs';
 export { sessionSearchTool } from './sessions/sessionSearch';
 export { sessionListTool } from './sessions/sessionList';
 export { skillsListTool } from './skills/skillsList';
