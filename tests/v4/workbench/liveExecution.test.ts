@@ -118,6 +118,9 @@ describe('Live Execution projection', () => {
     } }));
     const browser = result?.surfaces.find((surface) => surface.kind === 'browser');
     expect(browser?.browser).toMatchObject({ browserSessionId: 'browser_1', tabId: 'tab_1', url: 'https://example.com/', title: 'Example Domain', frame: null });
+    expect(browser?.browser?.tabs).toEqual([expect.objectContaining({
+      tabId: 'tab_1', name: 'research', active: true, closeable: true,
+    })]);
   });
 
   it('P3 creates contextual workspace, changes, validation, artifact, and app-action surfaces', () => {

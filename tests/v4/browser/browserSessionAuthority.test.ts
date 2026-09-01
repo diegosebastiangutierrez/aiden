@@ -48,6 +48,50 @@ describe('BrowserSession authority', () => {
     };
   }
 
+  function completeBrowserJob(
+    binding: ReturnType<typeof admit>,
+    browserSessionId: string,
+    reason = 'durable lifecycle completed',
+  ): void {
+    const runningJob = engine.getJob(binding.jobId)!;
+    expect(engine.transitionJob({
+      jobId: binding.jobId,
+      attemptId: binding.attemptId,
+      generation: binding.generation,
+      fenceToken: binding.fenceToken,
+      expectedStateVersion: runningJob.stateVersion,
+      to: 'running',
+      eventIdempotencyKey: `${binding.jobId}-running`,
+      producer: 'test',
+    })).toMatchObject({ applied: true });
+    const attempt = engine.getAttempt(binding.attemptId)!;
+    expect(engine.transitionAttempt({
+      attemptId: binding.attemptId,
+      expectedStateVersion: attempt.stateVersion,
+      generation: binding.generation,
+      fenceToken: binding.fenceToken,
+      to: 'succeeded',
+      eventIdempotencyKey: `${binding.attemptId}-succeeded`,
+      producer: 'test',
+      finishReason: 'stop',
+    })).toMatchObject({ applied: true });
+    const job = engine.getJob(binding.jobId)!;
+    expect(engine.finalizeJob({
+      jobId: binding.jobId,
+      attemptId: binding.attemptId,
+      generation: binding.generation,
+      fenceToken: binding.fenceToken,
+      expectedStateVersion: job.stateVersion,
+      status: 'completed',
+      outcome: 'verified',
+      finishReason: 'stop',
+      evidence: { browserSessionId },
+      eventIdempotencyKey: `${binding.jobId}-completed`,
+      producer: 'test',
+    })).toMatchObject({ applied: true });
+    engine.browser.settleSession(binding, 'closed', reason);
+  }
+
   it('creates one durable session identity per authoritative Attempt', () => {
     const binding = admit('one');
     const first = engine.browser!.ensureSession(binding);
@@ -115,6 +159,104 @@ describe('BrowserSession authority', () => {
     expect(engine.browser!.getSession(session.browserSessionId)?.state).toBe('lost');
   });
 
+  it('continues named durable tabs into a fresh Job without weakening exact Attempt ownership', () => {
+    const workspaceId = 'workspace-browser-continuation';
+    const source = admit('continuation-source', workspaceId);
+    const sourceSession = engine.browser.ensureSession(source);
+    engine.browser.bindTab(source, {
+      tabId: 'tab-a', createdBy: 'aiden', controlled: true, openerTabId: null,
+      purpose: 'Tab A', url: 'https://example.com/', title: 'Example Domain',
+    });
+    engine.browser.bindTab(source, {
+      tabId: 'tab-b', createdBy: 'aiden', controlled: false, openerTabId: null,
+      purpose: 'Tab B', url: 'https://www.iana.org/help/example-domains', title: 'Example Domains',
+    });
+    engine.browser.recordObservation(source, {
+      tabId: 'tab-b', url: 'https://www.iana.org/help/example-domains',
+      title: 'Example Domains', stateDigest: 'iana-state',
+    });
+    engine.browser.recordObservation(source, {
+      tabId: 'tab-a', url: 'https://example.com/', title: 'Example Domain',
+      stateDigest: 'example-state',
+    });
+
+    completeBrowserJob(source, sourceSession.browserSessionId);
+
+    const next = admit('continuation-target', workspaceId);
+    const nextSession = engine.browser.ensureSession(next);
+    engine.browser.bindTab(next, {
+      tabId: 'tab-current-blank', createdBy: 'aiden', controlled: true, openerTabId: null,
+      url: 'about:blank', title: '',
+    });
+
+    const continued = engine.browser.continueSession(next, sourceSession.browserSessionId);
+
+    expect(continued).toMatchObject({
+      sourceBrowserSessionId: sourceSession.browserSessionId,
+      browserSessionId: nextSession.browserSessionId,
+      controlledTabId: 'tab-a',
+    });
+    expect(continued.tabs).toEqual([
+      expect.objectContaining({
+        browserSessionId: nextSession.browserSessionId,
+        tabId: 'tab-a', ownerJobId: next.jobId, ownerAttemptId: next.attemptId,
+        ownerGeneration: next.generation, purpose: 'Tab A', controlled: true,
+        url: 'https://example.com/', closedAt: null,
+      }),
+      expect.objectContaining({
+        browserSessionId: nextSession.browserSessionId,
+        tabId: 'tab-b', ownerJobId: next.jobId, ownerAttemptId: next.attemptId,
+        ownerGeneration: next.generation, purpose: 'Tab B', controlled: false,
+        url: 'https://www.iana.org/help/example-domains', closedAt: null,
+      }),
+    ]);
+    expect(engine.browser.listTabs(nextSession.browserSessionId)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ tabId: 'tab-current-blank', closedAt: expect.any(Number) }),
+    ]));
+    expect(engine.browser.listTabs(sourceSession.browserSessionId)).toEqual([
+      expect.objectContaining({ tabId: 'tab-a', ownerAttemptId: source.attemptId }),
+      expect.objectContaining({ tabId: 'tab-b', ownerAttemptId: source.attemptId }),
+    ]);
+    expect(() => engine.browser.assertActionable(source)).toThrowError(
+      expect.objectContaining({ code: 'SESSION_NOT_AUTHORIZED' }),
+    );
+    expect(engine.browser.assertActionable(next, 'tab-a')).toMatchObject({
+      browserSessionId: nextSession.browserSessionId,
+    });
+  });
+
+  it('rejects browser continuation across authority or safety boundaries', () => {
+    const source = admit('unsafe-continuation-source', 'workspace-safe');
+    const sourceSession = engine.browser.ensureSession(source);
+    engine.browser.bindTab(source, {
+      tabId: 'tab-dirty', createdBy: 'aiden', controlled: true, openerTabId: null,
+      purpose: 'Draft', url: 'https://example.com/form', title: 'Draft form',
+    });
+    db.prepare('UPDATE browser_tabs SET dirty_form=1 WHERE browser_session_id=? AND tab_id=?')
+      .run(sourceSession.browserSessionId, 'tab-dirty');
+    completeBrowserJob(source, sourceSession.browserSessionId);
+
+    const wrongWorkspace = admit('unsafe-continuation-target', 'workspace-other');
+    engine.browser.ensureSession(wrongWorkspace);
+    expect(() => engine.browser.continueSession(wrongWorkspace, sourceSession.browserSessionId))
+      .toThrowError(expect.objectContaining({ code: 'SESSION_NOT_AUTHORIZED' }));
+
+    const sameWorkspace = admit('unsafe-continuation-target-same', 'workspace-safe');
+    engine.browser.ensureSession(sameWorkspace);
+    expect(() => engine.browser.continueSession(sameWorkspace, sourceSession.browserSessionId))
+      .toThrowError(expect.objectContaining({ code: 'SESSION_NOT_ACTIONABLE' }));
+
+    const explicit = admit('explicit-close-source', 'workspace-safe');
+    const explicitSession = engine.browser.ensureSession(explicit);
+    engine.browser.bindTab(explicit, {
+      tabId: 'tab-explicit', createdBy: 'aiden', controlled: true, openerTabId: null,
+      purpose: 'Explicit', url: 'https://example.com/', title: 'Example',
+    });
+    engine.browser.closeSession(explicit, 'explicit close');
+    expect(() => engine.browser.continueSession(sameWorkspace, explicitSession.browserSessionId))
+      .toThrowError(expect.objectContaining({ code: 'SESSION_NOT_ACTIONABLE' }));
+  });
+
   it('invalidates future actions after cancellation and rejects late settlement', () => {
     const binding = admit('cancel');
     const session = engine.browser!.ensureSession(binding);
@@ -146,6 +288,12 @@ describe('BrowserSession authority', () => {
       tabId: 'user', createdBy: 'user', controlled: false, openerTabId: null,
       purpose: 'explicit-user-tab', url: 'https://user.example.test', title: 'User',
     });
+    expect(engine.browser!.setTabPurpose(binding, 'owned', 'Source 1')).toMatchObject({
+      tabId: 'owned', purpose: 'Source 1',
+    });
+    expect(engine.browser!.listTabs(session.browserSessionId)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ tabId: 'owned', purpose: 'Source 1' }),
+    ]));
     expect(engine.browser!.canCloseTab(binding, 'owned')).toBe(true);
     expect(engine.browser!.canCloseTab(binding, 'user')).toBe(false);
     engine.browser!.closeSession(binding, 'completed');
@@ -364,7 +512,8 @@ describe('BrowserSession authority', () => {
       expect(second.evidenceIds).toEqual(first.evidenceIds);
       expect(engine.proof.listEvidence(binding.jobId)).toHaveLength(1);
       expect(engine.proof.listEvidence(binding.jobId)[0].payload).toMatchObject({
-        browserActionId: first.actionId, toolCallId: 'tool-read',
+        browserActionId: first.actionId, browserSessionId: expect.stringMatching(/^browser_session_/),
+        toolCallId: 'tool-read',
       });
     } finally {
       clock.mockRestore();

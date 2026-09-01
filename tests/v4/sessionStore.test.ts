@@ -84,6 +84,33 @@ describe('SessionStore', () => {
     expect(msgs[1].toolCallId).toBe('call_1');
   });
 
+  it('3b. replaces one active turn checkpoint without duplicating its user anchor', () => {
+    const s = store.createSession();
+    store.appendMessage(s.id, { role: 'user', content: 'write once', turnNumber: 7 });
+    const pending = { id: 'call-stable', name: 'file_write', arguments: { path: 'one.txt' } };
+
+    store.replaceTurnMessages(s.id, 7, [
+      { role: 'user', content: 'write once' },
+      { role: 'assistant', content: '', toolCalls: [pending] },
+    ]);
+    store.replaceTurnMessages(s.id, 7, [
+      { role: 'user', content: 'write once' },
+      { role: 'assistant', content: '', toolCalls: [pending] },
+      { role: 'tool', content: 'written', toolCallId: pending.id },
+      { role: 'assistant', content: 'done' },
+    ]);
+
+    expect(store.getMessages(s.id).map(({ role, content, toolCallId, turnNumber }) => ({
+      role, content, toolCallId, turnNumber,
+    }))).toEqual([
+      { role: 'user', content: 'write once', toolCallId: null, turnNumber: 7 },
+      { role: 'assistant', content: '', toolCallId: null, turnNumber: 7 },
+      { role: 'tool', content: 'written', toolCallId: pending.id, turnNumber: 7 },
+      { role: 'assistant', content: 'done', toolCallId: null, turnNumber: 7 },
+    ]);
+    expect(store.getMessages(s.id)[1]?.toolCalls).toEqual([pending]);
+  });
+
   it('4. search finds keyword matches in message content', () => {
     const s = store.createSession({ title: 'docker chat' });
     store.appendMessage(s.id, { role: 'user', content: 'How do I deploy via docker?' });

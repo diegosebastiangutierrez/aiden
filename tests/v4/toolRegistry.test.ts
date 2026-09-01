@@ -558,4 +558,23 @@ describe('ToolRegistry', () => {
     expect(res.degraded).toBeUndefined();
     expect(res.error).toBeUndefined();
   });
+
+  it('routes semantic handler progress through the existing activity callback', async () => {
+    registry.register(makeHandler('semantic-progress', {
+      async execute(_args, context) {
+        context.reportActivity?.('Searching broadly');
+        context.reportActivity?.('Comparing sources');
+        return { success: true };
+      },
+    }));
+    const updates: Array<{ phase: string; detail?: string }> = [];
+    const exec = registry.buildExecutor(makeContext());
+
+    await exec(call('semantic-progress'), undefined, (update) => updates.push(update));
+
+    expect(updates.filter((update) => update.detail).map((update) => update.detail)).toEqual([
+      'Searching broadly', 'Comparing sources',
+    ]);
+    expect(updates.filter((update) => update.detail).every((update) => update.phase === 'running')).toBe(true);
+  });
 });

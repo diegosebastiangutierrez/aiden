@@ -33,9 +33,9 @@ describe('Workbench Agentic Presence source contract', () => {
     expect(page).not.toContain('notification center');
   });
 
-  it('keeps legacy market briefing content separate and deterministically deduplicated', () => {
-    expect(page).toContain('market_briefing_');
-    expect(page).toContain('prev.some((message) => message.id === id) ? prev');
-    expect(page).not.toContain('id:             `briefing_${Date.now()}`');
+  it('does not retain the retired market-briefing connector beside durable Presence', () => {
+    expect(page).not.toContain('market_briefing_');
+    expect(page).not.toContain("new WebSocket('ws://localhost:4200')");
+    expect(page).not.toContain('<LiveViewPanel />');
   });
 });

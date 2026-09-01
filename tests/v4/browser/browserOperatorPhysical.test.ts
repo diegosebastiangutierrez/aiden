@@ -7,8 +7,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { pwClose, pwListTabs } from '../../../core/playwrightBridge';
-import { runWithAuthorizedBrowserSession } from '../../../core/v4/browser/browserExecutionScope';
+import { pwClose } from '../../../core/playwrightBridge';
 import { runMigrations } from '../../../core/v4/daemon/db/migrations';
 import { runWithJobExecutionContext } from '../../../core/v4/daemon/jobExecutionContext';
 import { createJobEngine, type JobEngine } from '../../../core/v4/daemon/jobEngine';
@@ -16,11 +15,13 @@ import type { ToolContext, ToolHandler } from '../../../core/v4/toolRegistry';
 import { browserClickTool } from '../../../tools/v4/browser/browserClick';
 import { browserControlTool } from '../../../tools/v4/browser/browserControl';
 import { browserDownloadTool } from '../../../tools/v4/browser/browserDownload';
+import { browserCloseTool } from '../../../tools/v4/browser/browserClose';
 import { browserExtractTool } from '../../../tools/v4/browser/browserExtract';
 import { browserFillTool } from '../../../tools/v4/browser/browserFill';
 import { browserNavigateTool } from '../../../tools/v4/browser/browserNavigate';
 import { browserSnapshotTool } from '../../../tools/v4/browser/browserSnapshot';
 import { browserUploadTool } from '../../../tools/v4/browser/browserUpload';
+import { browserTabTool, browserTabsTool } from '../../../tools/v4/browser/browserTabs';
 
 const physical = process.env.AIDEN_PHYSICAL_BROWSER === '1' ? describe : describe.skip;
 
@@ -34,11 +35,11 @@ physical('physical durable Browser Operator fixture', () => {
   const uploads: Array<{ name: string; sha256: string }> = [];
   const downloadBody = 'AIDEN_BROWSER_DOWNLOAD_SMOKE';
 
-  function admit() {
+  function admit(key = 'fixture') {
     const admission = engine.submitJob({
       entryPoint: 'test', source: 'browser-physical', sessionId: 'browser-physical',
       workspaceId: root, instanceId: 'browser-physical', idempotencyNamespace: 'browser-physical',
-      idempotencyKey: 'fixture', goal: 'exercise deterministic browser fixture',
+      idempotencyKey: key, goal: 'exercise deterministic browser fixture',
     });
     const lease = engine.claimAttempt({ attemptId: admission.attemptId, ownerId: 'browser-physical', ttlMs: 120_000 });
     if (!lease.acquired || !lease.fenceToken || lease.generation === undefined) throw new Error('browser fixture lease');
@@ -47,6 +48,32 @@ physical('physical durable Browser Operator fixture', () => {
       generation: lease.generation, fenceToken: lease.fenceToken,
       producer: 'browser-physical', workspacePath: root,
     };
+  }
+
+  function completeJob(context: ReturnType<typeof admit>, browserSessionId: string): void {
+    const job = engine.getJob(context.jobId)!;
+    expect(engine.transitionJob({
+      jobId: context.jobId, attemptId: context.attemptId,
+      generation: context.generation, fenceToken: context.fenceToken,
+      expectedStateVersion: job.stateVersion, to: 'running',
+      eventIdempotencyKey: `${context.jobId}-running`, producer: 'browser-physical',
+    })).toMatchObject({ applied: true });
+    const attempt = engine.getAttempt(context.attemptId)!;
+    expect(engine.transitionAttempt({
+      attemptId: context.attemptId, expectedStateVersion: attempt.stateVersion,
+      generation: context.generation, fenceToken: context.fenceToken,
+      to: 'succeeded', eventIdempotencyKey: `${context.attemptId}-succeeded`,
+      producer: 'browser-physical', finishReason: 'stop',
+    })).toMatchObject({ applied: true });
+    const running = engine.getJob(context.jobId)!;
+    expect(engine.finalizeJob({
+      jobId: context.jobId, attemptId: context.attemptId,
+      generation: context.generation, fenceToken: context.fenceToken,
+      expectedStateVersion: running.stateVersion, status: 'completed', outcome: 'verified',
+      finishReason: 'stop', evidence: { browserSessionId },
+      eventIdempotencyKey: `${context.jobId}-completed`, producer: 'browser-physical',
+    })).toMatchObject({ applied: true });
+    engine.browser.settleSession(context, 'closed', 'durable lifecycle completed');
   }
 
   async function run(tool: ToolHandler, args: Record<string, unknown>) {
@@ -165,19 +192,169 @@ physical('physical durable Browser Operator fixture', () => {
     });
     expect(await fs.readFile(downloaded.path, 'utf8')).toBe(downloadBody);
 
-    expect(await run(browserClickTool, { selector: '#popup' })).toMatchObject({ success: true });
-    const tabs = await runWithJobExecutionContext(jobContext, () =>
-      runWithAuthorizedBrowserSession(undefined, () => pwListTabs()),
-    );
-    expect(tabs.ok).toBe(true);
+    const initialTabs = await run(browserTabsTool, {});
+    expect(initialTabs).toMatchObject({
+      browser_session_id: expect.stringMatching(/^browser_session_/),
+      job_id: jobContext.jobId,
+      attempt_id: jobContext.attemptId,
+      generation: jobContext.generation,
+      session_state: 'ready',
+    });
+    const primaryTabId = initialTabs.tabs.find((tab: any) => tab.controlled)?.tab_id;
+    expect(primaryTabId).toBeTruthy();
+    expect(await run(browserTabTool, { action: 'rename', tab_id: primaryTabId, name: 'Source 1' }))
+      .toMatchObject({ success: true, name: 'Source 1', verified: true });
+    const opened = await run(browserTabTool, { action: 'open', url: `${baseUrl}/product-b`, name: 'Source 2' });
+    expect(opened).toMatchObject({ success: true, name: 'Source 2', verified: true });
+    const secondTabId = opened.tab_id;
+    expect(await run(browserTabTool, { action: 'switch', tab_id: primaryTabId }))
+      .toMatchObject({ success: true, tab_id: primaryTabId, verified: true });
+    expect(await run(browserTabTool, { action: 'switch', tab_id: secondTabId }))
+      .toMatchObject({ success: true, tab_id: secondTabId, verified: true });
+    const tabs = await run(browserTabsTool, {});
+    expect(tabs.success).toBe(true);
     expect(tabs.tabs).toHaveLength(2);
-    expect(tabs.tabs.every((tab) => tab.browserSessionId === engine.browser.getSessionForAttempt(
+    expect(tabs.tabs.map((tab: any) => tab.name)).toEqual(['Source 1', 'Source 2']);
+    expect(tabs.tabs.every((tab: any) => tab.created_by === 'aiden')).toBe(true);
+    const durableTabs = engine.browser.listTabs(engine.browser.getSessionForAttempt(
       jobContext.jobId, jobContext.attemptId, jobContext.generation,
-    )?.browserSessionId)).toBe(true);
+    )!.browserSessionId);
+    expect(durableTabs.map((tab) => tab.purpose)).toEqual(['Source 1', 'Source 2']);
+    expect(await run(browserTabTool, { action: 'switch', tab_id: primaryTabId }))
+      .toMatchObject({ success: true, tab_id: primaryTabId, verified: true });
+    expect(await run(browserTabTool, { action: 'close', tab_id: secondTabId }))
+      .toMatchObject({ success: true, tab_id: secondTabId, verified: true });
+    const tabsAfterClose = (await run(browserTabsTool, {})).tabs;
+    expect(tabsAfterClose).toHaveLength(1);
+    expect(engine.browser.listTabs(engine.browser.getSessionForAttempt(
+      jobContext.jobId, jobContext.attemptId, jobContext.generation,
+    )!.browserSessionId).find((tab) => tab.tabId === secondTabId)?.closedAt).not.toBeNull();
 
     const receipts = db.prepare('SELECT state FROM browser_action_receipts ORDER BY action_sequence').all() as Array<{ state: string }>;
     expect(receipts.length).toBeGreaterThanOrEqual(10);
     expect(receipts.every((receipt) => !['prepared', 'dispatched'].includes(receipt.state))).toBe(true);
     expect(engine.proof.listEvidence(jobContext.jobId).length).toBeGreaterThan(0);
+    const activeSession = engine.browser.getSessionForAttempt(
+      jobContext.jobId, jobContext.attemptId, jobContext.generation,
+    )!;
+    expect(await run(browserCloseTool, {})).toMatchObject({ success: true, verified: true });
+    expect(engine.browser.getSession(activeSession.browserSessionId)).toMatchObject({
+      state: 'closed', recoveryState: 'explicit close', controlledTabId: null,
+    });
   }, 60_000);
+
+  it('rehydrates the same durable named tabs after the browser host restarts', async () => {
+    jobContext = admit('restart-recovery');
+    expect(await run(browserNavigateTool, { url: baseUrl })).toMatchObject({ success: true });
+
+    const before = await run(browserTabsTool, {});
+    const primaryTabId = before.tabs.find((tab: any) => tab.controlled)?.tab_id;
+    expect(primaryTabId).toBeTruthy();
+    expect(await run(browserTabTool, { action: 'rename', tab_id: primaryTabId, name: 'Source A' }))
+      .toMatchObject({ success: true, name: 'Source A', verified: true });
+    const opened = await run(browserTabTool, {
+      action: 'open', url: `${baseUrl}/product-b`, name: 'Source B',
+    });
+    expect(opened).toMatchObject({ success: true, name: 'Source B', verified: true });
+    const secondTabId = opened.tab_id;
+    expect(await run(browserTabTool, { action: 'switch', tab_id: secondTabId }))
+      .toMatchObject({ success: true, tab_id: secondTabId, verified: true });
+    expect(await run(browserTabTool, { action: 'switch', tab_id: primaryTabId }))
+      .toMatchObject({ success: true, tab_id: primaryTabId, verified: true });
+
+    const sessionId = before.browser_session_id;
+    await pwClose();
+
+    const recovered = await run(browserTabsTool, {});
+    expect(recovered).toMatchObject({
+      success: true,
+      browser_session_id: sessionId,
+      job_id: jobContext.jobId,
+      attempt_id: jobContext.attemptId,
+      generation: jobContext.generation,
+      session_state: 'ready',
+    });
+    expect(recovered.tabs).toHaveLength(2);
+    expect(recovered.tabs.map((tab: any) => ({
+      tab_id: tab.tab_id,
+      name: tab.name,
+      url: tab.url,
+      title: tab.title,
+      controlled: tab.controlled,
+    }))).toEqual([
+      {
+        tab_id: primaryTabId,
+        name: 'Source A',
+        url: `${baseUrl}/`,
+        title: 'Browser Fixture',
+        controlled: true,
+      },
+      {
+        tab_id: secondTabId,
+        name: 'Source B',
+        url: `${baseUrl}/product-b`,
+        title: 'Product B',
+        controlled: false,
+      },
+    ]);
+    const freshObservation = await run(browserExtractTool, {});
+    expect(freshObservation).toMatchObject({
+      success: true,
+      text: expect.stringContaining('Deterministic Browser Fixture'),
+    });
+    expect(await run(browserCloseTool, {})).toMatchObject({ success: true, verified: true });
+  }, 60_000);
+
+  it('continues verified named tabs into a fresh Job and physical browser host', async () => {
+    const source = admit('fresh-job-source');
+    jobContext = source;
+    expect(await run(browserNavigateTool, { url: baseUrl })).toMatchObject({ success: true });
+    const sourceTabs = await run(browserTabsTool, {});
+    const sourcePrimaryId = sourceTabs.tabs.find((tab: any) => tab.controlled)?.tab_id;
+    expect(sourcePrimaryId).toBeTruthy();
+    expect(await run(browserTabTool, { action: 'rename', tab_id: sourcePrimaryId, name: 'Source A' }))
+      .toMatchObject({ success: true, verified: true });
+    const sourceB = await run(browserTabTool, {
+      action: 'open', url: `${baseUrl}/product-b`, name: 'Source B',
+    });
+    expect(sourceB).toMatchObject({ success: true, verified: true });
+    expect(await run(browserTabTool, { action: 'switch', tab_id: sourceB.tab_id }))
+      .toMatchObject({ success: true, verified: true });
+    expect(await run(browserTabTool, { action: 'switch', tab_id: sourcePrimaryId }))
+      .toMatchObject({ success: true, verified: true });
+
+    await pwClose({ announce: false });
+    completeJob(source, sourceTabs.browser_session_id);
+
+    const target = admit('fresh-job-target');
+    jobContext = target;
+    const continued = await run(browserTabTool, {
+      action: 'reconnect', session_id: sourceTabs.browser_session_id,
+    });
+    expect(continued).toMatchObject({
+      success: true,
+      verified: true,
+      continued_from_session_id: sourceTabs.browser_session_id,
+      browser_session_id: expect.stringMatching(/^browser_session_/),
+      job_id: target.jobId,
+      attempt_id: target.attemptId,
+      generation: target.generation,
+      controlled_tab_id: sourcePrimaryId,
+    });
+    expect(continued.browser_session_id).not.toBe(sourceTabs.browser_session_id);
+    expect(continued.tabs.map((tab: any) => ({
+      tab_id: tab.tab_id, name: tab.name, url: tab.url, controlled: tab.controlled,
+    }))).toEqual([
+      { tab_id: sourcePrimaryId, name: 'Source A', url: `${baseUrl}/`, controlled: true },
+      { tab_id: sourceB.tab_id, name: 'Source B', url: `${baseUrl}/product-b`, controlled: false },
+    ]);
+    expect(await run(browserExtractTool, {})).toMatchObject({
+      success: true,
+      text: expect.stringContaining('Deterministic Browser Fixture'),
+    });
+    expect(engine.browser.listTabs(sourceTabs.browser_session_id).every((tab) => tab.closedAt !== null)).toBe(true);
+    expect(engine.browser.listTabs(continued.browser_session_id).filter((tab) => tab.closedAt === null))
+      .toHaveLength(2);
+    expect(await run(browserCloseTool, {})).toMatchObject({ success: true, verified: true });
+  }, 90_000);
 });

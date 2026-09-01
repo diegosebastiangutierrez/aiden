@@ -109,6 +109,26 @@ describe('Reliable Automations model tools', () => {
     expect(preview).toHaveBeenCalledWith({ expression: '0 9 * * *', timezone: 'Asia/Kolkata', count: 5 });
   });
 
+  it('inspects exact durable automation history without returning unrelated occurrences', async () => {
+    const snapshot = vi.fn(() => ({
+      capability: { available: true }, scheduler: { ready: true, dueBindings: 0 },
+      automations: [{ automationId: 'automation-1', name: 'Temporary' }],
+      history: [
+        { occurrenceId: 'occurrence-1', automationId: 'automation-1', state: 'completed' },
+        { occurrenceId: 'occurrence-2', automationId: 'automation-2', state: 'failed' },
+      ],
+      attention: [],
+    }));
+    const automation = { snapshot } as unknown as NonNullable<ToolContext['automation']>;
+
+    await expect(automationStatusTool.execute({
+      action: 'history', automation_id: 'automation-1',
+    }, context({ automation }))).resolves.toEqual({
+      automationId: 'automation-1',
+      history: [{ occurrenceId: 'occurrence-1', automationId: 'automation-1', state: 'completed' }],
+    });
+  });
+
   it('creates through the existing automation port with bounded safe defaults', async () => {
     const create = vi.fn((input) => ({ automationId: 'automation-1', ...input }));
     const automation = { create } as unknown as NonNullable<ToolContext['automation']>;
@@ -126,5 +146,35 @@ describe('Reliable Automations model tools', () => {
       capabilities: [], credentialRefs: [], approval: { mode: 'policy' },
     }));
     expect(result).toMatchObject({ automationId: 'automation-1' });
+  });
+
+  it('creates a manual-only automation without inventing a schedule', async () => {
+    const create = vi.fn((input) => ({ automationId: 'automation-manual', ...input }));
+    const automation = { create } as unknown as NonNullable<ToolContext['automation']>;
+
+    await expect(automationManageTool.execute({
+      action: 'create', name: 'Temporary check', prompt: 'Return AUTOMATION_OK.',
+      trigger_kind: 'manual',
+    }, context({ automation }))).resolves.toMatchObject({
+      automationId: 'automation-manual',
+      trigger: { kind: 'manual' },
+    });
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'Temporary check',
+      trigger: { kind: 'manual' },
+      policies: expect.objectContaining({ overlap: 'skip' }),
+    }));
+  });
+
+  it('removes through the durable automation authority', async () => {
+    const remove = vi.fn(() => ({ automationId: 'automation-1', removedAt: 2_000, removedBy: 'local-user' }));
+    const automation = { remove } as unknown as NonNullable<ToolContext['automation']>;
+
+    await expect(automationManageTool.execute({
+      action: 'remove', automation_id: 'automation-1',
+    }, context({ automation }))).resolves.toMatchObject({
+      automationId: 'automation-1', removedAt: 2_000,
+    });
+    expect(remove).toHaveBeenCalledWith('automation-1', 'local-user');
   });
 });

@@ -34,7 +34,7 @@ describe('external protocol persistence migration', () => {
     const before = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>)
       .map((row) => row.name));
     expect(runMigrations(db)).toEqual({ from: 53, to: LATEST_SCHEMA_VERSION });
-    expect(LATEST_SCHEMA_VERSION).toBe(54);
+    expect(LATEST_SCHEMA_VERSION).toBeGreaterThanOrEqual(54);
     const added = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as Array<{ name: string }>)
       .map((row) => row.name)
       .filter((name) => !before.has(name));
@@ -62,8 +62,8 @@ describe('external protocol persistence migration', () => {
   });
 
   it('keeps the migration idempotent and restart-safe', () => {
-    expect(runMigrations(db)).toEqual({ from: 0, to: 54 });
-    expect(runMigrations(db)).toEqual({ from: 54, to: 54 });
+    expect(runMigrations(db)).toEqual({ from: 0, to: LATEST_SCHEMA_VERSION });
+    expect(runMigrations(db)).toEqual({ from: LATEST_SCHEMA_VERSION, to: LATEST_SCHEMA_VERSION });
     expect(db.pragma('foreign_key_check')).toEqual([]);
   });
 });

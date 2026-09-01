@@ -10,6 +10,11 @@ vi.mock('../../../core/playwrightBridge', () => ({
   pwType: vi.fn(),
   pwScroll: vi.fn(),
   pwClose: vi.fn(),
+  pwListTabs: vi.fn(),
+  pwOpenTab: vi.fn(),
+  pwRehydrateCurrentDurableSession: vi.fn(),
+  pwSwitchControl: vi.fn(),
+  pwCloseTab: vi.fn(),
 }));
 
 import {
@@ -21,6 +26,10 @@ import {
   pwType,
   pwScroll,
   pwClose,
+  pwListTabs,
+  pwOpenTab,
+  pwSwitchControl,
+  pwCloseTab,
 } from '../../../core/playwrightBridge';
 import { browserScreenshotTool } from '../../../tools/v4/browser/browserScreenshot';
 import { browserExtractTool } from '../../../tools/v4/browser/browserExtract';
@@ -31,6 +40,7 @@ import { browserTypeTool } from '../../../tools/v4/browser/browserType';
 import { browserFillTool } from '../../../tools/v4/browser/browserFill';
 import { browserScrollTool } from '../../../tools/v4/browser/browserScroll';
 import { browserCloseTool } from '../../../tools/v4/browser/browserClose';
+import { browserTabTool, browserTabsTool } from '../../../tools/v4/browser/browserTabs';
 import { resolveAidenPaths } from '../../../core/v4/paths';
 import type { ToolContext } from '../../../core/v4/toolRegistry';
 
@@ -212,5 +222,44 @@ describe('browser tools', () => {
       expect(tool.mutates).toBe(true);
       expect(tool.toolset).toBe('browser');
     }
+  });
+
+  it('15. browser_tabs exposes stable semantic tab identity as read-only state', async () => {
+    (pwListTabs as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      tabs: [{
+        tab_id: 'tab-1', url: 'https://example.com/', title: 'Example Domain',
+        origin: 'https://example.com', opener_id: null, createdBy: 'aiden',
+        controlled: true, lastSnapshotHash: null, dirtyForm: false, browserSessionId: null,
+      }],
+    });
+    const result = await browserTabsTool.execute({}, ctx) as Record<string, any>;
+    expect(browserTabsTool.mutates).toBe(false);
+    expect(result).toMatchObject({ success: true, browser_session_id: null, tabs: [{
+      tab_id: 'tab-1', name: 'Example Domain', controlled: true, closeable: true,
+    }] });
+  });
+
+  it('16. browser_tab opens a named tab and makes that exact tab active', async () => {
+    (pwOpenTab as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: true, tab_id: 'tab-2' });
+    (pwSwitchControl as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: true });
+    (pwListTabs as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: true, tabs: [] });
+    const result = await browserTabTool.execute({
+      action: 'open', name: 'Source 2', url: 'https://www.iana.org/help/example-domains',
+    }, ctx) as Record<string, any>;
+    expect(result).toMatchObject({ success: true, tab_id: 'tab-2', name: 'Source 2', verified: true });
+    expect(pwOpenTab).toHaveBeenCalledWith('https://www.iana.org/help/example-domains', 'Source 2');
+    expect(pwSwitchControl).toHaveBeenCalledWith('tab-2');
+  });
+
+  it('17. browser_tab switches and closes only the requested exact tab', async () => {
+    (pwSwitchControl as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: true });
+    (pwListTabs as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true, tabs: [] });
+    expect(await browserTabTool.execute({ action: 'switch', tab_id: 'tab-1' }, ctx))
+      .toMatchObject({ success: true, tab_id: 'tab-1', verified: true });
+    (pwCloseTab as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: true });
+    expect(await browserTabTool.execute({ action: 'close', tab_id: 'tab-2' }, ctx))
+      .toMatchObject({ success: true, tab_id: 'tab-2', verified: true });
+    expect(pwCloseTab).toHaveBeenCalledWith('tab-2');
   });
 });

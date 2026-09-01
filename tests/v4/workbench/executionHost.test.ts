@@ -73,9 +73,10 @@ describe('Workbench execution host', () => {
     expect(stop).toHaveBeenCalledOnce();
   });
 
-  it('preserves only restart-safe Automation approvals when the Workbench host shuts down', async () => {
+  it('preserves pending approvals and requests host detachment when the Workbench shuts down', async () => {
     const stop = vi.fn(async () => undefined);
     const cancelPendingForJob = vi.fn(() => []);
+    const createRunner = vi.fn(() => ({ invoke: vi.fn() }) as never);
     const host = createWorkbenchExecutionHost({
       db: {} as never,
       triggerBus: { reclaimExpired: () => ({ reclaimed: 0 }), stats: () => ({ pending: 0, claimed: 0, running: 0, deadLetter: 0, oldestPendingMs: null }) } as never,
@@ -100,7 +101,7 @@ describe('Workbench execution host', () => {
       taskStore: {} as never,
       instanceId: 'workbench_shutdown', agentBuilder: vi.fn() as never,
       persistedDefault: { provider: 'p', model: 'm' },
-      createRunner: () => ({ invoke: vi.fn() }) as never,
+      createRunner,
       createDispatcher: () => ({
         start: vi.fn(), stop, inflight: () => [], stats: () => ({ claimed: 0, succeeded: 0, failed: 0, deadLetter: 0, deliverOnly: 0, misconfigured: 0 }),
         installRunner: vi.fn(), runnerKind: () => 'real' as const, _pumpOnce: vi.fn(),
@@ -109,8 +110,8 @@ describe('Workbench execution host', () => {
 
     host.start();
     await host.stop();
-    expect(cancelPendingForJob).toHaveBeenCalledTimes(1);
-    expect(cancelPendingForJob).toHaveBeenCalledWith('job_running', 'Workbench execution host shutdown');
+    expect(createRunner).toHaveBeenCalledWith(expect.objectContaining({ detachJobsOnDispose: true }));
+    expect(cancelPendingForJob).not.toHaveBeenCalled();
     expect(stop).toHaveBeenCalledOnce();
   });
 

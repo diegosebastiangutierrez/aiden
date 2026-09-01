@@ -141,7 +141,12 @@ describe('signed entitlement authority', () => {
 
   it('rejects bad signatures, wrong products, revoked claims, and wrong device bindings', async () => {
     const paths = await makePaths();
-    const authority = new EntitlementAuthority({ paths, publicKeyPem, deviceBinding: 'device-A' });
+    const authority = new EntitlementAuthority({
+      paths,
+      publicKeyPem,
+      deviceBinding: 'device-A',
+      now: () => new Date('2026-08-15T00:00:00Z'),
+    });
     expect(authority.evaluate({ ...signedClaim(), signature: 'bad' }).reason).toBe('invalid entitlement signature');
     expect(authority.evaluate(signedClaim({ product: 'aiden' as any, accountId: 'x' })).state).toBe('active');
     const wrongProduct = signedClaim();

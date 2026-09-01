@@ -14,6 +14,7 @@ import Database from 'better-sqlite3';
 import { runMigrations } from '../../../core/v4/daemon/db/migrations';
 import { createLearningAuthority } from '../../../core/v4/learning/learningAuthority';
 import { localLearningScopes } from '../../../core/v4/learning/scopes';
+import { migrateLegacyMemorySnapshot } from '../../../core/v4/learning/legacyMigration';
 
 let tmp: string;
 let projectDir: string;
@@ -157,6 +158,47 @@ describe('memory_add canonical Learning bridge', () => {
         .toHaveLength(1);
     } finally {
       if (db.open) db.close();
+    }
+  });
+
+  it('keeps an explicit preference correction canonical across restart migration', async () => {
+    const dbPath = path.join(tmp, 'learning-correction.db');
+    const db = new Database(dbPath);
+    runMigrations(db);
+    const learning = createLearningAuthority({ db, enabled: true });
+    const scopes = localLearningScopes({ ownerId: 'local-user', workspaceId: 'workspace-test' });
+    const userScope = scopes.find((scope) => scope.kind === 'USER_GLOBAL')!;
+    const learningCtx: ToolContext = { ...ctx, learning: { authority: learning, scopes } };
+    try {
+      const oldPreference = 'For benchmark summaries, use bullet lists.';
+      const newPreference = 'For benchmark summaries, use numbered lists instead of bullet lists.';
+      await memoryAddTool.execute({ file: 'user', content: oldPreference, source: 'said' }, learningCtx);
+
+      migrateLegacyMemorySnapshot({
+        authority: learning,
+        snapshot: await mgr.loadSnapshot(),
+        resolveScope: () => userScope,
+      });
+
+      const replaced = await memoryReplaceTool.execute({
+        file: 'user', old_text: oldPreference, new_text: newPreference, source: 'said',
+      }, learningCtx) as { success: boolean; verified: boolean };
+      expect(replaced).toMatchObject({ success: true, verified: true });
+
+      migrateLegacyMemorySnapshot({
+        authority: learning,
+        snapshot: await mgr.loadSnapshot(),
+        resolveScope: () => userScope,
+      });
+
+      const active = learning.list({ scopes: [userScope] })
+        .filter((entry) => entry.lifecycle === 'ACTIVE' && entry.eligible);
+      expect(active).toHaveLength(1);
+      expect(active[0]?.content).toBe(newPreference);
+      expect(active.some((entry) => entry.content === oldPreference)).toBe(false);
+      expect(learning.history(active[0]!.id).some((event) => event.type === 'CORRECTED')).toBe(true);
+    } finally {
+      db.close();
     }
   });
 });

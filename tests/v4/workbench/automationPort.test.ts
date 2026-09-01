@@ -85,4 +85,62 @@ describe('Workbench reliable automation port', () => {
     expect(revised.action).toEqual({ kind: 'prompt', prompt: 'Updated prompt' });
     expect(db.prepare('SELECT COUNT(*) AS count FROM automation_revisions WHERE automation_id = ?').get(created.automationId)).toEqual({ count: 2 });
   });
+
+  it('reports scheduler readiness from the execution host instead of configuration alone', () => {
+    let hostReady = false;
+    const port = createWorkbenchAutomationPort({
+      db, triggerBus: createTriggerBus({ db }), edition: buildEditionAuthority('pro'),
+      schedulerReady: () => hostReady,
+    });
+
+    expect(port.snapshot().scheduler).toMatchObject({
+      ready: false,
+      reason: 'Automation execution host is unavailable.',
+    });
+
+    hostReady = true;
+    expect(port.snapshot().scheduler).toEqual({ ready: true, dueBindings: 0 });
+  });
+
+  it('removes an automation from active control while retaining its durable history', () => {
+    const port = createWorkbenchAutomationPort({
+      db, triggerBus: createTriggerBus({ db }), edition: buildEditionAuthority('pro'),
+      workspaceRoot: process.cwd(),
+    });
+    const created = port.create({
+      name: 'Temporary acceptance automation', createdBy: 'test',
+      action: { kind: 'prompt', prompt: 'Return AUTOMATION_OK.' },
+      trigger: { kind: 'schedule', expression: '0 9 * * *', timezone: 'Asia/Kolkata' },
+      policies: { misfire: { kind: 'run_once' }, overlap: 'skip', retry: { maxAttempts: 1 } },
+      capabilities: [], credentialRefs: [],
+    });
+    db.prepare(
+      `INSERT INTO automation_occurrences (
+         occurrence_id,occurrence_key,automation_id,revision_id,trigger_kind,source_identity,
+         scheduled_for,triggered_at,admitted_at,state,created_at,updated_at
+       ) VALUES ('occurrence_removed','key-removed',?,?,'manual','manual-removed',NULL,1000,NULL,'completed',1000,1000)`,
+    ).run(created.automationId, created.revisionId);
+
+    expect(port.remove(created.automationId, 'test', 2_000)).toEqual({
+      automationId: created.automationId,
+      removedAt: 2_000,
+      removedBy: 'test',
+    });
+    const snapshot = port.snapshot();
+    expect(snapshot.automations).toEqual([]);
+    expect(snapshot.history).toEqual([
+      expect.objectContaining({
+        occurrenceId: 'occurrence_removed',
+        automationId: created.automationId,
+        state: 'completed',
+      }),
+    ]);
+    expect(db.prepare(
+      'SELECT enabled,removed_at,removed_by FROM automation_definitions WHERE automation_id = ?',
+    ).get(created.automationId)).toEqual({ enabled: 0, removed_at: 2_000, removed_by: 'test' });
+    expect(db.prepare(
+      'SELECT COUNT(*) AS count FROM automation_trigger_bindings WHERE automation_id = ? AND enabled = 1',
+    ).get(created.automationId)).toEqual({ count: 0 });
+    expect(() => port.setEnabled(created.automationId, true)).toThrow(/removed/i);
+  });
 });

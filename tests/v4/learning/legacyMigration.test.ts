@@ -42,4 +42,31 @@ describe('selective legacy Memory migration', () => {
     expect(entries.filter((entry) => entry.confidence === 'CANDIDATE')).toHaveLength(2);
     expect(ledger.retrieve({ query: 'concise reports', scopes: [scope] }).items).toEqual([]);
   });
+
+  it('links a legacy projection to identical explicit content instead of duplicating the entry', () => {
+    const ledger = createLearningAuthority({ db, enabled: true, now: () => 100 });
+    const content = 'Prefer numbered lists for benchmark summaries.';
+    ledger.capture({
+      scope,
+      type: 'USER_PREFERENCE',
+      subjectKey: 'explicit.user.preference',
+      content,
+      source: {
+        kind: 'USER_EXPLICIT',
+        identity: 'memory_add:user:preference',
+        revision: '1',
+        independentKey: 'user:owner_1',
+      },
+    });
+    const sourceText = `[said] ${content}`;
+    const snapshot: MemorySnapshot = {
+      memoryMd: '', userMd: sourceText, loadedAt: 1, isEmpty: false,
+      files: { user: { content: sourceText, charCount: sourceText.length, charLimit: 20_000, path: 'USER.md' } },
+    };
+
+    const result = migrateLegacyMemorySnapshot({ authority: ledger, snapshot, resolveScope: () => scope });
+
+    expect(result).toMatchObject({ imported: 0, duplicates: 1, rejected: 0 });
+    expect(ledger.list({ scopes: [scope] })).toHaveLength(1);
+  });
 });

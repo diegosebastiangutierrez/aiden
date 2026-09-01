@@ -105,6 +105,39 @@ it('reads the immutable admitted provider/model binding instead of later mutable
 });
 
 describe('createRealAgentRunner durable identity', () => {
+  it('detaches an active restartable-host Attempt instead of cancelling the Job', async () => {
+    const engine = createJobEngine({ db });
+    let started!: () => void;
+    const executing = new Promise<void>((resolve) => { started = resolve; });
+    const runner = createRealAgentRunner({
+      db,
+      runStore,
+      jobEngine: engine,
+      taskStore: createTaskStore({ db }),
+      detachJobsOnDispose: true,
+      persistedDefault: PERSISTED,
+      agentBuilder: (({ abortSignal }) => ({
+        runConversation: async () => {
+          started();
+          await new Promise<void>((_resolve, reject) => {
+            abortSignal.addEventListener('abort', () => reject(abortSignal.reason), { once: true });
+          });
+          return mkResult();
+        },
+      } as unknown as AidenAgent)) as AgentBuilder,
+    });
+
+    const invocation = runner.invoke(mkInput());
+    await executing;
+    await runner.dispose?.('Workbench host shutdown');
+    await expect(invocation).rejects.toMatchObject({ name: 'DurableJobHostDetachedError' });
+
+    const job = engine.listJobs({ sessionId: 'trigger:file:t1:abc' })[0]!;
+    const attempt = engine.getAttempt(job.activeAttemptId!)!;
+    expect(job).toMatchObject({ status: 'waiting', terminalOutcome: null });
+    expect(attempt).toMatchObject({ status: 'waiting', leaseOwner: null });
+  });
+
   it('settles a typed automation ScriptSpec without invoking a model agent', async () => {
     const event = createTriggerBus({ db }).insert({
       source: 'manual', sourceKey: 'automation-script', idempotencyKey: 'automation-script-1', payload: {},
@@ -230,6 +263,121 @@ describe('createRealAgentRunner durable identity', () => {
           { role: 'user', content: 'current question' },
           { role: 'assistant', content: 'current answer' },
         ]);
+    } finally {
+      sessionStore.close();
+    }
+  });
+
+  it('creates the canonical daemon conversation before persisting its first checkpoint', async () => {
+    const sessionStore = new SessionStore(':memory:');
+    try {
+      const sessionId = 'automation:automation_checkpoint';
+      const runner = createRealAgentRunner({
+        db, runStore, jobEngine: createJobEngine({ db }),
+        taskStore: createTaskStore({ db }), sessionStore,
+        persistedDefault: PERSISTED,
+        agentBuilder: (() => ({
+          runConversation: async (
+            history: unknown[],
+            options: { onConversationCheckpoint?: (messages: unknown[]) => void },
+          ) => {
+            options.onConversationCheckpoint?.([
+              ...history,
+              { role: 'assistant', content: 'automation checkpoint' },
+            ]);
+            return { ...mkResult(), finalContent: 'automation complete', turnCount: 1 } as AidenAgentResult;
+          },
+        } as unknown as AidenAgent)) as AgentBuilder,
+      });
+
+      const result = await runner.invoke(mkInput({
+        sessionId,
+        initialMessage: 'run the automation once',
+      }));
+
+      expect(result.finishReason).toBe('stop');
+      expect(sessionStore.getSession(sessionId)).not.toBeNull();
+      expect(sessionStore.getMessages(sessionId)).toMatchObject([
+        { role: 'user', content: 'run the automation once' },
+        { role: 'assistant', content: 'automation checkpoint' },
+      ]);
+    } finally {
+      sessionStore.close();
+    }
+  });
+
+  it('restores an exact in-flight tool tail without creating a second provider plan', async () => {
+    const sessionStore = new SessionStore(':memory:');
+    try {
+      const sessionId = 'session_workbench_mid_turn_restart';
+      sessionStore.ensureSession(sessionId, { title: 'Restart' });
+      sessionStore.appendMessage(sessionId, { role: 'user', content: 'write once', turnNumber: 11 });
+      const pendingCall = {
+        id: 'provider-call-stable', name: 'file_write',
+        arguments: { path: 'restart.txt', content: 'same' },
+      };
+      let checkpointStarted!: () => void;
+      const checkpointReady = new Promise<void>((resolve) => { checkpointStarted = resolve; });
+      const first = createRealAgentRunner({
+        db, runStore, jobEngine: createJobEngine({ db }),
+        taskStore: createTaskStore({ db }), sessionStore,
+        detachJobsOnDispose: true, persistedDefault: PERSISTED,
+        agentBuilder: (({ abortSignal }) => ({
+          runConversation: async (
+            history: unknown[],
+            options: { onConversationCheckpoint?: (messages: unknown[], phase: string) => void },
+          ) => {
+            options.onConversationCheckpoint?.([
+              ...history,
+              { role: 'assistant', content: '', toolCalls: [pendingCall] },
+            ], 'pending_tools');
+            checkpointStarted();
+            await new Promise<void>((_resolve, reject) => {
+              abortSignal.addEventListener('abort', () => reject(abortSignal.reason), { once: true });
+            });
+            return mkResult();
+          },
+        } as unknown as AidenAgent)) as AgentBuilder,
+      });
+      const input = mkInput({
+        sessionId, triggerEventId: 11, initialMessage: 'write once', instanceId: 'inst-1',
+      });
+      const invocation = first.invoke(input);
+      await checkpointReady;
+      await first.dispose?.('restart');
+      await expect(invocation).rejects.toMatchObject({ name: 'DurableJobHostDetachedError' });
+
+      const engine = createJobEngine({ db });
+      const detached = engine.listJobs({ sessionId })[0]!;
+      let restoredHistory: unknown[] = [];
+      let resumeIds: readonly string[] | undefined;
+      const second = createRealAgentRunner({
+        db, runStore, jobEngine: engine, taskStore: createTaskStore({ db }), sessionStore,
+        detachJobsOnDispose: true, persistedDefault: PERSISTED,
+        agentBuilder: (() => ({
+          runConversation: async (history: unknown[], options: { resumePendingToolCallIds?: readonly string[] }) => {
+            restoredHistory = history;
+            resumeIds = options.resumePendingToolCallIds;
+            return { ...mkResult(), finalContent: 'done once', turnCount: 1 } as AidenAgentResult;
+          },
+        } as unknown as AidenAgent)) as AgentBuilder,
+      });
+      const attempt = engine.getAttempt(detached.activeAttemptId!)!;
+      await second.invoke({
+        ...input,
+        admission: {
+          jobId: detached.id, attemptId: attempt.id, runId: attempt.rowId,
+          generation: attempt.generation, fenceToken: attempt.fenceToken!, reused: true,
+        },
+      });
+
+      expect(restoredHistory).toContainEqual(expect.objectContaining({
+        role: 'assistant', toolCalls: [pendingCall],
+      }));
+      expect(resumeIds).toEqual([pendingCall.id]);
+      expect(sessionStore.getMessages(sessionId).filter((message) =>
+        message.turnNumber === 11 && message.role === 'assistant' && message.toolCalls?.length,
+      )).toHaveLength(1);
     } finally {
       sessionStore.close();
     }

@@ -280,6 +280,64 @@ describe('AidenTUI', () => {
     expect(out).toMatch(/try again/);
   });
 
+  it('forwards terminal geometry and unoverridden Display methods with their receiver intact', async () => {
+    const opts = makeOpts();
+    const underlying = {
+      marker: 'display-receiver',
+      terminalColumns: vi.fn(function (this: { marker: string }) {
+        expect(this.marker).toBe('display-receiver');
+        return 93;
+      }),
+      cols: vi.fn(() => 91),
+      waitForTerminalColumns: vi.fn(async () => 92),
+      applyColors: vi.fn((text: string) => `styled:${text}`),
+    };
+    opts.sessionOpts.display = underlying as any;
+
+    const tui = new AidenTUI(opts);
+    const display = (tui as any).session.opts.display;
+
+    expect(display.terminalColumns()).toBe(93);
+    expect(display.cols()).toBe(91);
+    await expect(display.waitForTerminalColumns()).resolves.toBe(92);
+    expect(display.applyColors('ready', 'success')).toBe('styled:ready');
+    expect(underlying.terminalColumns).toHaveBeenCalledOnce();
+  });
+
+  it('provides stable terminal geometry when an alternate Display omits geometry methods', async () => {
+    const opts = makeOpts();
+    opts.sessionOpts.display = { applyColors: (text: string) => text } as any;
+
+    const tui = new AidenTUI(opts);
+    tui.screen.width = 44;
+    tui.screen.height = 18;
+    const display = (tui as any).session.opts.display;
+
+    expect(display.terminalColumns()).toBe(44);
+    expect(display.terminalRows()).toBe(18);
+    expect(display.cols()).toBe(44);
+    await expect(display.waitForTerminalColumns(60, ['AIDEN'])).resolves.toBe(false);
+    await expect(display.waitForTerminalColumns(40, ['AIDEN'])).resolves.toBe(true);
+  });
+
+  it('bounds invalid geometry and uses safe terminal defaults', () => {
+    const opts = makeOpts();
+    opts.sessionOpts.display = {
+      terminalColumns: () => Number.NaN,
+      terminalRows: () => -1,
+    } as any;
+
+    const tui = new AidenTUI(opts);
+    tui.screen.width = Number.POSITIVE_INFINITY;
+    tui.screen.height = 0;
+    const display = (tui as any).session.opts.display;
+
+    expect(display.terminalColumns()).toBeGreaterThanOrEqual(20);
+    expect(display.terminalColumns()).toBeLessThanOrEqual(500);
+    expect(display.terminalRows()).toBeGreaterThanOrEqual(8);
+    expect(display.terminalRows()).toBeLessThanOrEqual(200);
+  });
+
   it('renders a human compact tool summary without serialized arguments', () => {
     const tui = new AidenTUI(makeOpts());
     const display = (tui as any).session.opts.display;

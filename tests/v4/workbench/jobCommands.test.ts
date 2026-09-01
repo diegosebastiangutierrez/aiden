@@ -12,6 +12,7 @@ import { createActionAuthority, normalizeExecutionPlan } from '../../../core/v4/
 import { createRunStore } from '../../../core/v4/daemon/runStore';
 import { createTriggerBus } from '../../../core/v4/daemon/triggerBus';
 import { createWorkbenchJobCommands, summarizeWorkbenchGoal } from '../../../core/v4/workbench/jobCommands';
+import type { SessionStore } from '../../../core/v4/sessionStore';
 
 describe('Workbench durable Job commands', () => {
   let db: Database.Database;
@@ -68,6 +69,41 @@ describe('Workbench durable Job commands', () => {
       job_id: result.jobId,
       attempt_id: result.attemptId,
       run_id: result.runId,
+    });
+  });
+
+  it('uses one generated session identity for admission, dispatch, and conversation checkpoints', () => {
+    const jobEngine = createJobEngine({ db });
+    const runStore = createRunStore({ db });
+    const ensureSession = vi.fn();
+    const appendMessage = vi.fn();
+    const sessionStore = {
+      ensureSession,
+      appendMessage,
+      getMessages: vi.fn(() => []),
+    } as unknown as SessionStore;
+    const { enqueue } = createWorkbenchJobCommands({
+      db,
+      triggerBus: createTriggerBus({ db }),
+      jobEngine,
+      runStore,
+      instanceId: 'workbench_test',
+      idFactory: () => 'workbench-idempotency-key',
+      sessionStore,
+    });
+
+    const admitted = enqueue.enqueue({ message: 'inspect durable state' });
+    const expectedSessionId = 'workbench:workbench-idempotency-key';
+    const trigger = db.prepare('SELECT payload_json FROM trigger_events WHERE id = ?')
+      .get(admitted.triggerEventId) as { payload_json: string };
+
+    expect(jobEngine.getJob(admitted.jobId)?.sessionId).toBe(expectedSessionId);
+    expect(JSON.parse(trigger.payload_json).sessionId).toBe(expectedSessionId);
+    expect(ensureSession).toHaveBeenCalledWith(expectedSessionId, {
+      title: 'inspect durable state',
+    });
+    expect(appendMessage).toHaveBeenCalledWith(expectedSessionId, {
+      role: 'user', content: 'inspect durable state', turnNumber: admitted.triggerEventId,
     });
   });
 

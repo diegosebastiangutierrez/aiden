@@ -59,4 +59,14 @@ describe('standalone Workbench execution wiring', () => {
     expect(web.indexOf('await executionHost.stop()')).toBeLessThan(web.indexOf('await bridge.close()'));
     expect(web.indexOf('await bridge.close()')).toBeLessThan(web.indexOf('closeDaemonDb(dbPath)'));
   });
+
+  it('closes the physical browser host after detaching active work and before durable stores close', () => {
+    const web = webSource();
+    const detach = web.indexOf('await executionHost.stop()');
+    const browserClose = web.indexOf("import('../../core/playwrightBridge')).pwClose()");
+    const durableClose = web.indexOf('closeDaemonDb(dbPath)');
+
+    expect(browserClose).toBeGreaterThan(detach);
+    expect(browserClose).toBeLessThan(durableClose);
+  });
 });

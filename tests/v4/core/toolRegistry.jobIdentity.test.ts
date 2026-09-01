@@ -12,7 +12,10 @@ import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  appendDurableResearchSourceLinks,
   executeWithDurableToolCall,
+  finalizeDurableResearchProof,
+  prepareDurableToolCall,
   recordDurableResearchEvidence,
   recordDurableToolVerification,
   runWithJobExecutionContext,
@@ -51,6 +54,49 @@ function resourceAuthorityMock() {
 }
 
 describe('ToolRegistry durable execution identity', () => {
+  it('permits exact mutation recovery only for a persisted resumable model call identity', () => {
+    const db = new Database(':memory:');
+    try {
+      db.pragma('foreign_keys = ON');
+      runMigrations(db);
+      db.prepare(
+        `INSERT INTO daemon_instances (instance_id, pid, hostname, started_at, last_heartbeat, version)
+         VALUES ('instance-resume', 1, 'test', 1, 1, 'test')`,
+      ).run();
+      const engine = createJobEngine({ db });
+      const admission = engine.submitJob({
+        entryPoint: 'test', source: 'test', sessionId: 'session-resume', instanceId: 'instance-resume',
+        idempotencyNamespace: 'test', idempotencyKey: 'resume-tool-call', goal: 'resume exactly once',
+      });
+      const lease = engine.claimAttempt({ attemptId: admission.attemptId, ownerId: 'test', ttlMs: 60_000 });
+      const command = {
+        toolCallId: 'provider-call-resume', toolName: 'file_write',
+        args: { path: 'resume.txt', content: 'same' }, riskTier: 'caution', mutates: true,
+        approvalState: 'pending' as const,
+        effect: {
+          classification: 'reconcilable_mutation' as const, kind: 'filesystem.write', target: 'resume.txt',
+          retrySafety: 'reconcile_before_retry' as const, idempotencySupported: false,
+          reconciliationSupported: true, verificationSupported: true,
+          approvalRequirement: 'policy' as const, sensitiveFields: ['content'], redactionRules: [],
+          trusted: true, reconciliationData: null,
+        },
+      };
+      const context = {
+        engine, jobId: admission.jobId, attemptId: admission.attemptId,
+        generation: lease.generation!, fenceToken: lease.fenceToken!, producer: 'test',
+        resumableToolCallIds: new Set<string>(),
+      } as unknown as Parameters<typeof runWithJobExecutionContext>[0];
+
+      runWithJobExecutionContext(context, () => {
+        expect(prepareDurableToolCall(command)?.recoveryDisposition).toBeUndefined();
+        context.resumableToolCallIds.add(command.toolCallId);
+        expect(prepareDurableToolCall(command)?.recoveryDisposition).toBe('prepared');
+      });
+    } finally {
+      db.close();
+    }
+  });
+
   it('captures fresh exact file readback and links proof to the current Effect', async () => {
     const db = new Database(':memory:');
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'aiden-proof-readback-'));
@@ -160,6 +206,83 @@ describe('ToolRegistry durable execution identity', () => {
     } finally {
       db.close();
       await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('captures exact runtime artifact bytes as Effect-linked Evidence', async () => {
+    const db = new Database(':memory:');
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aiden-artifact-proof-'));
+    const previousUserData = process.env.AIDEN_USER_DATA;
+    process.env.AIDEN_USER_DATA = root;
+    try {
+      db.pragma('foreign_keys = ON');
+      runMigrations(db);
+      db.prepare(
+        `INSERT INTO daemon_instances (instance_id, pid, hostname, started_at, last_heartbeat, version)
+         VALUES ('instance-artifact-proof', 1, 'test', 1, 1, 'test')`,
+      ).run();
+      const engine = createJobEngine({ db });
+      const admission = engine.submitJob({
+        entryPoint: 'test', source: 'test', sessionId: 'session-artifact-proof', instanceId: 'instance-artifact-proof',
+        idempotencyNamespace: 'test', idempotencyKey: 'artifact-proof', goal: 'capture exact screenshot',
+      });
+      const lease = engine.claimAttempt({ attemptId: admission.attemptId, ownerId: 'test', ttlMs: 60_000 });
+      const screenshot = path.join(root, 'artifacts', 'screenshots', 'page.png');
+      const bytes = Buffer.from('exact screenshot bytes');
+
+      await runWithJobExecutionContext({
+        engine, jobId: admission.jobId, attemptId: admission.attemptId,
+        generation: lease.generation!, fenceToken: lease.fenceToken!, producer: 'test',
+      }, () => executeWithDurableToolCall({
+        toolCallId: 'screenshot-exact', toolName: 'browser_screenshot', args: {},
+        riskTier: 'safe', mutates: true,
+        effect: {
+          classification: 'idempotent_mutation', kind: 'artifact.capture', target: 'runtime-artifact',
+          retrySafety: 'same_idempotency_key', idempotencySupported: true,
+          reconciliationSupported: true, verificationSupported: true,
+          approvalRequirement: 'none', sensitiveFields: [], redactionRules: [], trusted: true,
+          reconciliationData: null,
+        },
+        execute: async () => {
+          await fs.mkdir(path.dirname(screenshot), { recursive: true });
+          await fs.writeFile(screenshot, bytes);
+          return {
+            success: true,
+            path: screenshot,
+            browserSessionId: 'browser-session-exact',
+            tabId: 'tab-exact',
+            browserState: {
+              post_state: {
+                normalized_url: 'https://example.test/page',
+                title: 'Example page',
+              },
+            },
+          };
+        },
+        isSuccessful: (result) => result.success,
+      }));
+
+      expect(engine.proof.listClaims(admission.jobId)).toEqual([
+        expect.objectContaining({ required: true, state: 'verified' }),
+      ]);
+      expect(engine.proof.listEvidence(admission.jobId)).toEqual([
+        expect.objectContaining({
+          effectId: expect.any(String), source: 'artifact.readback', coverage: 'full',
+          verificationResult: 'verified',
+          payload: expect.objectContaining({
+            sourceName: 'page.png', size: bytes.byteLength,
+            contentSha256: createHash('sha256').update(bytes).digest('hex'), exact: true,
+            browserSessionId: 'browser-session-exact', tabId: 'tab-exact',
+            capturedUrl: 'https://example.test/page', capturedTitle: 'Example page',
+            capturedAt: expect.any(Number),
+          }),
+        }),
+      ]);
+    } finally {
+      if (previousUserData === undefined) delete process.env.AIDEN_USER_DATA;
+      else process.env.AIDEN_USER_DATA = previousUserData;
+      db.close();
+      await fs.rm(root, { recursive: true, force: true });
     }
   });
 
@@ -727,6 +850,8 @@ describe('ToolRegistry durable execution identity', () => {
         toolCallId: 'fetch-one',
         toolName: 'fetch_url',
         args: { url: 'https://example.test/article?token=secret' },
+        verification: { ok: true, code: 'ok' },
+        observedAt: 1_000,
         result: {
           success: true,
           status: 200,
@@ -737,6 +862,7 @@ describe('ToolRegistry durable execution identity', () => {
         toolCallId: 'fetch-two',
         toolName: 'fetch_page',
         args: { url: 'https://example.test/article?token=secret' },
+        verification: { ok: true, code: 'ok' },
         result: { success: true, content: 'same normalized source' },
       });
     });
@@ -745,7 +871,8 @@ describe('ToolRegistry durable execution identity', () => {
     expect(recordEvidence).toHaveBeenCalledWith(expect.objectContaining({
       jobId: 'job_research', attemptId: 'attempt_research', generation: 2,
       fenceToken: 'fence_research', effectId: null,
-      source: 'research.fetch_url', coverage: 'partial', verificationResult: 'unknown',
+      source: 'research.fetch_url', coverage: 'full', verificationResult: 'verified',
+      observedAt: 1_000, freshUntil: 1_801_000,
       payload: expect.objectContaining({
         source: 'https://example.test/article',
         toolCallId: 'fetch-one',
@@ -753,6 +880,134 @@ describe('ToolRegistry durable execution identity', () => {
     }));
     const payload = recordEvidence.mock.calls[0]?.[0].payload as Record<string, unknown>;
     expect(JSON.stringify(payload)).not.toContain('private-value');
+  });
+
+  it('promotes bounded deep research summaries into durable Evidence', async () => {
+    const recordEvidence = vi.fn(() => ({ evidenceId: 'evidence-deep-research' }));
+    const engine = { proof: { recordEvidence } } as unknown as JobEngine;
+
+    await runWithJobExecutionContext({
+      engine, jobId: 'job_deep', attemptId: 'attempt_deep', generation: 1,
+      fenceToken: 'fence_deep', producer: 'test',
+    }, () => recordDurableResearchEvidence({
+      toolCallId: 'deep-one', toolName: 'deep_research', args: { topic: 'durable execution' },
+      verification: { ok: true, code: 'ok' },
+      result: { success: true, status: 'partial', found: 2, sources: ['https://example.test/one'] },
+    }));
+
+    expect(recordEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      source: 'research.deep_research',
+      coverage: 'partial', verificationResult: 'unknown',
+      payload: expect.objectContaining({ toolCallId: 'deep-one' }),
+    }));
+  });
+
+  it('verifies a research citation contract only against two distinct captured sources', async () => {
+    const sourceEvidence = [
+      {
+        evidenceId: 'evidence-rfc', jobId: 'job_research', attemptId: 'attempt_research', generation: 2,
+        effectId: null, repositorySnapshotId: null, source: 'research.fetch_page', producer: 'test',
+        capturedAt: 1, observedAt: 1, freshUntil: null, integritySha256: 'rfc', coverage: 'full',
+        verificationResult: 'verified', late: false,
+        payload: { source: 'https://www.rfc-editor.org/rfc/rfc9110.html' },
+      },
+      {
+        evidenceId: 'evidence-mdn', jobId: 'job_research', attemptId: 'attempt_research', generation: 2,
+        effectId: null, repositorySnapshotId: null, source: 'research.fetch_url', producer: 'test',
+        capturedAt: 2, observedAt: 2, freshUntil: null, integritySha256: 'mdn', coverage: 'full',
+        verificationResult: 'verified', late: false,
+        payload: { source: 'https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/204' },
+      },
+    ];
+    const createClaim = vi.fn(() => ({ claimId: 'claim-citations' }));
+    const recordEvidence = vi.fn(() => ({ evidenceId: 'evidence-citation-readback' }));
+    const checkClaim = vi.fn();
+    const engine = {
+      proof: {
+        listEvidence: vi.fn(() => sourceEvidence),
+        listClaims: vi.fn(() => []),
+        createClaim,
+        recordEvidence,
+        checkClaim,
+      },
+    } as unknown as JobEngine;
+
+    const result = await runWithJobExecutionContext({
+      engine, jobId: 'job_research', attemptId: 'attempt_research', generation: 2,
+      fenceToken: 'fence_research', producer: 'test',
+    }, () => finalizeDurableResearchProof(
+      'RFC: https://www.rfc-editor.org/rfc/rfc9110.html#section-15.3.5\n'
+      + 'MDN: https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/204',
+    ));
+
+    expect(result).toEqual(expect.objectContaining({ verified: true, sourceCount: 2 }));
+    expect(createClaim).toHaveBeenCalledWith(expect.objectContaining({
+      jobId: 'job_research', attemptId: 'attempt_research', generation: 2,
+      category: 'contract', required: true,
+    }));
+    expect(recordEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      source: 'research.citation_readback', coverage: 'full', verificationResult: 'verified',
+      payload: expect.objectContaining({ sourceEvidenceIds: ['evidence-mdn', 'evidence-rfc'] }),
+    }));
+    expect(checkClaim).toHaveBeenCalledWith(expect.objectContaining({
+      claimId: 'claim-citations', attemptId: 'attempt_research', generation: 2,
+      evidenceIds: ['evidence-mdn', 'evidence-rfc', 'evidence-citation-readback'], state: 'verified',
+    }));
+  });
+
+  it('adds exact durable source links when a researched answer omits URL citations', async () => {
+    const engine = {
+      proof: {
+        listEvidence: vi.fn(() => [
+          {
+            evidenceId: 'evidence-rfc', attemptId: 'attempt_research', generation: 2,
+            source: 'research.fetch_page', capturedAt: 1, freshUntil: null,
+            coverage: 'full', verificationResult: 'verified',
+            payload: { source: 'https://www.rfc-editor.org/rfc/rfc9110.html' },
+          },
+          {
+            evidenceId: 'evidence-mdn', attemptId: 'attempt_research', generation: 2,
+            source: 'research.fetch_url', capturedAt: 2, freshUntil: null,
+            coverage: 'full', verificationResult: 'verified',
+            payload: { source: 'https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/204' },
+          },
+        ]),
+      },
+    } as unknown as JobEngine;
+
+    const result = await runWithJobExecutionContext({
+      engine, jobId: 'job_research', attemptId: 'attempt_research', generation: 2,
+      fenceToken: 'fence_research', producer: 'test',
+    }, () => appendDurableResearchSourceLinks('RFC 9110 and MDN agree that a 204 response has no body.'));
+
+    expect(result).toContain('## Sources');
+    expect(result).toContain('- https://www.rfc-editor.org/rfc/rfc9110.html');
+    expect(result).toContain('- https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/204');
+  });
+
+  it('does not create a required research claim from uncaptured citations', async () => {
+    const createClaim = vi.fn();
+    const engine = {
+      proof: {
+        listEvidence: vi.fn(() => [{
+          evidenceId: 'evidence-rfc', attemptId: 'attempt_research', generation: 2,
+          source: 'research.fetch_page', coverage: 'full', verificationResult: 'verified',
+          payload: { source: 'https://www.rfc-editor.org/rfc/rfc9110.html' },
+        }]),
+        listClaims: vi.fn(() => []),
+        createClaim,
+      },
+    } as unknown as JobEngine;
+
+    const result = await runWithJobExecutionContext({
+      engine, jobId: 'job_research', attemptId: 'attempt_research', generation: 2,
+      fenceToken: 'fence_research', producer: 'test',
+    }, () => finalizeDurableResearchProof(
+      'Known: https://www.rfc-editor.org/rfc/rfc9110.html and unknown: https://example.test/unseen',
+    ));
+
+    expect(result).toEqual({ verified: false, sourceCount: 1 });
+    expect(createClaim).not.toHaveBeenCalled();
   });
 
   it('checks every browser upload path against the active Job capability boundary', async () => {

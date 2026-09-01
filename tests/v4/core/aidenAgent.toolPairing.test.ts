@@ -95,6 +95,68 @@ function makeCapture(): { events: Ev[]; onToolCall: (c: ToolCallRequest, p: 'bef
 const ids = (events: Ev[], phase: 'before' | 'after'): string[] => events.filter((e) => e.phase === phase).map((e) => e.id);
 
 describe('AidenAgent — onToolCall before/after pairing (fix/stuck-tool-row)', () => {
+  it('resumes an exact durable tail tool call before asking the provider to plan again', async () => {
+    const pending = tc('resume-call-1', 'file_write');
+    const executorCalls: ToolCallRequest[] = [];
+    let providerCalls = 0;
+    const provider: ProviderAdapter = {
+      apiMode: 'chat_completions',
+      call: async (input) => {
+        providerCalls += 1;
+        expect(input.messages.some((message) =>
+          message.role === 'tool' && message.toolCallId === pending.id,
+        )).toBe(true);
+        return { content: 'resumed once', toolCalls: [], usage: USAGE, finishReason: 'stop' };
+      },
+    };
+    const agent = new AidenAgent({
+      provider,
+      tools: NO_TOOLS,
+      toolExecutor: async (call) => {
+        executorCalls.push(call);
+        return { id: call.id, name: call.name, result: { ok: true } };
+      },
+    });
+
+    const result = await agent.runConversation([
+      userMsg('continue the exact interrupted turn'),
+      { role: 'assistant', content: '', toolCalls: [pending] },
+    ], {
+      resumePendingToolCallIds: [pending.id],
+    } as unknown as Parameters<AidenAgent['runConversation']>[1]);
+
+    expect(executorCalls).toEqual([pending]);
+    expect(providerCalls).toBe(1);
+    expect(result.finalContent).toBe('resumed once');
+    expect(result.messages.filter((message) =>
+      message.role === 'assistant' && message.toolCalls?.some((call) => call.id === pending.id),
+    )).toHaveLength(1);
+  });
+
+  it('preserves the unanswered durable tail when the execution host detaches', async () => {
+    const pending = tc('host-detach-call', 'file_write');
+    const checkpoints: Array<{ phase: string; messages: readonly Message[] }> = [];
+    const detached = new Error('restart');
+    detached.name = 'DurableJobHostDetachedError';
+    const agent = new AidenAgent({
+      provider: new ScriptedAdapter([toolTurn(pending)]),
+      tools: NO_TOOLS,
+      toolExecutor: async () => { throw detached; },
+    });
+
+    await expect(agent.runConversation([userMsg('write once')], {
+      onConversationCheckpoint: (messages, phase) => {
+        checkpoints.push({ phase, messages: [...messages] });
+      },
+    })).rejects.toMatchObject({ name: 'DurableJobHostDetachedError' });
+
+    expect(checkpoints.map((checkpoint) => checkpoint.phase)).toEqual(['pending_tools']);
+    expect(checkpoints[0]?.messages).toContainEqual(expect.objectContaining({
+      role: 'assistant', toolCalls: [pending],
+    }));
+    expect(checkpoints[0]?.messages.some((message) => message.role === 'tool')).toBe(false);
+  });
+
   it('normal completion: exactly one after per before, carrying the real result', async () => {
     const cap = makeCapture();
     const agent = new AidenAgent({

@@ -153,6 +153,20 @@ describe('runQuery', () => {
     } finally { outSpy.mockRestore(); }
   });
 
+  it('closes the browser runtime before a headless one-shot returns', async () => {
+    const outSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      const runtime = mkRuntime({ finalContent: 'done', finishReason: 'stop', toolCallTrace: [] });
+      const build = vi.fn(async () => runtime);
+      const closeBrowser = vi.fn(async () => {});
+
+      const code = await (runQuery as any)('browse once', {}, {} as any, build, closeBrowser);
+
+      expect(code).toBe(0);
+      expect(closeBrowser).toHaveBeenCalledTimes(1);
+    } finally { outSpy.mockRestore(); }
+  });
+
   it('forwards headless:true and --yolo into the runtime build', async () => {
     const outSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     try {

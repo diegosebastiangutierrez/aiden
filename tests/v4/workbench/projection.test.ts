@@ -71,6 +71,19 @@ describe('canonical Workbench projection', () => {
     expect(projectWorkbenchJob(reader, { jobId: 'job_1' })?.receipt.status).toBe('partially_verified');
   });
   it('B12 returns null rather than inventing missing durable state', () => expect(projectWorkbenchJob(fixture(), { jobId: 'missing' })).toBeNull());
+  it('B12a reconstructs a terminal projection from the latest durable Attempt after the active pointer is cleared', () => {
+    const reader = fixture({
+      status: 'completed', activeAttemptId: null, terminalAt: 20,
+      terminalOutcome: 'completed', finishReason: 'stop',
+    });
+    const value = projectWorkbenchJob(reader, { jobId: 'job_1' });
+    expect(value?.identity).toMatchObject({ attemptId: 'attempt_1', runId: 9, generation: 1 });
+    expect(value?.receipt).toMatchObject({ terminal: true });
+  });
+  it('B12b never substitutes another Attempt when an exact stale Attempt was requested', () => {
+    const reader = fixture({ status: 'completed', activeAttemptId: null, terminalAt: 20 });
+    expect(projectWorkbenchJob(reader, { jobId: 'job_1', attemptId: 'attempt_missing' })).toBeNull();
+  });
   it('B13 treats legacy unverified terminal states as terminal but never verified', () => {
     const value = projectWorkbenchJob(fixture({
       status: 'completed_unverified', terminalAt: 20, terminalOutcome: 'completed_unverified',

@@ -122,4 +122,26 @@ describe('legacy schedule compatibility import', () => {
     ).get()).toEqual({ name: 'automation_approval_continuations' });
     legacy.close();
   });
+
+  it('upgrades v54 automation definitions with durable removal tombstones', () => {
+    const legacy = new Database(':memory:');
+    for (const migration of MIGRATIONS_FOR_TESTS.filter((entry) => entry.version <= 54)) {
+      legacy.transaction(() => {
+        if (migration.apply) migration.apply(legacy);
+        else legacy.exec(migration.sql ?? '');
+        legacy.prepare('INSERT OR REPLACE INTO schema_version (id,version,applied_at) VALUES (1,?,?)')
+          .run(migration.version, 1);
+      }).immediate();
+    }
+    expect(legacy.prepare('PRAGMA table_info(automation_definitions)').all())
+      .not.toEqual(expect.arrayContaining([expect.objectContaining({ name: 'removed_at' })]));
+
+    expect(runMigrations(legacy)).toEqual({ from: 54, to: LATEST_SCHEMA_VERSION });
+    expect(LATEST_SCHEMA_VERSION).toBe(55);
+    expect(legacy.prepare('PRAGMA table_info(automation_definitions)').all()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'removed_at' }),
+      expect.objectContaining({ name: 'removed_by' }),
+    ]));
+    legacy.close();
+  });
 });

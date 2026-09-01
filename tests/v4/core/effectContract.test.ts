@@ -70,6 +70,23 @@ describe('durable tool effect contracts', () => {
     });
   });
 
+  it('binds browser tab mutations to their exact action and durable tab identity', () => {
+    const registry = new ToolRegistry();
+    registerAllTools(registry);
+    expect(describeToolEffect(registry.get('browser_tab')!, {
+      action: 'switch',
+      tab_id: 'tab_source_2',
+      name: 'Source 2',
+    })).toMatchObject({
+      kind: 'browser.action',
+      classification: 'reconcilable_mutation',
+      approvalRequirement: 'none',
+      retrySafety: 'reconcile_before_retry',
+      target: 'switch -> tab_source_2',
+      trusted: true,
+    });
+  });
+
   it('removes URL credentials, query values, and fragments from durable targets', () => {
     const descriptor = describeToolEffect({
       mutates: true,

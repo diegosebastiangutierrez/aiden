@@ -31,7 +31,7 @@ describe('Skill Intelligence migration v53 preservation', () => {
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='workflow_traces'").get())
       .toBeUndefined();
     expect(runMigrations(db)).toEqual({ from: 52, to: LATEST_SCHEMA_VERSION });
-    expect(LATEST_SCHEMA_VERSION).toBe(54);
+    expect(LATEST_SCHEMA_VERSION).toBeGreaterThanOrEqual(54);
 
     const expected = [
       'workflow_traces', 'workflow_patterns', 'workflow_pattern_traces',
@@ -70,6 +70,6 @@ describe('Skill Intelligence migration v53 preservation', () => {
       'idx_skill_versions_identity',
     ]));
 
-    expect(runMigrations(db)).toEqual({ from: 54, to: 54 });
+    expect(runMigrations(db)).toEqual({ from: LATEST_SCHEMA_VERSION, to: LATEST_SCHEMA_VERSION });
   });
 });

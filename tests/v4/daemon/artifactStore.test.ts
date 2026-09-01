@@ -146,6 +146,38 @@ describe('extractFileArtifact', () => {
       path: 'C:/aiden/downloads/report.txt', kind: 'file', action: 'create', bytes: 42,
     });
   });
+  it('verified browser screenshot becomes a local file artifact', () => {
+    expect(extractFileArtifact('browser_screenshot', {
+      success: true, path: 'C:/aiden/screenshots/page.png', bytes: 128,
+      browserState: { post_state: { title: 'Example page', normalized_url: 'https://example.test/page' } },
+    })).toEqual({
+      path: 'C:/aiden/screenshots/page.png', kind: 'file', action: 'create', bytes: 128,
+      preview: 'Screenshot: Example page',
+    });
+  });
+
+  it('archives bytes from an explicitly trusted Aiden-owned artifact root', async () => {
+    const trustedRoot = path.join(tmp, 'runtime-screenshots');
+    const screenshot = path.join(trustedRoot, 'page.png');
+    await fs.mkdir(trustedRoot, { recursive: true });
+    await fs.writeFile(screenshot, Buffer.from('verified screenshot bytes'));
+    const trustedStore = createArtifactStore({
+      db,
+      contentRoot: path.join(tmp, 'trusted-content'),
+      sourceRoot: path.join(tmp, 'workspace'),
+      trustedSourceRoots: [trustedRoot],
+    });
+
+    const id = trustedStore.create({
+      path: screenshot, kind: 'file', tool: 'browser_screenshot', action: 'create', sessionId: 'session-browser',
+      preview: 'Screenshot: Example page',
+    });
+
+    expect(trustedStore.readContent(id)?.bytes).toEqual(Buffer.from('verified screenshot bytes'));
+    expect(trustedStore.get(id)).toMatchObject({
+      bytes: Buffer.byteLength('verified screenshot bytes'), preview: 'Screenshot: Example page',
+    });
+  });
   it('non-file tools → null', () => {
     expect(extractFileArtifact('file_read', { success: true, path: '/x' })).toBeNull();
     expect(extractFileArtifact('shell_exec', { success: true, stdout: 'x' })).toBeNull();

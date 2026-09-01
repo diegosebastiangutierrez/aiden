@@ -50,6 +50,7 @@ describe('automation dispatcher admission', () => {
     expect(inputs[0].initialMessage).toContain('Untrusted trigger data follows');
     expect(inputs[0].automationApprovalMode).toBe('always');
     expect(engine.listJobs()).toHaveLength(1);
+    expect(inputs[0].sessionId).toBe(engine.listJobs()[0].sessionId);
     expect(engine.listJobs()[0]).toMatchObject({
       automationId: created.definition.id,
       automationRevisionId: created.revision.id,

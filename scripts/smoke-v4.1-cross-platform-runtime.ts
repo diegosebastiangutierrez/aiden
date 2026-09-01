@@ -100,7 +100,7 @@ function stripAnsi(s: string): string {
     'model:\n  provider: groq\n  modelId: llama-3.3-70b-versatile\nproviders:\n  groq:\n    apiKey: smoke-fake\n',
     'utf8',
   );
-  const r2 = spawnSync('node', [ENTRY, 'doctor'], {
+  const r2 = spawnSync(process.execPath, [ENTRY, 'doctor'], {
     encoding: 'utf8',
     timeout:  DOCTOR_SMOKE_TIMEOUT_MS,
     killSignal: 'SIGKILL',
@@ -123,7 +123,7 @@ function stripAnsi(s: string): string {
 
   // ── R3 — voice doctor handles missing backend gracefully ──
   header('R3 — aiden voice doctor exits without crash');
-  const r3 = spawnSync('node', [ENTRY, 'voice', 'doctor'], {
+  const r3 = spawnSync(process.execPath, [ENTRY, 'voice', 'doctor'], {
     encoding: 'utf8',
     timeout:  20_000,
     killSignal: 'SIGKILL',
@@ -141,7 +141,7 @@ function stripAnsi(s: string): string {
   // ── R4 — MCP serve mode unaffected ──
   header('R4 — MCP serve mode (no UI bleed)');
   const r4 = await new Promise<{ stdoutBytes: string; status: number | null }>((resolve) => {
-    const proc: ChildProcessWithoutNullStreams = spawn('node', [ENTRY, 'mcp', 'serve'], {
+    const proc: ChildProcessWithoutNullStreams = spawn(process.execPath, [ENTRY, 'mcp', 'serve'], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env:   { ...process.env, AIDEN_MCP_SERVE: '1' },
     });
@@ -204,7 +204,7 @@ function stripAnsi(s: string): string {
 
   // ── R6 — AIDEN_NO_NETWORK propagates ──
   header('R6 — AIDEN_NO_NETWORK env var propagates to spawned aiden');
-  const r6 = spawnSync('node', [
+  const r6 = spawnSync(process.execPath, [
     '-e',
     'console.log(JSON.stringify({ noNet: process.env.AIDEN_NO_NETWORK }))',
   ], { encoding: 'utf8', env: { ...process.env, AIDEN_NO_NETWORK: '1' } });

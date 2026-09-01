@@ -442,6 +442,63 @@ describe('final action and durable Approval authority', () => {
     ]);
   });
 
+  it('rebinds one exact pending approval to the authoritative reclaimed fence', () => {
+    const normalized = normalizeExecutionPlan({
+      toolName: 'file_write', args: { path: 'restart.txt', content: 'same' }, cwd: 'C:/workspace',
+      mutates: true, riskTier: 'caution', policy,
+    });
+    const prepared = jobs.prepareToolCall({
+      toolCallId: 'tool-reclaimed-approval', jobId: admission.jobId, attemptId: admission.attemptId,
+      generation: 1, fenceToken, toolName: 'file_write', normalizedArgsDigest: 'same-digest',
+      riskTier: 'caution', mutates: true, producer: 'test',
+      effect: {
+        classification: 'reconcilable_mutation', kind: 'filesystem.write', target: 'restart.txt',
+        retrySafety: 'reconcile_before_retry', idempotencySupported: false, idempotencyKey: null,
+        reconciliationSupported: true, verificationSupported: true, approvalRequirement: 'policy',
+        approvalState: 'pending', sensitiveFields: ['content'], redactionRules: [], trusted: true,
+      },
+    });
+    const original = actions.request({
+      jobId: admission.jobId, attemptId: admission.attemptId, generation: 1, fenceToken,
+      toolCallId: 'tool-reclaimed-approval', effectId: prepared.effectId,
+      toolName: 'file_write', riskTier: 'caution', riskReasons: [], normalized,
+    });
+    actions.markDisplayed(original.approvalId);
+    expect(jobs.detachAttemptForHost({
+      jobId: admission.jobId, attemptId: admission.attemptId, generation: 1,
+      fenceToken, ownerId: 'test', reason: 'host restart',
+      producer: 'test', eventIdempotencyKey: 'detach-for-approval-reclaim',
+    }).applied).toBe(true);
+    const reclaimed = jobs.claimAttempt({
+      attemptId: admission.attemptId, ownerId: 'replacement-host', ttlMs: 60_000,
+    });
+    expect(reclaimed.acquired).toBe(true);
+    expect(reclaimed.fenceToken).not.toBe(fenceToken);
+
+    const rebound = actions.request({
+      jobId: admission.jobId, attemptId: admission.attemptId, generation: 1,
+      fenceToken: reclaimed.fenceToken!, toolCallId: 'tool-reclaimed-approval',
+      effectId: prepared.effectId, toolName: 'file_write', riskTier: 'caution',
+      riskReasons: [], normalized,
+    });
+
+    expect(rebound).toMatchObject({ approvalId: original.approvalId, state: 'displayed' });
+    actions.decide({
+      approvalId: rebound.approvalId, jobId: admission.jobId, attemptId: admission.attemptId,
+      generation: 1, actionDigest: normalized.actionDigest,
+      policySnapshotId: rebound.policySnapshotId, decision: 'approved',
+      decidedBy: 'user', decisionChannel: 'workbench',
+    });
+    expect(actions.authorizeExecution({
+      approvalId: rebound.approvalId, jobId: admission.jobId, attemptId: admission.attemptId,
+      generation: 1, fenceToken: reclaimed.fenceToken!, toolCallId: rebound.toolCallId,
+      effectId: rebound.effectId, actionDigest: rebound.actionDigest,
+      policySnapshotId: rebound.policySnapshotId,
+    })).toMatchObject({ authorized: true });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM approvals WHERE job_id = ?')
+      .get(admission.jobId)).toEqual({ count: 1 });
+  });
+
   it('wakes the exact durable waiter after a browser denial and cleans up an aborted waiter', async () => {
     const normalized = normalizeExecutionPlan({
       toolName: 'file_write', args: { path: 'browser-denied.txt' }, cwd: 'C:/workspace',

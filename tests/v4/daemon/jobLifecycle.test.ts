@@ -76,6 +76,7 @@ describe('executeDurableJob', () => {
   it('detaches a host-owned approval wait and reattaches the same Attempt generation and fence', async () => {
     const lifecycleScope = createDurableJobLifecycleScope();
     const controls = createJobControlAuthority({ db, jobEngine: engine });
+    let browserSessionId = '';
     let started!: () => void;
     const executing = new Promise<void>((resolve) => { started = resolve; });
     const first = (executeDurableJob as unknown as (options: Record<string, unknown>) => Promise<unknown>)({
@@ -94,7 +95,28 @@ describe('executeDurableJob', () => {
         instanceId: 'instance_lifecycle', idempotencyNamespace: 'automation',
         idempotencyKey: 'approval_restart', requestFingerprint: 'approval_restart', goal: 'write approved file',
       },
-      execute: async (handle: { signal: AbortSignal }) => {
+      execute: async (handle: {
+        jobId: string; attemptId: string; generation: number; fenceToken: string; signal: AbortSignal;
+      }) => {
+        const binding = {
+          jobId: handle.jobId,
+          attemptId: handle.attemptId,
+          generation: handle.generation,
+          fenceToken: handle.fenceToken,
+          workspaceId: 'workspace_host_detach',
+          mode: 'owned' as const,
+          profileIdentity: 'aiden-default',
+        };
+        const browserSession = engine.browser.ensureSession(binding);
+        browserSessionId = browserSession.browserSessionId;
+        engine.browser.bindTab(binding, {
+          tabId: 'tab-host-a', createdBy: 'aiden', controlled: true, openerTabId: null,
+          purpose: 'A', url: 'https://example.com/', title: 'Example Domain',
+        });
+        engine.browser.bindTab(binding, {
+          tabId: 'tab-host-b', createdBy: 'aiden', controlled: false, openerTabId: 'tab-host-a',
+          purpose: 'B', url: 'https://www.iana.org/help/example-domains', title: 'Example Domains',
+        });
         started();
         await new Promise<void>((_resolve, reject) => {
           handle.signal.addEventListener('abort', () => reject(handle.signal.reason), { once: true });
@@ -118,6 +140,14 @@ describe('executeDurableJob', () => {
       fenceToken: beforeAttempt.fenceToken,
       leaseOwner: null,
     });
+    expect(engine.browser.getSession(browserSessionId)).toMatchObject({
+      state: 'ready',
+      controlledTabId: 'tab-host-a',
+    });
+    expect(engine.browser.listTabs(browserSessionId)).toEqual([
+      expect.objectContaining({ tabId: 'tab-host-a', purpose: 'A', controlled: true, closedAt: null }),
+      expect.objectContaining({ tabId: 'tab-host-b', purpose: 'B', controlled: false, closedAt: null }),
+    ]);
 
     const resumed = await (executeDurableJob as unknown as (options: Record<string, unknown>) => Promise<{
       jobId: string; attemptId: string; generation: number; fenceToken: string;
@@ -141,7 +171,25 @@ describe('executeDurableJob', () => {
         content: 'write approved file', idempotencyNamespace: 'automation-input',
         idempotencyKey: 'approval_restart',
       },
-      execute: async () => 'approved once',
+      execute: async (handle: {
+        jobId: string; attemptId: string; generation: number; fenceToken: string;
+      }) => {
+        const restored = engine.browser.ensureSession({
+          jobId: handle.jobId,
+          attemptId: handle.attemptId,
+          generation: handle.generation,
+          fenceToken: handle.fenceToken,
+          workspaceId: 'workspace_host_detach',
+          mode: 'owned',
+          profileIdentity: 'aiden-default',
+        });
+        expect(restored.browserSessionId).toBe(browserSessionId);
+        expect(engine.browser.listTabs(restored.browserSessionId)).toEqual([
+          expect.objectContaining({ tabId: 'tab-host-a', purpose: 'A', controlled: true, closedAt: null }),
+          expect.objectContaining({ tabId: 'tab-host-b', purpose: 'B', controlled: false, closedAt: null }),
+        ]);
+        return 'approved once';
+      },
       finalize: () => ({ status: 'completed', outcome: 'completed', finishReason: 'stop', evidence: {} }),
     });
 
@@ -261,6 +309,64 @@ describe('executeDurableJob', () => {
       finishReason: 'verification_failed',
     });
     expect(engine.getAttempt(execution.attemptId)?.status).toBe('failed');
+  });
+
+  it('lets verified required Proof override a recovered helper failure', async () => {
+    const execution = await executeDurableJob({
+      engine,
+      ownerId: 'instance_lifecycle',
+      admission: {
+        entryPoint: 'test', source: 'test', sessionId: 'session_verified_proof',
+        instanceId: 'instance_lifecycle', idempotencyNamespace: 'lifecycle',
+        idempotencyKey: 'request_verified_proof', goal: 'produce verified required work',
+      },
+      execute: async (handle) => {
+        const claim = engine.proof.createClaim({
+          jobId: handle.jobId,
+          attemptId: handle.attemptId,
+          generation: handle.generation,
+          category: 'contract',
+          statement: 'required artifact exists',
+          required: true,
+        });
+        const evidence = engine.proof.recordEvidence({
+          jobId: handle.jobId,
+          attemptId: handle.attemptId,
+          generation: handle.generation,
+          fenceToken: handle.fenceToken,
+          source: 'test',
+          producer: 'test',
+          observedAt: Date.now(),
+          coverage: 'full',
+          verificationResult: 'verified',
+          payload: { artifact: 'evidence/longtask/aiden-long-task.md' },
+        });
+        engine.proof.checkClaim({
+          claimId: claim.claimId,
+          attemptId: handle.attemptId,
+          generation: handle.generation,
+          evidenceIds: [evidence.evidenceId],
+          state: 'verified',
+        });
+        return 'done';
+      },
+      finalize: () => ({
+        status: 'failed',
+        attemptStatus: 'failed',
+        outcome: 'verification_failed',
+        finishReason: 'stop',
+        evidence: { failures: [{ tool: 'shell_exec', reason: 'success:false' }] },
+        jobCard: { filesTouched: ['evidence/longtask/aiden-long-task.md'] },
+      }),
+    });
+
+    expect(engine.proof.getVerdict(execution.jobId)?.verdict).toBe('verified');
+    expect(engine.getJob(execution.jobId)).toMatchObject({
+      status: 'completed',
+      terminalOutcome: 'verified',
+      finishReason: 'stop',
+    });
+    expect(engine.getAttempt(execution.attemptId)?.status).toBe('succeeded');
   });
 
   it('aborts active work when lease renewal loses authority', async () => {

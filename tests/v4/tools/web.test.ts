@@ -149,8 +149,33 @@ describe('web tools', () => {
       { topic: 'agent loops' },
       ctx,
     )) as { success: boolean; output: string };
-    expect(deepResearch).toHaveBeenCalledWith('agent loops');
+    expect(deepResearch).toHaveBeenCalledWith('agent loops', expect.any(Object));
     expect(result.success).toBe(true);
     expect(result.output).toBe('researched');
+  });
+
+  it('9. deep_research projects bounded semantic phases through the shared activity channel', async () => {
+    const reportActivity = vi.fn();
+    (deepResearch as ReturnType<typeof vi.fn>).mockImplementationOnce(async (_topic, options) => {
+      options.onPhase('planning');
+      options.onPhase('searching_broad');
+      options.onPhase('searching_recent');
+      options.onPhase('comparing_sources');
+      options.onPhase('preparing_result');
+      return { success: true, output: 'researched' };
+    });
+
+    await deepResearchTool.execute(
+      { topic: 'bounded research' },
+      { ...ctx, reportActivity },
+    );
+
+    expect(reportActivity.mock.calls.map(([detail]) => detail)).toEqual([
+      'Planning research',
+      'Searching broadly',
+      'Checking recent sources',
+      'Comparing sources',
+      'Preparing result',
+    ]);
   });
 });

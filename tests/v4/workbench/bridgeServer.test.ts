@@ -107,6 +107,26 @@ afterEach(async () => {
 });
 
 describe('Workbench bridge — health + shape', () => {
+  it('closes while an event stream client is still connected', async () => {
+    const eventId = emit('ui_task_update', 'task.update', { step: 1 });
+    const client = sseClient(bridge.port, '/api/events');
+    await client.waitFor((frame) => Number(frame.id) === eventId);
+
+    const closing = bridge.close();
+    let timeout: NodeJS.Timeout | undefined;
+    const outcome = await Promise.race([
+      closing.then(() => 'closed' as const),
+      new Promise<'timed_out'>((resolve) => {
+        timeout = setTimeout(() => resolve('timed_out'), 1_000);
+      }),
+    ]);
+    if (timeout) clearTimeout(timeout);
+    if (outcome === 'timed_out') client.close();
+    await closing;
+
+    expect(outcome).toBe('closed');
+  });
+
   it('binds loopback and answers /api/health', async () => {
     const body = await new Promise<string>((resolve) => {
       http.get({ host: '127.0.0.1', port: bridge.port, path: '/api/health' }, (res) => {
@@ -730,6 +750,19 @@ describe('Workbench durable Job projections', () => {
         jobId: 'job_live', attemptId: 'attempt_live', runId: 17,
         title: 'Inspect package.json', status: 'approval_required', triggerEventId: 5,
       }],
+      topology: {
+        origin: 'same-origin',
+        routes: {
+          bootstrap: '/api/workbench/bootstrap',
+          readiness: '/api/workbench/readiness',
+          taskAdmission: '/api/tasks',
+          runEvents: '/api/runs/{runId}/events',
+          sessions: '/api/sessions',
+          memory: null,
+          voice: null,
+          updates: null,
+        },
+      },
     });
     expect(body).not.toMatch(/apiKey|token|secret|password/i);
     await b.close();
