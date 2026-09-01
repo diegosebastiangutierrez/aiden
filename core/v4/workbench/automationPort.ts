@@ -28,7 +28,7 @@ export interface WorkbenchAutomationSummary {
 
 export interface WorkbenchAutomationSnapshot {
   capability: { available: boolean; reason?: string };
-  scheduler: { ready: boolean; dueBindings: number };
+  scheduler: { ready: boolean; dueBindings: number; reason?: string };
   automations: WorkbenchAutomationSummary[];
   history: WorkbenchAutomationOccurrence[];
   attention: Array<{ automationId: string; state: string; occurrenceId: string }>;
@@ -58,8 +58,11 @@ export interface WorkbenchAutomationPort {
   create(input: AutomationRevisionSpec & { name: string; createdBy: string }): WorkbenchAutomationSummary;
   revise(automationId: string, input: Omit<AutomationRevisionSpec, 'workspace'> & { createdBy: string }): WorkbenchAutomationSummary;
   setEnabled(automationId: string, enabled: boolean): WorkbenchAutomationSummary;
-  runNow(automationId: string): { triggerEventId: number };
-  replay(occurrenceId: string): { triggerEventId: number };
+  remove(automationId: string, removedBy: string, now?: number): {
+    automationId: string; removedAt: number; removedBy: string;
+  };
+  runNow(automationId: string): { triggerEventId: number; state: 'queued'; schedulerReady: boolean };
+  replay(occurrenceId: string): { triggerEventId: number; state: 'queued'; schedulerReady: boolean };
   preview(input: { expression: string; timezone: string; count?: number }): readonly string[];
 }
 
@@ -71,6 +74,8 @@ export function createWorkbenchAutomationPort(options: {
   workspaceId?: string | null;
   /** Host-owned workspace root. Client automation payloads cannot override it. */
   workspaceRoot?: string;
+  /** True only while a canonical dispatcher can consume queued automation events. */
+  schedulerReady?: () => boolean;
 }): WorkbenchAutomationPort {
   const { db } = options;
   const authority = createAutomationAuthority({ db });
@@ -110,7 +115,9 @@ export function createWorkbenchAutomationPort(options: {
   return {
     snapshot() {
       const available = options.edition.can('automation.create');
-      const ids = db.prepare('SELECT automation_id FROM automation_definitions ORDER BY updated_at DESC LIMIT 500')
+      const ids = db.prepare(
+        'SELECT automation_id FROM automation_definitions WHERE removed_at IS NULL ORDER BY updated_at DESC LIMIT 500',
+      )
         .all() as Array<{ automation_id: string }>;
       const due = db.prepare(
         `SELECT COUNT(*) AS count FROM automation_trigger_bindings b
@@ -136,7 +143,9 @@ export function createWorkbenchAutomationPort(options: {
       }>;
       return {
         capability: available ? { available: true } : { available: false, reason: 'Reliable Automations require Aiden Pro' },
-        scheduler: { ready: true, dueBindings: due.count },
+        scheduler: options.schedulerReady?.() === true
+          ? { ready: true, dueBindings: due.count }
+          : { ready: false, dueBindings: due.count, reason: 'Automation execution host is unavailable.' },
         automations: ids.map((row) => project(row.automation_id)),
         history: history.map((row) => ({
           occurrenceId: row.occurrence_id, automationId: row.automation_id,
@@ -176,11 +185,32 @@ export function createWorkbenchAutomationPort(options: {
     setEnabled(automationId, enabled) {
       requireCapability(); authority.setEnabled(automationId, enabled); return project(automationId);
     },
+    remove(automationId, removedBy, now) {
+      requireCapability();
+      const removed = authority.remove(automationId, { removedBy, ...(now !== undefined ? { now } : {}) });
+      return {
+        automationId: removed.id,
+        removedAt: removed.removedAt!,
+        removedBy: removed.removedBy!,
+      };
+    },
     runNow(automationId) {
-      requireCapability(); const result = control.runNow(automationId); return { triggerEventId: result.triggerEventId };
+      requireCapability();
+      const result = control.runNow(automationId);
+      return {
+        triggerEventId: result.triggerEventId,
+        state: 'queued',
+        schedulerReady: options.schedulerReady?.() === true,
+      };
     },
     replay(occurrenceId) {
-      requireCapability(); const result = control.replay(occurrenceId); return { triggerEventId: result.triggerEventId };
+      requireCapability();
+      const result = control.replay(occurrenceId);
+      return {
+        triggerEventId: result.triggerEventId,
+        state: 'queued',
+        schedulerReady: options.schedulerReady?.() === true,
+      };
     },
     preview(input) {
       requireCapability(); return previewSchedule({ ...input, count: input.count ?? 5 }).instants;

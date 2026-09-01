@@ -127,7 +127,15 @@ export function projectWorkbenchJob(
 ): WorkbenchJobProjection | null {
   const job = reader.getJob(request.jobId);
   if (!job) return null;
-  const attemptId = request.attemptId ?? job.activeAttemptId;
+  const attempts = reader.listAttempts(job.id);
+  const latestAttempt = attempts.reduce<AttemptRecord | null>((latest, candidate) => {
+    if (!latest) return candidate;
+    if (candidate.attemptNumber !== latest.attemptNumber) {
+      return candidate.attemptNumber > latest.attemptNumber ? candidate : latest;
+    }
+    return candidate.rowId > latest.rowId ? candidate : latest;
+  }, null);
+  const attemptId = request.attemptId ?? job.activeAttemptId ?? latestAttempt?.id ?? null;
   if (!attemptId) return null;
   const attempt = reader.getAttempt(attemptId);
   if (!attempt || attempt.jobId !== job.id) return null;
@@ -153,7 +161,7 @@ export function projectWorkbenchJob(
     },
     job,
     activeAttempt: attempt,
-    attempts: reader.listAttempts(job.id),
+    attempts,
     timeline,
     workers: reader.listChildContracts?.(job.id) ?? [],
     approvals: array(exported.approvals),

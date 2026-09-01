@@ -55,18 +55,19 @@ export function createWorkbenchJobCommands(options: {
     modelBinding?: { provider: string; model: string; source: 'session' | 'default' } | null;
   }) => {
     const idempotencyKey = task.idempotencyKey?.trim() || nextId();
+    const sessionId = task.sessionId?.trim() || `workbench:${idempotencyKey}`;
     const fingerprint = createHash('sha256').update(task.message).digest('hex');
     const trigger = options.triggerBus.insert({
       source: 'manual', sourceKey: 'workbench-web', idempotencyKey,
       payload: {
         body: { prompt: task.message, source: 'workbench-web' },
-        sessionId: task.sessionId,
+        sessionId,
         ...(task.modelBinding ? { model_binding: task.modelBinding } : {}),
       },
     });
     const admission = admitDurableJob(options.jobEngine, {
       entryPoint: 'workbench', source: 'workbench',
-      sessionId: task.sessionId ?? `workbench:${idempotencyKey}`,
+      sessionId,
       instanceId: options.instanceId,
       idempotencyNamespace: 'workbench-web', idempotencyKey,
       requestFingerprint: fingerprint,
@@ -76,7 +77,7 @@ export function createWorkbenchJobCommands(options: {
     });
     options.db.prepare('UPDATE trigger_events SET payload_json = ? WHERE id = ?').run(JSON.stringify({
       body: { prompt: task.message, source: 'workbench-web' },
-      sessionId: task.sessionId,
+      sessionId,
       durable_job: {
         job_id: admission.jobId,
         attempt_id: admission.attemptId,
@@ -84,7 +85,7 @@ export function createWorkbenchJobCommands(options: {
       },
       ...(task.modelBinding ? { model_binding: task.modelBinding } : {}),
     }), trigger.id);
-    return { trigger, admission };
+    return { trigger, admission, sessionId };
   }).immediate;
 
   const finalRun = new Set(['completed', 'succeeded', 'failed', 'cancelled', 'interrupted']);
@@ -140,7 +141,7 @@ export function createWorkbenchJobCommands(options: {
         const accepted = enqueueTx({ ...task, modelBinding });
         if (accepted.trigger.inserted && options.sessionStore) {
           try {
-            const sessionId = task.sessionId ?? `workbench:${accepted.admission.jobId}`;
+            const { sessionId } = accepted;
             options.sessionStore.ensureSession(sessionId, {
               title: summarizeWorkbenchGoal(task.message),
             });

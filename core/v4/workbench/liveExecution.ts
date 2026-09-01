@@ -76,6 +76,14 @@ export interface ExecutionSurface extends ExecutionSurfaceIdentity {
     captureAgeMs: number | null;
     stale: boolean;
     frame: { artifactId: string; capturedAt: number } | null;
+    tabs: Array<{
+      tabId: string;
+      name: string;
+      url: string;
+      title: string;
+      active: boolean;
+      closeable: boolean;
+    }>;
   };
   workspace?: { workspaceId: string | null; leaseId: string; baseHead: string; baseBranch: string | null; state: string };
   changes?: { paths: string[]; count: number; source: 'reconciliation' };
@@ -329,6 +337,18 @@ export function projectLiveExecution(
         url: tab?.url ?? null, title: tab?.title ?? null, navigationStatus: session.state,
         snapshotId: tab?.lastStateDigest ?? null, captureAgeMs, stale: captureAgeMs !== null && captureAgeMs > 30_000,
         frame: frameArtifact ? { artifactId: frameArtifact.id, capturedAt: frameArtifact.createdAt } : null,
+        tabs: source.browser.tabs
+          .filter((candidate) => candidate.closedAt === null)
+          .map((candidate) => ({
+            tabId: candidate.tabId,
+            name: candidate.purpose?.trim() || candidate.title?.trim() || (() => {
+              try { return new URL(candidate.url).hostname || candidate.tabId; } catch { return candidate.tabId; }
+            })(),
+            url: candidate.url,
+            title: candidate.title,
+            active: candidate.tabId === session.controlledTabId,
+            closeable: candidate.closePolicy === 'aiden_owned',
+          })),
       },
     });
   }

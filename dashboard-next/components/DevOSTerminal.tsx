@@ -63,7 +63,7 @@ export default function DevOSTerminal() {
     // WebSocket connection to DevOS API
     let ws: WebSocket | null = null
     try {
-      ws          = new WebSocket('ws://localhost:4200/terminal')
+      ws          = new WebSocket(`${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/terminal`)
       wsRef.current = ws
 
       ws.onopen = () => {

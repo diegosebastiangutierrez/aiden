@@ -10,7 +10,7 @@ export type ReadinessState = 'ready' | 'setup_available' | 'needs_setup' | 'need
 
 export interface SystemReadinessItem {
   id: string;
-  category: 'chat' | 'coding' | 'browser' | 'validation' | 'apps' | 'automations' | 'presence' | 'workspace' | 'approvals' | 'evidence';
+  category: 'runtime' | 'chat' | 'tasks' | 'events' | 'memory' | 'coding' | 'browser' | 'validation' | 'apps' | 'automations' | 'presence' | 'workspace' | 'approvals' | 'evidence' | 'updates';
   state: ReadinessState;
   title: string;
   detail: string;
@@ -61,6 +61,11 @@ function item(
 }
 
 export function createSystemReadinessAuthority(options: {
+  runtime(): Promise<{ ready: boolean; detail: string }> | { ready: boolean; detail: string };
+  tasks(): Promise<{ ready: boolean; detail: string }> | { ready: boolean; detail: string };
+  events(): Promise<{ ready: boolean; detail: string }> | { ready: boolean; detail: string };
+  memory(): Promise<{ ready: boolean; detail: string }> | { ready: boolean; detail: string };
+  updates(): Promise<{ ready: boolean; detail: string }> | { ready: boolean; detail: string };
   providers(sessionId?: string): Promise<WorkbenchProviderSnapshot>;
   coding(): Promise<ExternalCodingHealthProjection>;
   apps(): Promise<{ providers: Array<{ id: string; label: string; health: string }>; accounts: unknown[] }>;
@@ -75,7 +80,8 @@ export function createSystemReadinessAuthority(options: {
   return {
     async snapshot(sessionId?: string): Promise<SystemReadinessProjection> {
       const checkedAt = (options.now ?? Date.now)();
-      const [providerSnapshot, coding, apps, browser, workspace, evidence, approvals, automations, presence] = await Promise.all([
+      const [runtime, tasks, events, memory, updates, providerSnapshot, coding, apps, browser, workspace, evidence, approvals, automations, presence] = await Promise.all([
+        options.runtime(), options.tasks(), options.events(), options.memory(), options.updates(),
         options.providers(sessionId), options.coding(), options.apps(), options.browser(), options.workspace(), options.evidence(), options.approvals(),
         options.automations?.() ?? null, options.presence?.() ?? null,
       ]);
@@ -102,6 +108,30 @@ export function createSystemReadinessAuthority(options: {
                 : null;
       const items: SystemReadinessItem[] = [
         item({
+          id: 'workbench-runtime', category: 'runtime', title: 'Workbench runtime',
+          state: runtime.ready ? 'ready' : 'unavailable', detail: runtime.detail,
+          configured: true, available: runtime.ready, healthy: runtime.ready,
+          blocking: true, severity: runtime.ready ? 'info' : 'error', availableActions: ['recheck'],
+        }, checkedAt),
+        item({
+          id: 'task-execution', category: 'tasks', title: 'Task execution',
+          state: tasks.ready ? 'ready' : 'unavailable', detail: tasks.detail,
+          configured: true, available: tasks.ready, healthy: tasks.ready,
+          blocking: true, severity: tasks.ready ? 'info' : 'error', availableActions: ['recheck'],
+        }, checkedAt),
+        item({
+          id: 'live-events', category: 'events', title: 'Live events',
+          state: events.ready ? 'ready' : 'degraded', detail: events.detail,
+          configured: true, available: events.ready, healthy: events.ready,
+          blocking: true, severity: events.ready ? 'info' : 'error', availableActions: ['recheck'],
+        }, checkedAt),
+        item({
+          id: 'memory', category: 'memory', title: 'Memory',
+          state: memory.ready ? 'ready' : 'unavailable', detail: memory.detail,
+          configured: memory.ready, available: memory.ready, healthy: memory.ready,
+          blocking: false, severity: memory.ready ? 'info' : 'warning', availableActions: memory.ready ? [] : ['recheck'],
+        }, checkedAt),
+        item({
           id: 'chat-provider', category: 'chat', title: 'Chat provider',
           state: chat?.healthy ? 'ready' : chat?.configured ? 'needs_attention' : 'needs_setup',
           detail: chat?.healthy ? `${chat.displayName} · ${selected?.modelId}` : chat?.detail ?? 'Connect and verify a chat provider.',
@@ -120,10 +150,10 @@ export function createSystemReadinessAuthority(options: {
         }, checkedAt),
         item({
           id: 'validation', category: 'validation', title: 'Independent validation',
-          state: coding.isolation === 'available' ? 'ready' : 'needs_attention',
+          state: coding.isolation === 'available' ? 'ready' : 'unavailable',
           detail: coding.isolation === 'available' ? 'Docker validation is ready.' : 'Docker validation is unavailable.',
           configured: true, available: coding.isolation === 'available', healthy: coding.isolation === 'available',
-          blocking: false, severity: coding.isolation === 'available' ? 'info' : 'warning', availableActions: ['recheck'],
+          blocking: false, severity: 'info', availableActions: ['recheck'],
         }, checkedAt),
         item({
           id: 'browser', category: 'browser', title: 'Browser',
@@ -169,6 +199,12 @@ export function createSystemReadinessAuthority(options: {
           state: evidence.ready ? 'ready' : 'unavailable', detail: evidence.detail,
           configured: true, available: evidence.ready, healthy: evidence.ready,
           blocking: true, severity: evidence.ready ? 'info' : 'error', availableActions: [],
+        }, checkedAt),
+        item({
+          id: 'updates', category: 'updates', title: 'Updates',
+          state: updates.ready ? 'ready' : 'unavailable', detail: updates.detail,
+          configured: updates.ready, available: updates.ready, healthy: updates.ready,
+          blocking: false, severity: 'info', availableActions: updates.ready ? [] : ['open_update_help'],
         }, checkedAt),
       ];
       const issues = items.filter((candidate) =>

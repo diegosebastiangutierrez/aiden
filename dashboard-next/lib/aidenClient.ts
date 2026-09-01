@@ -211,6 +211,9 @@ export interface WorkbenchExecutionSurface {
     browserSessionId: string; tabId: string | null; url: string | null; title: string | null;
     navigationStatus: string; snapshotId: string | null; captureAgeMs: number | null; stale: boolean;
     frame: { artifactId: string; capturedAt: number } | null;
+    tabs: Array<{
+      tabId: string; name: string; url: string; title: string; active: boolean; closeable: boolean;
+    }>;
   };
   workspace?: { workspaceId: string | null; leaseId: string; baseHead: string; baseBranch: string | null; state: string };
   changes?: { paths: string[]; count: number; source: 'reconciliation' };
@@ -697,6 +700,19 @@ export interface WorkbenchBootstrap {
   model: { id?: string; displayName?: string };
   connection: 'connected' | 'unavailable' | 'reconnecting';
   readOnly: boolean;
+  topology: {
+    origin: 'same-origin';
+    routes: {
+      bootstrap: string;
+      readiness: string;
+      taskAdmission: string;
+      runEvents: string;
+      sessions: string;
+      memory: string | null;
+      voice: string | null;
+      updates: string | null;
+    };
+  };
   activeJobCount: number;
   execution: {
     available: boolean;
@@ -1713,6 +1729,21 @@ export async function loadWorkbenchBootstrap(): Promise<WorkbenchBootstrap> {
     model: body.model,
     connection: body.connection === 'unavailable' || body.connection === 'reconnecting' ? body.connection : 'connected',
     readOnly: body.readOnly === true,
+    topology: body.topology?.origin === 'same-origin' && body.topology.routes
+      ? body.topology
+      : {
+          origin: 'same-origin',
+          routes: {
+            bootstrap: '/api/workbench/bootstrap',
+            readiness: '/api/workbench/readiness',
+            taskAdmission: '/api/tasks',
+            runEvents: '/api/runs/{runId}/events',
+            sessions: '/api/sessions',
+            memory: null,
+            voice: null,
+            updates: null,
+          },
+        },
     execution: {
       available: body.execution?.available === true,
       runner: body.execution?.runner === 'real' ? 'real' : 'unavailable',

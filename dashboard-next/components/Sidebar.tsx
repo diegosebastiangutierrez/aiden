@@ -31,13 +31,13 @@ export default function Sidebar() {
 
   useEffect(() => {
     // Initial fetch
-    fetch('http://localhost:4200/api/identity')
+    fetch('/api/identity')
       .then(r => r.ok ? r.json() : null)
       .then((data: AidenIdentity | null) => { if (data) setIdentity(data) })
       .catch(() => {})
 
     // SSE subscription
-    const es = new EventSource('http://localhost:4200/api/stream')
+    const es = new EventSource('/api/stream')
     es.addEventListener('identity_update', (e: MessageEvent) => {
       try { setIdentity(JSON.parse(e.data) as AidenIdentity) } catch {}
     })

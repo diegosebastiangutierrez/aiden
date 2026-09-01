@@ -707,7 +707,7 @@ function PatternSuggestionBanner({
   const handleSetup = async () => {
     setSetting(true)
     try {
-      const r = await fetch('http://localhost:4200/api/scheduler/tasks', {
+      const r = await fetch('/api/scheduler/tasks', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({
@@ -1231,7 +1231,7 @@ function LocalAISection() {
   const fetchModels = async () => {
     setLoading(true)
     try {
-      const r = await fetch('http://localhost:4200/api/ollama/models')
+      const r = await fetch('/api/ollama/models')
       const d = await r.json() as OllamaDiscovery
       setData(d)
       if (d.assigned) {
@@ -1250,7 +1250,7 @@ function LocalAISection() {
   const save = async () => {
     setSaving(true)
     try {
-      await fetch('http://localhost:4200/api/ollama/config', {
+      await fetch('/api/ollama/config', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ responder, coder, fast }),
@@ -1373,7 +1373,7 @@ function ApiKeysTab() {
   const validateApiKey = async (provider: string, key: string): Promise<boolean> => {
     if (!key.trim()) return false
     try {
-      const r = await fetch('http://localhost:4200/api/providers/validate', {
+      const r = await fetch('/api/providers/validate', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ provider, key }),
@@ -1590,7 +1590,7 @@ function CustomProvidersTab() {
 
   const fetchList = async () => {
     try {
-      const r    = await fetch('http://localhost:4200/api/providers/custom')
+      const r    = await fetch('/api/providers/custom')
       const data = await r.json() as any
       setCustomProviders(data.customProviders || [])
     } catch { /* server may be starting */ }
@@ -1610,7 +1610,7 @@ function CustomProvidersTab() {
     if (!form.displayName || !form.baseUrl || !form.model) return
     setSaving(true)
     try {
-      await fetch('http://localhost:4200/api/providers/custom', {
+      await fetch('/api/providers/custom', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify(form),
@@ -1623,14 +1623,14 @@ function CustomProvidersTab() {
   }
 
   const handleDelete = async (id: string) => {
-    await fetch(`http://localhost:4200/api/providers/custom/${id}`, { method: 'DELETE' })
+    await fetch(`/api/providers/custom/${id}`, { method: 'DELETE' })
     await fetchList()
   }
 
   const handleTest = async (id: string) => {
     setTesting(id)
     try {
-      const r    = await fetch(`http://localhost:4200/api/providers/custom/${id}/test`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      const r    = await fetch(`/api/providers/custom/${id}/test`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
       const data = await r.json() as any
       setTestResult(prev => ({ ...prev, [id]: { ok: data.valid, msg: data.valid ? `✓ ${data.reply || 'ok'}` : `✗ ${data.error || 'failed'}` } }))
     } catch (e: any) {
@@ -1903,7 +1903,7 @@ function KnowledgeBaseTab() {
                 const filePath = el?.value?.trim()
                 if (!filePath) return
                 try {
-                  const res = await fetch('http://localhost:4200/api/import/chatgpt', {
+                  const res = await fetch('/api/import/chatgpt', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ filePath }),
@@ -1950,7 +1950,7 @@ function KnowledgeBaseTab() {
                 const directoryPath = el?.value?.trim()
                 if (!directoryPath) return
                 try {
-                  const res = await fetch('http://localhost:4200/api/import/openclaw', {
+                  const res = await fetch('/api/import/openclaw', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ directoryPath }),
@@ -3065,6 +3065,15 @@ function LiveExecutionPane() {
         )}
         {selected.kind === 'browser' && selected.browser && (
           <section className="live-browser-surface">
+            {selected.browser.tabs.length > 0 && (
+              <div className="live-browser-tabs" aria-label="Browser tabs">
+                {selected.browser.tabs.map((tab) => (
+                  <span key={tab.tabId} className={tab.active ? 'is-active' : ''} title={`${tab.title || tab.name} — ${tab.url}`}>
+                    {tab.name}
+                  </span>
+                ))}
+              </div>
+            )}
             <div className="live-browser-address"><span>{selected.browser.navigationStatus}</span><strong>{selected.browser.title || 'Untitled page'}</strong></div>
             <p>{selected.browser.url || 'No current URL'}</p>
             {selected.browser.frame ? (
@@ -3665,14 +3674,14 @@ function GrowthCard() {
   const [expanded, setExpanded] = useState(false)
 
   useEffect(() => {
-    fetch('http://localhost:4200/api/growth')
+    fetch('/api/growth')
       .then(r => r.json())
       .then(d => setData(d))
       .catch(() => {})
 
     // Refresh every 2 minutes
     const id = setInterval(() => {
-      fetch('http://localhost:4200/api/growth')
+      fetch('/api/growth')
         .then(r => r.json())
         .then(d => setData(d))
         .catch(() => {})
@@ -3776,7 +3785,7 @@ function NasaLiveEventsCard() {
 
   const load = useCallback(async () => {
     try {
-      const res  = await fetch('http://localhost:4200/api/natural-events', {
+      const res  = await fetch('/api/natural-events', {
         signal: AbortSignal.timeout(8000),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -3874,61 +3883,6 @@ function NasaLiveEventsCard() {
   )
 }
 
-// ── LiveViewPanel ─────────────────────────────────────────────
-
-interface PulseEntry {
-  type: string
-  agent: string
-  message: string
-  timestamp: number
-  tool?: string
-}
-
-// Legacy market/news briefing content remains a chat output, not an attention
-// authority. Agentic Presence owns startup and operational attention above.
-function LiveViewPanel() {
-  const { setActivityLogs, setMessages } = useDevOS()
-
-  // WebSocket connection to LivePulse bridge
-  useEffect(() => {
-    const ws = new WebSocket('ws://localhost:4200')
-    ws.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data)
-        if (data.type === 'briefing' && data.content) {
-          const timestamp = Number.isFinite(Number(data.timestamp)) ? Number(data.timestamp) : 0
-          const label = (data.label as string) ?? 'Morning Briefing'
-          const id = `market_briefing_${timestamp}_${label.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`
-          setMessages((prev: Message[]) => prev.some((message) => message.id === id) ? prev : [...prev, {
-            id,
-            role:           'assistant' as const,
-            content:        data.content as string,
-            timestamp,
-            isBriefing:     true,
-            briefingLabel:  label,
-            isStreaming:    false,
-          }])
-          return
-        }
-        if (data.type === 'pulse' && data.event) {
-          const { type, agent, message, tool } = data.event as PulseEntry
-          const icon = type === 'done' ? '✅' : type === 'error' ? '❌' : type === 'tool' ? '🔧' : type === 'thinking' ? '💭' : '⚡'
-          const now  = new Date().toLocaleTimeString('en', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
-          setActivityLogs(prev => [...prev.slice(-99), {
-            time: now, icon, agent: agent || 'Aiden',
-            message: tool ? `${tool}: ${message}` : message,
-            style: (type === 'done' ? 'ok' : type === 'error' ? 'err' : type === 'tool' || type === 'act' ? 'active' : 'default') as ActivityLog['style'],
-          }])
-        }
-      } catch {}
-    }
-    ws.onerror = () => {}
-    return () => { try { ws.close() } catch {} }
-  }, [setActivityLogs, setMessages])
-
-  return null // headless — no UI rendered
-}
-
 // ── StatusBar (replaces ActivityBar + DisclaimerBar) ─────────
 
 function StatusBar() {
@@ -3976,36 +3930,20 @@ function StatusBar() {
 // ── MemoryView ────────────────────────────────────────────────
 
 function MemoryView() {
-  const [data, setData] = useState<any>(null)
-  useEffect(() => {
-    fetch('http://localhost:4200/api/memory').then(r => r.json()).then(setData).catch(() => {})
-  }, [])
+  const { sendMessage, setChannelModal } = useDevOS()
+  const askAiden = (request: string) => {
+    setChannelModal(null)
+    sendMessage(request)
+  }
   return (
     <div style={{ fontFamily: 'var(--mono)', fontSize: 12, color: 'var(--muted2)' }}>
-      <div style={{ marginBottom: 12 }}>
-        <div style={{ fontSize: 9, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 6 }}>Recent Facts</div>
-        {data?.recentHistory?.slice(0, 5).map((item: any, i: number) => (
-          <div key={i} style={{ padding: '5px 0', borderBottom: '1px solid var(--border)', color: 'var(--muted2)', fontSize: 11, lineHeight: 1.5 }}>
-            {typeof item === 'string' ? item.slice(0, 120) : JSON.stringify(item).slice(0, 120)}
-          </div>
-        )) || <div style={{ color: 'var(--muted)' }}>No memory yet</div>}
+      <p style={{ margin: '0 0 12px', lineHeight: 1.6 }}>
+        Memory is managed by Aiden&apos;s task authority. Review or change it through Chat so the source, approval and result remain attributable.
+      </p>
+      <div style={{ display: 'grid', gap: 8 }}>
+        <button type="button" className="nav-btn" onClick={() => askAiden('Show the harmless preferences currently stored in memory, including their source and whether any entries conflict.')}>Review memory</button>
+        <button type="button" className="nav-btn" onClick={() => askAiden('Help me correct a stored preference. First show the current value and its source, then ask what should replace it.')}>Correct a preference</button>
       </div>
-      <div style={{ marginTop: 16 }}>
-        <div style={{ fontSize: 9, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 6 }}>Stats</div>
-        <div>Semantic items: {data?.semanticItems || 0}</div>
-        <div>Sessions: {data?.sessions || 1}</div>
-      </div>
-      <button onClick={() => {
-        if (window.confirm('Clear all memory? Cannot be undone.')) {
-          fetch('http://localhost:4200/api/memory', { method: 'DELETE' }).catch(() => {})
-          setData(null)
-        }
-      }} style={{
-        marginTop: 16, width: '100%', padding: '8px',
-        background: 'transparent', border: '1px solid rgba(239,68,68,0.3)',
-        borderRadius: 6, color: 'var(--red)', fontFamily: 'var(--mono)',
-        fontSize: 11, cursor: 'pointer',
-      }}>Clear All Memory</button>
     </div>
   )
 }
@@ -4507,7 +4445,7 @@ function ChannelModal() {
   const saveChannel = async () => {
     setSaving(true)
     try {
-      await fetch('http://localhost:4200/api/channels/connect', {
+      await fetch('/api/channels/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ channel: channelModal, token, extra }),
@@ -4665,7 +4603,7 @@ function UserProfileTab() {
   const [exists,   setExists]   = useState(false)
 
   useEffect(() => {
-    fetch('http://localhost:4200/api/user-profile')
+    fetch('/api/user-profile')
       .then(r => r.json())
       .then((d: { exists: boolean; content: string }) => {
         setExists(d.exists)
@@ -4679,7 +4617,7 @@ function UserProfileTab() {
     setSaving(true)
     setSaved(false)
     try {
-      await fetch('http://localhost:4200/api/user-profile', {
+      await fetch('/api/user-profile', {
         method:  'PUT',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ content }),
@@ -4876,33 +4814,13 @@ function UpdatesTab() {
     })
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Fallback API check (browser / dev mode) ─────────────────
-  const apiFallbackCheck = async () => {
-    setUpdateState('checking')
-    try {
-      const res  = await fetch('http://localhost:4200/api/update/check')
-      const data = await res.json() as any
-      if (data.available && data.latestVersion) {
-        setUpdateState('available')
-        setLatestVersion(data.latestVersion)
-        setReleaseNotes(data.releaseNotes || '')
-        setReleaseDate(data.publishedAt ? new Date(data.publishedAt).toLocaleDateString() : '')
-      } else {
-        setUpdateState('uptodate')
-        setCheckedAt(new Date().toLocaleTimeString())
-      }
-    } catch (e: any) {
-      setUpdateState('error')
-      setErrorMsg(e?.message || 'Check failed')
-    }
-  }
-
   const handleCheck = () => {
     setUpdateState('checking')
     if (isElectron) {
       ;(window as any).aidenUpdater.checkUpdate()
     } else {
-      apiFallbackCheck()
+      setUpdateState('error')
+      setErrorMsg('Update checks are not exposed by this Workbench runtime. Use the Aiden updater from the terminal.')
     }
   }
 
@@ -5107,7 +5025,7 @@ function UsageDashboard() {
   const [error, setError]   = useState(false)
 
   useEffect(() => {
-    fetch('http://localhost:4200/api/usage')
+    fetch('/api/usage')
       .then(r => r.ok ? r.json() : Promise.reject())
       .then((d: UsageData) => setUsage(d))
       .catch(() => setError(true))
@@ -5251,7 +5169,7 @@ function TelegramSettingsTab() {
   const [loaded,         setLoaded]         = useState(false)
 
   useEffect(() => {
-    fetch('http://localhost:4200/api/telegram/config')
+    fetch('/api/telegram/config')
       .then(r => r.ok ? r.json() : null)
       .then((data: any) => {
         if (!data) return
@@ -5266,7 +5184,7 @@ function TelegramSettingsTab() {
   const save = async () => {
     setSaving(true)
     try {
-      await fetch('http://localhost:4200/api/telegram/config', {
+      await fetch('/api/telegram/config', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({
@@ -5429,7 +5347,7 @@ function CalendarGmailSettings() {
   const [saved,         setSaved]         = useState(false)
 
   useEffect(() => {
-    fetch('http://localhost:4200/api/calendar-gmail/config')
+    fetch('/api/calendar-gmail/config')
       .then(r => r.ok ? r.json() : null)
       .then((data: any) => {
         if (!data) return
@@ -5443,7 +5361,7 @@ function CalendarGmailSettings() {
   const save = async () => {
     setSaving(true)
     try {
-      await fetch('http://localhost:4200/api/calendar-gmail/config', {
+      await fetch('/api/calendar-gmail/config', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ icalUrl, gmailEmail, gmailPassword }),
@@ -5530,9 +5448,9 @@ function DebugPanel() {
   const reload = async () => {
     try {
       const [logsRes, healthRes, modelsRes] = await Promise.all([
-        fetch('http://localhost:4200/api/debug/logs?n=200').then(r => r.json()).catch(() => ({ logs: [] })),
-        fetch('http://localhost:4200/api/debug/health').then(r => r.json()).catch(() => null),
-        fetch('http://localhost:4200/api/debug/models').then(r => r.json()).catch(() => null),
+        fetch('/api/debug/logs?n=200').then(r => r.json()).catch(() => ({ logs: [] })),
+        fetch('/api/debug/health').then(r => r.json()).catch(() => null),
+        fetch('/api/debug/models').then(r => r.json()).catch(() => null),
       ])
       setLogs(logsRes.logs || [])
       setHealth(healthRes)
@@ -5554,7 +5472,7 @@ function DebugPanel() {
   }, [logs])
 
   const clearLogs = async () => {
-    await fetch('http://localhost:4200/api/debug/logs/clear', { method: 'POST' }).catch(() => {})
+    await fetch('/api/debug/logs/clear', { method: 'POST' }).catch(() => {})
     setLogs([])
   }
 
@@ -5674,7 +5592,7 @@ function SecurityScan() {
     setLoading(true)
     setError(null)
     try {
-      const res = await fetch('http://localhost:4200/api/security/scan')
+      const res = await fetch('/api/security/scan')
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       setResult(await res.json())
     } catch (e: any) {
@@ -5766,7 +5684,7 @@ function IdeIntegration() {
   return (
     <SettingsSection title="IDE Integration — ACP">
       <p style={{ fontSize: 12, color: 'var(--muted3)', marginBottom: 14, lineHeight: 1.6 }}>
-        Aiden exposes an OpenAI-compatible API at <code style={{ fontFamily: 'var(--mono)', color: 'var(--orange)' }}>http://localhost:4200/v1</code>.
+        Aiden exposes an OpenAI-compatible API at <code style={{ fontFamily: 'var(--mono)', color: 'var(--orange)' }}>/v1</code>.
         Point any OpenAI-compatible editor at that base URL and Aiden handles completions — with full memory and tools.
       </p>
 
@@ -5777,21 +5695,21 @@ function IdeIntegration() {
     "title": "Aiden",
     "provider": "openai",
     "model": "aiden",
-    "apiBase": "http://localhost:4200/v1",
+    "apiBase": "/v1",
     "apiKey": "not-needed"
   }]
 }`}</code>
 
       <h4 style={h4Style}>Cursor</h4>
       <code style={codeStyle}>{`Settings → Models → OpenAI API Base
-  http://localhost:4200/v1
+  /v1
 
 API Key : any-value
 Model   : aiden`}</code>
 
       <h4 style={h4Style}>JetBrains — AI Assistant / Grazie</h4>
       <code style={codeStyle}>{`Settings → Tools → AI Assistant → Custom OpenAI endpoint
-  URL   : http://localhost:4200/v1/chat/completions
+  URL   : /v1/chat/completions
   Key   : not-needed
   Model : aiden`}</code>
 
@@ -5799,7 +5717,7 @@ Model   : aiden`}</code>
       <code style={codeStyle}>{`from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://localhost:4200/v1",
+    base_url="/v1",
     api_key="not-needed",
 )
 response = client.chat.completions.create(
@@ -6619,7 +6537,7 @@ function SettingsDrawer() {
                   label: 'Clear conversation history',
                   desc:  'Removes all saved conversations from disk and memory',
                   action: async () => {
-                    await fetch('http://localhost:4200/api/conversations/clear', { method: 'POST' }).catch(() => {})
+                    await fetch('/api/conversations/clear', { method: 'POST' }).catch(() => {})
                     setConversations([])
                     localStorage.removeItem('devos_conversations')
                     setMessages([])
@@ -6629,14 +6547,14 @@ function SettingsDrawer() {
                   label: 'Clear all memory',
                   desc:  'Wipes conversation memory and semantic memory index',
                   action: async () => {
-                    await fetch('http://localhost:4200/api/memory/clear', { method: 'POST' }).catch(() => {})
+                    await fetch('/api/memory/clear', { method: 'POST' }).catch(() => {})
                   },
                 },
                 {
                   label: 'Clear knowledge base',
                   desc:  'Removes all clipped knowledge files',
                   action: async () => {
-                    await fetch('http://localhost:4200/api/knowledge/clear', { method: 'POST' }).catch(() => {})
+                    await fetch('/api/knowledge/clear', { method: 'POST' }).catch(() => {})
                   },
                 },
               ].map(item => (
@@ -6693,17 +6611,8 @@ export default function Home() {
       return // IPC handles everything — no polling needed
     }
 
-    // Browser fallback: poll the API once after 30s
-    const t = setTimeout(async () => {
-      try {
-        const res  = await fetch('http://localhost:4200/api/update/check')
-        const data = await res.json() as any
-        if (data.available && data.latestVersion) {
-          setUpdateBanner({ version: data.latestVersion, url: data.downloadUrl || '' })
-        }
-      } catch { /* silently ignore */ }
-    }, 30000)
-    return () => clearTimeout(t)
+    // The browser bridge advertises Updates as unavailable instead of polling
+    // a retired service. Electron continues to own its updater lifecycle.
   }, [])
 
   // ── UI Mode ─────────────────────────────────────────────────
@@ -7340,32 +7249,6 @@ export default function Home() {
   // ── Sprint 19: upgrade nudge toast ───────────────────────────
   const [upgradeToast, setUpgradeToast] = useState<{ message: string; action: string; onAction: () => void } | null>(null)
 
-  // ── Sprint 12: proactive automation suggestions ──────────────
-  const [suggestionPattern,  setSuggestionPattern]  = useState<AutomationPattern | null>(null)
-  const [suggestionDismissed, setSuggestionDismissed] = useState(false)
-
-  useEffect(() => {
-    // Only start polling after 20+ conversations
-    const convCount = messages.filter(m => m.role === 'user').length
-    if (convCount < 20 || suggestionDismissed) return
-
-    const check = () => {
-      fetch('http://localhost:4200/api/cognition/suggestions')
-        .then(r => r.json())
-        .then((d: any) => {
-          const patterns: AutomationPattern[] = d.patterns ?? []
-          if (patterns.length > 0 && !suggestionDismissed) {
-            setSuggestionPattern(patterns[0])
-          }
-        })
-        .catch(() => {})
-    }
-
-    check()
-    const timer = setInterval(check, 5 * 60 * 1000) // re-check every 5 minutes
-    return () => clearInterval(timer)
-  }, [messages.length, suggestionDismissed]) // eslint-disable-line react-hooks/exhaustive-deps
-
   // ── Refs ────────────────────────────────────────────────────
   const inputRef         = useRef<HTMLTextAreaElement>(null)
   const kbInputRef       = useRef<HTMLInputElement>(null)
@@ -7388,27 +7271,6 @@ export default function Home() {
       return () => clearTimeout(t)
     }
   }, [isExecuting])
-
-  // ── Voice availability check ─────────────────────────────────
-  useEffect(() => {
-    fetch('http://localhost:4200/api/voice/status')
-      .then(r => r.json())
-      .then(data => setVoiceStatus(data))
-      .catch(() => {})
-  }, [])
-
-  // ── Auto-speak Aiden responses when TTS enabled ──────────────
-  useEffect(() => {
-    if (!ttsEnabled) return
-    const lastMsg = messages[messages.length - 1]
-    if (lastMsg?.role === 'assistant' && !(lastMsg as any).isStreaming && lastMsg.content) {
-      fetch('http://localhost:4200/api/voice/speak', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: lastMsg.content }),
-      }).catch(() => {})
-    }
-  }, [messages, ttsEnabled])
 
   // ── Load license status on mount ────────────────────────────
   useEffect(() => {
@@ -7458,37 +7320,6 @@ export default function Home() {
     conversationMessagesRef.current = messagesByConversation
     try { localStorage.setItem('devos_conversations', JSON.stringify(conversations)) } catch {}
   }, [conversations])
-
-  // Screenshot polling is handled inside LiveViewPanel (adaptive 800ms/3000ms)
-
-  // ── Load system stats + recent tasks (idle) ─────────────────
-  useEffect(() => {
-    if (isExecuting) return
-    Promise.all([
-      fetch('http://localhost:4200/api/memory').then(r => r.json()).catch(() => null),
-      fetch('http://localhost:4200/api/tasks').then(r => r.json()).catch(() => []),
-    ]).then(([mem, tasks]) => {
-      setSystemStats(mem)
-      setRecentTasks(Array.isArray(tasks) ? tasks.slice(0, 3) : [])
-    })
-  }, [isExecuting])
-
-  // ── Load providers when settings opens ──────────────────────
-  useEffect(() => {
-    if (!settingsOpen) return
-    fetch('http://localhost:4200/api/providers')
-      .then(r => r.json())
-      .then((d: any) => { setProviders(d.apis || []); setRouting(d.routing || {}) })
-      .catch(() => {})
-    fetch('http://localhost:4200/api/knowledge')
-      .then(r => r.json())
-      .then((d: any) => setKnowledgeFiles(Array.isArray(d.files) ? d.files : []))
-      .catch(() => {})
-    fetch('http://localhost:4200/api/knowledge/stats')
-      .then(r => r.json())
-      .then((d: any) => setKnowledgeStats(d))
-      .catch(() => {})
-  }, [settingsOpen])
 
   // ── Keyboard shortcuts ──────────────────────────────────────
   useEffect(() => {
@@ -7859,7 +7690,7 @@ export default function Home() {
     if (!key) return
     setSavingKey(true)
     try {
-      await fetch('http://localhost:4200/api/providers/add', {
+      await fetch('/api/providers/add', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ provider: providerID, key, model: model || undefined }),
@@ -7867,14 +7698,14 @@ export default function Home() {
       setProviderKeys(prev => { const n = { ...prev }; delete n[providerID]; return n })
       setProviderModels(prev => { const n = { ...prev }; delete n[providerID]; return n })
       setAddingProvider(null)
-      const d = await fetch('http://localhost:4200/api/providers').then(r => r.json()) as any
+      const d = await fetch('/api/providers').then(r => r.json()) as any
       setProviders(d.apis || [])
     } catch {}
     setSavingKey(false)
   }, [providerKeys, providerModels])
 
   const toggleProvider = useCallback(async (name: string, enabled: boolean) => {
-    await fetch(`http://localhost:4200/api/providers/${encodeURIComponent(name)}`, {
+    await fetch(`/api/providers/${encodeURIComponent(name)}`, {
       method:  'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled }),
@@ -7884,12 +7715,12 @@ export default function Home() {
 
   const deleteProvider = useCallback(async (name: string) => {
     if (!window.confirm(`Remove ${name}?`)) return
-    await fetch(`http://localhost:4200/api/providers/${encodeURIComponent(name)}`, { method: 'DELETE' }).catch(() => {})
+    await fetch(`/api/providers/${encodeURIComponent(name)}`, { method: 'DELETE' }).catch(() => {})
     setProviders(prev => prev.filter((p: any) => p.name !== name))
   }, [])
 
   const resetLimits = useCallback(async () => {
-    await fetch('http://localhost:4200/api/providers/reset-limits', { method: 'POST' }).catch(() => {})
+    await fetch('/api/providers/reset-limits', { method: 'POST' }).catch(() => {})
     setProviders(prev => prev.map((p: any) => ({ ...p, rateLimited: false })))
   }, [])
 
@@ -7904,7 +7735,7 @@ export default function Home() {
       fd.append('category', uploadCategory)
 
       // Start async upload — get jobId immediately
-      const r = await fetch('http://localhost:4200/api/knowledge/upload/async', { method: 'POST', body: fd })
+      const r = await fetch('/api/knowledge/upload/async', { method: 'POST', body: fd })
       const d = await r.json() as any
       // Sprint 19: handle free tier limit / upgrade nudge
       if (r.status === 403 && d.upgrade) {
@@ -7920,16 +7751,16 @@ export default function Home() {
       await new Promise<void>((resolve) => {
         const iv = setInterval(async () => {
           try {
-            const pr = await fetch(`http://localhost:4200/api/knowledge/progress/${encodeURIComponent(jobId)}`).then(x => x.json()) as any
+            const pr = await fetch(`/api/knowledge/progress/${encodeURIComponent(jobId)}`).then(x => x.json()) as any
             if (pr.status === 'done' || pr.status === 'error') { clearInterval(iv); resolve() }
           } catch { clearInterval(iv); resolve() }
         }, 600)
       })
 
       // Refresh list + stats after completion
-      const updated = await fetch('http://localhost:4200/api/knowledge').then(r2 => r2.json()) as any
+      const updated = await fetch('/api/knowledge').then(r2 => r2.json()) as any
       setKnowledgeFiles(Array.isArray(updated.files) ? updated.files : [])
-      const stats = await fetch('http://localhost:4200/api/knowledge/stats').then(r2 => r2.json()) as any
+      const stats = await fetch('/api/knowledge/stats').then(r2 => r2.json()) as any
       setKnowledgeStats(stats)
 
     } catch {}
@@ -7939,46 +7770,16 @@ export default function Home() {
 
   const handleKnowledgeDelete = useCallback(async (fileId: string) => {
     if (!window.confirm('Remove this file from knowledge base?')) return
-    await fetch(`http://localhost:4200/api/knowledge/${encodeURIComponent(fileId)}`, { method: 'DELETE' }).catch(() => {})
+    await fetch(`/api/knowledge/${encodeURIComponent(fileId)}`, { method: 'DELETE' }).catch(() => {})
     setKnowledgeFiles(prev => prev.filter((f: any) => f.id !== fileId))
   }, [])
 
   // ── Plus menu handlers ───────────────────────────────────────
-  const takeScreenshot = useCallback(async () => {
+  const takeScreenshot = useCallback(() => {
     setPlusMenuOpen(false)
     setActiveSubmenu(null)
-
-    const now = new Date().toLocaleTimeString('en', { hour12: false })
-    setActivityLogs(prev => [...prev, { time: now, icon: '📷', agent: 'System', message: 'Taking screenshot...', style: 'active' }])
-
-    try {
-      await fetch('http://localhost:4200/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: 'take a screenshot of the current screen and save it', mode: 'auto', sessionId }),
-      })
-    } catch {}
-
-    let attempts = 0
-    const poll = setInterval(async () => {
-      attempts++
-      try {
-        const r = await fetch('http://localhost:4200/api/screenshot?' + Date.now())
-        if (r.ok) {
-          const blob = await r.blob()
-          if (blob.size > 0) {
-            const url = URL.createObjectURL(blob)
-            setScreenshot(url)
-            setLiveViewOpen(true)
-            clearInterval(poll)
-            const t = new Date().toLocaleTimeString('en', { hour12: false })
-            setActivityLogs(prev => [...prev, { time: t, icon: '✓', agent: 'System', message: 'Screenshot captured', style: 'ok' }])
-          }
-        }
-      } catch {}
-      if (attempts > 10) clearInterval(poll)
-    }, 800)
-  }, [sessionId, setPlusMenuOpen, setActiveSubmenu, setActivityLogs, setScreenshot, setLiveViewOpen])
+    sendMessage('Take a screenshot of the current screen, save it as a durable run Artifact, verify the exact bytes, and report the Artifact and Evidence locations.')
+  }, [sendMessage, setPlusMenuOpen, setActiveSubmenu])
 
   const submitMiniPrompt = useCallback(() => {
     if (!miniPromptValue.trim() || !miniPrompt) return
@@ -8004,46 +7805,12 @@ export default function Home() {
   // ── Voice recording handler ──────────────────────────────────
   const startRecording = useCallback(async () => {
     if (isRecording || isStreaming) return
-    setIsRecording(true)
-    setRecordingTimer(5)
-
-    // Countdown display
-    const countdown = setInterval(() => {
-      setRecordingTimer(t => {
-        if (t <= 1) { clearInterval(countdown); return 0 }
-        return t - 1
-      })
-    }, 1000)
-
-    try {
-      // Record 5 seconds of audio
-      const r1   = await fetch('http://localhost:4200/api/voice/record', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ duration: 5000 }),
-      })
-      const { path: audioPath } = await r1.json()
-
-      // Transcribe
-      const r2   = await fetch('http://localhost:4200/api/voice/transcribe', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ path: audioPath }),
-      })
-      const { text } = await r2.json()
-
-      if (text?.trim()) {
-        setInput(text.trim())
-        setTimeout(() => sendMessage(text.trim()), 300)
-      }
-    } catch (e) {
-      console.error('[Voice] Recording error:', e)
-    } finally {
-      clearInterval(countdown)
-      setIsRecording(false)
-      setRecordingTimer(0)
-    }
-  }, [isRecording, isStreaming, sendMessage])
+    const now = new Date().toLocaleTimeString('en', { hour12: false })
+    setActivityLogs((previous) => [...previous.slice(-99), {
+      time: now, icon: '!', agent: 'Aiden',
+      message: 'Voice is unavailable in this Workbench runtime.', style: 'default',
+    }])
+  }, [isRecording, isStreaming])
 
   // ── Context value ───────────────────────────────────────────
   const ctxValue: DevOSCtxType = {
@@ -8135,8 +7902,6 @@ export default function Home() {
             }}>✕</button>
           </div>
         )}
-        {/* Headless connector — keeps WebSocket alive for briefings */}
-        <LiveViewPanel />
         <div className={`workbench-grid ${historyOpen ? 'sidebar-open' : 'sidebar-closed'} ${liveViewOpen && liveExecution?.surfaces.length ? 'live-execution-open' : ''}`} style={{
           flex: 1, display: 'grid', overflow: 'hidden',
           transition: 'grid-template-columns 0.3s cubic-bezier(0.22,1,0.36,1)',
@@ -8189,14 +7954,6 @@ export default function Home() {
             action={upgradeToast.action}
             onAction={upgradeToast.onAction}
             onDismiss={() => setUpgradeToast(null)}
-          />
-        )}
-        {suggestionPattern && !suggestionDismissed && (
-          <PatternSuggestionBanner
-            pattern={suggestionPattern}
-            onDismiss={() => { setSuggestionDismissed(true); setSuggestionPattern(null) }}
-            onSetup={(goal) => { /* handled inside banner */ }}
-            onUpgrade={(message) => setUpgradeToast({ message, action: 'Upgrade to Pro', onAction: () => setPricingOpen(true) })}
           />
         )}
         {onboardingDone === false && onboardingVisible && (

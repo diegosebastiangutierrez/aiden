@@ -25,7 +25,7 @@ export default function CostBadge() {
 
   // Initial fetch
   useEffect(() => {
-    fetch('http://localhost:4200/api/cost')
+    fetch('/api/cost')
       .then(r => r.ok ? r.json() : null)
       .then(d => { if (d) setCost(d as DailyCost) })
       .catch(() => {})
@@ -38,7 +38,7 @@ export default function CostBadge() {
 
     function connect() {
       try {
-        ws = new WebSocket('ws://localhost:4200')
+        ws = new WebSocket(`${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`)
         ws.onmessage = (e) => {
           try {
             const msg = JSON.parse(e.data)

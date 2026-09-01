@@ -21,13 +21,13 @@ export default function ChatHeader() {
   // ── Poll /api/cost on mount, then subscribe to SSE cost_update ──
   useEffect(() => {
     // Initial fetch
-    fetch('http://localhost:4200/api/cost')
+    fetch('/api/cost')
       .then(r => r.ok ? r.json() : null)
       .then((data: DailyCostSummary | null) => { if (data) setCost(data) })
       .catch(() => {})
 
     // SSE subscription
-    const es = new EventSource('http://localhost:4200/api/stream')
+    const es = new EventSource('/api/stream')
     es.addEventListener('cost_update', (e: MessageEvent) => {
       try { setCost(JSON.parse(e.data) as DailyCostSummary) } catch {}
     })

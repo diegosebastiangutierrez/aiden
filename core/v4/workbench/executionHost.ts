@@ -99,6 +99,7 @@ export function createWorkbenchExecutionHost(
          sessionStore: options.sessionStore,
         agentBuilder: options.agentBuilder,
         persistedDefault: options.persistedDefault,
+        detachJobsOnDispose: true,
         log: options.log,
         ...(options.approvalAuthority ? {
           approvalCallbacksFactory: ({ admission, signal, fallback }) => {
@@ -150,23 +151,6 @@ export function createWorkbenchExecutionHost(
       stopped = true;
       if (recoveryTimer) clearInterval(recoveryTimer);
       recoveryTimer = null;
-      if (options.approvalAuthority) {
-        for (const job of options.jobEngine.listJobs({ terminal: false, limit: 1_000 })) {
-          const attempt = job.activeAttemptId ? options.jobEngine.getAttempt(job.activeAttemptId) : null;
-          const durableAutomationWait = attempt !== null
-            && options.automationApprovalContinuations?.hasPendingForAttempt(
-              job.id,
-              attempt.id,
-              attempt.generation,
-            ) === true;
-          if (!durableAutomationWait) {
-            options.approvalAuthority.cancelPendingForJob(
-              job.id,
-              'Workbench execution host shutdown',
-            );
-          }
-        }
-      }
       if (dispatcher) await dispatcher.stop(timeoutMs);
     },
     snapshot() {

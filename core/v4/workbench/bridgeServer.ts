@@ -509,6 +509,7 @@ export function startWorkbenchBridge(opts: WorkbenchBridgeOptions): Promise<Work
   const pollMs    = Math.max(50, opts.pollMs ?? 250);
   const pageLimit = Math.min(Math.max(1, opts.pageLimit ?? 5000), 5000);
   const log       = opts.log ?? ((): void => {});
+  const eventStreams = new Set<http.ServerResponse>();
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? '/', `http://${host}`);
@@ -1099,6 +1100,19 @@ export function startWorkbenchBridge(opts: WorkbenchBridgeOptions): Promise<Work
           triggerStatus: job.triggerStatus ?? null,
           queue: job.queue,
         })),
+        topology: {
+          origin: 'same-origin',
+          routes: {
+            bootstrap: '/api/workbench/bootstrap',
+            readiness: '/api/workbench/readiness',
+            taskAdmission: '/api/tasks',
+            runEvents: '/api/runs/{runId}/events',
+            sessions: '/api/sessions',
+            memory: null,
+            voice: null,
+            updates: null,
+          },
+        },
         readOnly: !Boolean(opts.token && opts.enqueue),
       });
       return;
@@ -1192,6 +1206,7 @@ export function startWorkbenchBridge(opts: WorkbenchBridgeOptions): Promise<Work
       'Connection':        'keep-alive',
       'X-Accel-Buffering': 'no',   // defeat reverse-proxy buffering
     });
+    eventStreams.add(res);
 
     // Resume support: Last-Event-ID (or ?lastId=) skips rows already seen.
     let lastId = 0;
@@ -1228,9 +1243,14 @@ export function startWorkbenchBridge(opts: WorkbenchBridgeOptions): Promise<Work
     const ka   = setInterval(() => { try { res.write(': keepalive\n\n'); } catch { /* closed */ } }, 15000);
     tick.unref?.(); ka.unref?.();
 
-    const stop = (): void => { clearInterval(tick); clearInterval(ka); };
+    const stop = (): void => {
+      clearInterval(tick);
+      clearInterval(ka);
+      eventStreams.delete(res);
+    };
     req.on('close', stop);
     req.on('error', stop);
+    res.on('close', stop);
     res.on('error', stop);
   }
 
@@ -2075,7 +2095,13 @@ export function startWorkbenchBridge(opts: WorkbenchBridgeOptions): Promise<Work
       resolve({
         port: boundPort,
         host,
-        close: () => new Promise<void>((done) => server.close(() => done())),
+        close: () => new Promise<void>((done) => {
+          for (const stream of eventStreams) {
+            try { stream.end(); } catch { /* stream already closed */ }
+          }
+          eventStreams.clear();
+          server.close(() => done());
+        }),
       });
     });
   });
