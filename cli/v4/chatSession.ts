@@ -3137,9 +3137,10 @@ export class ChatSession implements ChatSessionLike {
               action:    a.action,
               sessionId: this.sessionId,
               runId:     replRunId ?? null,
-              taskId:    replTaskId ?? null,
-              bytes:     a.bytes,
-            });
+               taskId:    replTaskId ?? null,
+               bytes:     a.bytes,
+               preview:   a.preview,
+             });
             // Close the reserved tasks.artifactIds field.
             if (replTaskId && this.opts.replTaskStore) {
               this.opts.replTaskStore.appendArtifactId(replTaskId, artifactId);

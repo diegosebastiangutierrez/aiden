@@ -1817,7 +1817,8 @@ export class Display {
         source: 'runtime',
       });
       const duration = elapsed >= 1000 ? ` ${formatToolDuration(elapsed)}` : '';
-      const liveSuffix = `  ${sk.applyColors(`${semanticPhaseStatusLabel(semanticPhase)}${duration}…`, phaseColorKind(semanticPhase))}`;
+      const statusLabel = snapshot?.detail || semanticPhaseStatusLabel(semanticPhase);
+      const liveSuffix = `  ${sk.applyColors(`${statusLabel}${duration}…`, phaseColorKind(semanticPhase))}`;
       const runningGlyph = sk.applyColors(
         projection.glyph,
         operationKind === 'worker' ? 'worker' : projection.glyphColor,

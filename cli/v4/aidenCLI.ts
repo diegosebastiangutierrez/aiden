@@ -405,6 +405,8 @@ export interface MainOptions {
    * NullAdapter so first-run setup remains available without pretending chat
    * execution is configured. One-shot/headless query callers still fail. */
   allowUnconfiguredRecovery?: boolean;
+  /** Process-local truth for whether a canonical Automation dispatcher is active. */
+  automationSchedulerReady?: () => boolean;
   /** Stub stdout writer (defaults to process.stdout.write). */
   writeOut?: (text: string) => void;
   /**
@@ -753,6 +755,7 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
           jobEngineOverride: jobEngine,
           actionAuthorityOverride: actionAuthority,
           allowUnconfiguredRecovery: true,
+          automationSchedulerReady: () => executionHost?.snapshot().available === true,
         });
         if (!workbenchRuntime.exploreMode) {
           executionHost = createWorkbenchExecutionHost({
@@ -848,8 +851,13 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
         ownerId: workbenchIntegrationRuntime.scope.ownerId,
         workspaceId: workbenchIntegrationRuntime.scope.workspaceId,
         workspaceRoot: process.cwd(),
+        schedulerReady: () => executionHost?.snapshot().available === true,
       });
-      const automationReadiness = createAutomationReadinessAuthority({ db, edition: editionAuthority });
+      const automationReadiness = createAutomationReadinessAuthority({
+        db,
+        edition: editionAuthority,
+        schedulerReady: () => executionHost?.snapshot().available === true,
+      });
       const learningAuthority = workbenchRuntime?.learningAuthority ?? createLearningAuthority({
         db, enabled: editionAuthority.can('learning.enabled'),
       });
@@ -913,6 +921,17 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
       const automationTimer = setInterval(scanAutomations, 1_000);
       automationTimer.unref?.();
       const readiness = providerSetup ? createSystemReadinessAuthority({
+        runtime: () => ({ ready: true, detail: 'Workbench runtime is available.' }),
+        tasks: () => ({
+          ready: executionHost !== null,
+          detail: executionHost ? 'Durable task execution is available.' : 'Task execution is unavailable.',
+        }),
+        events: () => ({ ready: true, detail: 'Run-scoped live events are available.' }),
+        memory: () => ({
+          ready: workbenchRuntime !== null,
+          detail: workbenchRuntime ? 'Memory is available through Aiden tasks.' : 'Memory is unavailable.',
+        }),
+        updates: () => ({ ready: false, detail: 'Update checks are available from the Aiden terminal.' }),
         providers: (sessionId?: string) => providerSetup.snapshot(sessionId),
         coding: () => codingPort.health(),
         apps: () => appsPort.snapshot(),
@@ -1123,6 +1142,7 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
         shutdownPromise = (async () => {
           clearInterval(automationTimer);
           try { if (executionHost) await executionHost.stop(); } catch { /* best-effort bounded drain */ }
+          try { await (await import('../../core/playwrightBridge')).pwClose(); } catch { /* physical browser is bounded by the Workbench host */ }
           try { await commercialRuntime.close(); } catch { /* private products are bounded children */ }
           try { await bridge.close(); } catch { /* listener may already be closed */ }
           try { workbenchRuntime?.processRegistry.cleanup(); } catch { /* best-effort */ }
@@ -3134,6 +3154,7 @@ export async function buildAgentRuntime(
     ownerId: integrationScope.ownerId,
     workspaceId: integrationScope.workspaceId,
     workspaceRoot: process.cwd(),
+    schedulerReady: opts.automationSchedulerReady,
   });
   const runtimePresenceAuthority = createRuntimePresenceAuthority({
     db: replDb,
@@ -3165,9 +3186,18 @@ export async function buildAgentRuntime(
     oauthRegistry,
     openBrowser: async () => { throw new Error('Browser navigation is unavailable from a read-only status query.'); },
   });
-  const runtimeAutomationReadiness = createAutomationReadinessAuthority({ db: replDb, edition: learningEdition });
+  const runtimeAutomationReadiness = createAutomationReadinessAuthority({
+    db: replDb,
+    edition: learningEdition,
+    schedulerReady: opts.automationSchedulerReady,
+  });
   const runtimePresenceReadiness = createPresenceReadinessAuthority({ db: replDb, edition: learningEdition });
   const runtimeReadiness = createSystemReadinessAuthority({
+    runtime: () => ({ ready: true, detail: 'Aiden runtime is available.' }),
+    tasks: () => ({ ready: true, detail: 'Durable task execution is available.' }),
+    events: () => ({ ready: true, detail: 'Durable runtime events are available.' }),
+    memory: () => ({ ready: true, detail: 'Memory is available.' }),
+    updates: () => ({ ready: true, detail: 'Update checks are available from the Aiden terminal.' }),
     providers: (sessionId?: string) => runtimeProviderSetup.snapshot(sessionId),
     coding: externalCodingHealth,
     apps: () => runtimeApps.snapshot(),
@@ -5060,6 +5090,10 @@ export async function runQuery(
   cliOpts: any,
   opts: MainOptions,
   _build: typeof buildAgentRuntime = buildAgentRuntime,
+  _closeBrowser: () => Promise<void> = async () => {
+    const { pwClose } = await import('../../core/playwrightBridge');
+    await pwClose({ announce: false });
+  },
 ): Promise<number> {
   let runtime: AgentRuntime;
   try {
@@ -5086,6 +5120,7 @@ export async function runQuery(
     teardown: async () => {
       // Same discipline as runInteractiveChat's shutdown, plus process.exit
       // in the caller guarantees no lingering-handle hang (memory #29).
+      try { await _closeBrowser(); } catch { /* best-effort */ }
       try { if (runtime.mcpClient) await runtime.mcpClient.closeAll(); } catch { /* best-effort */ }
       try { await runtime.pluginLoader?.teardown(); } catch { /* best-effort */ }
       try { await runtime.channelManager?.stopAll(); } catch { /* best-effort */ }
@@ -5097,7 +5132,15 @@ export async function runQuery(
 let interactiveSessionCompleted = false;
 
 async function runInteractiveChat(cliOpts: any, opts: MainOptions): Promise<void> {
-  const runtime = await buildAgentRuntime(cliOpts, opts);
+  let runtimeOptions = opts;
+  if (!runtimeOptions.automationSchedulerReady && process.env.AIDEN_DAEMON === '1') {
+    const { getDaemonHandle } = await import('../../core/v4/daemon/bootstrap');
+    runtimeOptions = {
+      ...opts,
+      automationSchedulerReady: () => getDaemonHandle()?.active === true,
+    };
+  }
+  const runtime = await buildAgentRuntime(cliOpts, runtimeOptions);
   const resumedActiveState = runtime.resumeSessionId
     ? runtime.sessionManager.resumeActiveState(runtime.resumeSessionId)
     : null;

@@ -26,6 +26,7 @@ interface ActivityEntry {
   phasePausedAt?: number;
   phasePausedMs: number;
   timing?: ToolActivityTiming;
+  detail?: string;
   repaintEligible: boolean;
   handle: ToolRowHandle;
 }
@@ -48,6 +49,7 @@ export interface ActivitySnapshot {
   retryBackoffMs: number;
   attemptCount: number;
   terminalClassification?: ToolTerminalClassification;
+  detail?: string;
 }
 
 type TimingOutcome = { timing?: ToolActivityTiming };
@@ -128,6 +130,7 @@ export class ActivityRegistry {
       phaseStartedAt: pending?.at ?? startedAt,
       phasePausedMs: 0,
       timing: pending?.timing ? cloneTiming(pending.timing) : undefined,
+      detail: pending?.detail,
       repaintEligible: true,
       handle: undefined as unknown as ToolRowHandle,
     };
@@ -149,6 +152,7 @@ export class ActivityRegistry {
       return;
     }
     if (update.timing) entry.timing = cloneTiming(update.timing);
+    if (update.detail !== undefined) entry.detail = update.detail;
     if (update.phase !== 'terminal') {
       entry.phase = update.phase;
       entry.phaseStartedAt = update.at;
@@ -333,6 +337,7 @@ export class ActivityRegistry {
       retryBackoffMs: timing?.retryBackoffMs ?? 0,
       attemptCount: timing?.attemptCount ?? timing?.executionAttempts.length ?? 0,
       terminalClassification: timing?.terminalClassification,
+      detail: entry.detail,
     };
   }
 

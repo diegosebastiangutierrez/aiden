@@ -267,8 +267,37 @@ export class AidenTUI {
   /** Wraps a Display so its writes stream to history pane, not stdout. */
   private wrapDisplay(display: any): any {
     const append = (msg: string) => this.appendHistory(msg);
-
-    return {
+    const underlying = display ?? {};
+    const dimension = (
+      candidates: Array<() => unknown>,
+      fallback: number,
+      minimum: number,
+      maximum: number,
+    ): number => {
+      for (const candidate of candidates) {
+        try {
+          const value = candidate();
+          if (typeof value !== 'number' || !Number.isFinite(value)) continue;
+          const normalized = Math.floor(value);
+          if (normalized >= minimum && normalized <= maximum) return normalized;
+        } catch {
+          // A display adapter may be only partially available during startup.
+        }
+      }
+      return fallback;
+    };
+    const terminalColumns = (): number => dimension([
+      () => typeof underlying.terminalColumns === 'function'
+        ? underlying.terminalColumns.call(underlying)
+        : undefined,
+      () => this.screen?.width,
+      () => process.stdout.columns,
+    ], 80, 20, 500);
+    const terminalRows = (): number => dimension([
+      () => this.screen?.height,
+      () => process.stdout.rows,
+    ], 24, 8, 200);
+    const overrides = {
       // Direct methods the chat engine calls.
       printBanner: () => {
         // Banner replaced with chrome — the box border IS the chrome.
@@ -300,12 +329,50 @@ export class AidenTUI {
         return `{gray-fg}→ ${name}${summary ? ` ${summary}` : ''}{/gray-fg}`;
       },
 
+      // Stable geometry contract for ChatSession. Full Display instances keep
+      // their own measurements; alternate adapters use the blessed viewport,
+      // then the host terminal, then bounded safe defaults.
+      terminalColumns,
+      terminalRows,
+      cols: () => {
+        const measured = dimension([
+          () => typeof underlying.cols === 'function'
+            ? underlying.cols.call(underlying)
+            : undefined,
+        ], 0, 20, 500);
+        return Math.min(measured >= 20 ? measured : terminalColumns(), 100);
+      },
+      waitForTerminalColumns: async (minimum: number, requirementLines: readonly string[]) => {
+        if (typeof underlying.waitForTerminalColumns === 'function') {
+          return underlying.waitForTerminalColumns.call(underlying, minimum, requirementLines);
+        }
+        return terminalColumns() >= minimum;
+      },
+
       startSpinner: (text: string) => this.startTuiSpinner(text),
 
       // Forwarded rarely-used helpers from the underlying Display so any
       // sibling code that reaches into `display.foo()` still works.
       _underlying: display,
     };
+
+    const bound = new Map<PropertyKey, unknown>();
+    return new Proxy(overrides as Record<PropertyKey, unknown>, {
+      get(target, property, receiver) {
+        if (Reflect.has(target, property)) return Reflect.get(target, property, receiver);
+        const value = Reflect.get(underlying, property, underlying);
+        if (typeof value !== 'function') return value;
+        if (!bound.has(property)) bound.set(property, value.bind(underlying));
+        return bound.get(property);
+      },
+      set(target, property, value, receiver) {
+        if (Reflect.has(target, property)) return Reflect.set(target, property, value, receiver);
+        return Reflect.set(underlying, property, value, underlying);
+      },
+      has(target, property) {
+        return Reflect.has(target, property) || Reflect.has(underlying, property);
+      },
+    });
   }
 
   private appendHistory(content: string): void {
