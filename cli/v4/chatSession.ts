@@ -1085,12 +1085,33 @@ export class ChatSession implements ChatSessionLike {
           await gracefulShutdown('sigint');
           return;
         }
-        // First press during an active turn — abort, surface the
-        // escape hatch, stay alive. The agent's catch will route
-        // the resulting AbortError to finishReason='interrupted'.
+        // First press during an active durable turn — persist the cancellation
+        // command before interrupting the physical operation. The lifecycle
+        // watcher owns the eventual terminal reduction; this direct abort only
+        // wakes an in-flight provider/tool promptly after durable truth exists.
+        const target = this.activeDurableTarget;
+        if (target && this.opts.jobControlAuthority) {
+          try {
+            this.opts.jobControlAuthority.commands.request({
+              ...target,
+              kind: 'cancel',
+              source: 'tui',
+              reason: 'user pressed Ctrl+C',
+              idempotencyNamespace: `tui-control:${this.sessionId}`,
+              idempotencyKey: `sigint:${target.attemptId}:${++this.durableInputOrdinal}`,
+            });
+          } catch (error) {
+            try {
+              this.opts.display.warn(
+                `Cancellation was not persisted; the turn is still running: ${error instanceof Error ? error.message : String(error)}`,
+              );
+            } catch { /* defensive */ }
+            return;
+          }
+        }
         this.lastInterruptAt = now;
         try {
-          ctrl?.abort();
+          requestTurnCancel(ctrl);
           // v4.12.1 Slice 2b — a hard interrupt supersedes any pending steer,
           // so a stale nudge never lands on the next unrelated turn.
           this.duringTurnInput.clearSteer();
@@ -1872,9 +1893,13 @@ export class ChatSession implements ChatSessionLike {
         }),
       });
     } catch (error) {
-      if (error instanceof DurableJobAuthorityLostError && lifecycleContext) {
+      if (lifecycleContext) {
         const status = jobEngine.getJob(lifecycleContext.handle.jobId)?.status;
-        if (status === 'cancelled' || status === 'paused') return;
+        // executeDurableJob settles a persist-first cancellation only after the
+        // execution callback has unwound and physical cleanup is observed. Its
+        // boundary error is control flow, not a second user-visible turn error.
+        if (status === 'cancelled') return;
+        if (error instanceof DurableJobAuthorityLostError && status === 'paused') return;
       }
       throw error;
     }

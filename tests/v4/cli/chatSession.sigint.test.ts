@@ -32,6 +32,10 @@ import { CommandRegistry } from '../../../cli/v4/commandRegistry';
 import { Display } from '../../../cli/v4/display';
 import { SkinEngine } from '../../../cli/v4/skinEngine';
 import type { Message } from '../../../providers/v4/types';
+import Database from 'better-sqlite3';
+import { runMigrations } from '../../../core/v4/daemon/db/migrations';
+import { createJobEngine } from '../../../core/v4/daemon/jobEngine';
+import { createJobControlAuthority } from '../../../core/v4/daemon/jobControlAuthority';
 
 // ── Harness ─────────────────────────────────────────────────────────────
 
@@ -278,6 +282,79 @@ describe('ChatSession SIGINT two-press dispatcher (v4.11 Slice 3)', () => {
     expect(exitSpy.exits).toEqual([]);
     // The agent ran exactly once for the cancelled turn.
     expect(agent.runConversation).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists durable cancellation before interrupting the active turn', async () => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO daemon_instances
+         (instance_id, pid, hostname, started_at, last_heartbeat, version)
+       VALUES ('instance_sigint', 1, 'localhost', ?, ?, '4.21.0')`,
+    ).run(now, now);
+    const jobEngine = createJobEngine({ db });
+    const controls = createJobControlAuthority({ db, jobEngine });
+    const { api: promptApi, releasePrompt } = mkScriptedPromptApi(['cancel-durably']);
+    let capturedSignal: AbortSignal | undefined;
+    let statusAtPhysicalAbort: string | undefined;
+    let releaseAgent!: () => void;
+    const agentBlocked = new Promise<void>((resolve) => { releaseAgent = resolve; });
+    const agent = {
+      runConversation: vi.fn(async (
+        history: Message[],
+        opts: { signal?: AbortSignal },
+      ) => {
+        capturedSignal = opts.signal;
+        opts.signal?.addEventListener('abort', () => {
+          statusAtPhysicalAbort = jobEngine.listJobs({ sessionId: 'sess-sigint-1' })[0]?.status;
+          releaseAgent();
+        }, { once: true });
+        await agentBlocked;
+        return {
+          finalContent: '', messages: history, turnCount: 0, toolCallCount: 0,
+          fallbackActivated: false, finishReason: 'interrupted' as const,
+          totalUsage: { inputTokens: 0, outputTokens: 0 }, toolCallTrace: [],
+        };
+      }),
+      setProvider: vi.fn(),
+      setActiveModel: vi.fn(() => true),
+    };
+    const session = new ChatSession(buildOpts({
+      agent: agent as never,
+      promptApi,
+      replInstanceId: 'instance_sigint',
+      jobEngine,
+      jobControlAuthority: controls,
+    }));
+
+    const runPromise = session.run();
+    try {
+      for (let i = 0; i < 100 && !capturedSignal; i += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      expect(capturedSignal).toBeDefined();
+
+      process.emit('SIGINT');
+      for (let i = 0; i < 100 && statusAtPhysicalAbort === undefined; i += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+
+      for (let i = 0; i < 100 && jobEngine.listJobs({ sessionId: 'sess-sigint-1' })[0]?.status !== 'cancelled'; i += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      releasePrompt();
+      await runPromise;
+      expect(statusAtPhysicalAbort).toBe('cancelling');
+      const [job] = jobEngine.listJobs({ sessionId: 'sess-sigint-1' });
+      expect(job?.status).toBe('cancelled');
+      expect(jobEngine.listEvents(job!.id).map((event) => event.type)).toContain('job.cancelling');
+    } finally {
+      releaseAgent();
+      releasePrompt();
+      await runPromise.catch(() => undefined);
+      db.close();
+    }
   });
 
   it('T3: SECOND press within FORCE_EXIT_WINDOW_MS → graceful shutdown', async () => {
