@@ -1108,8 +1108,11 @@ export function createBrowserSessionAuthority(options: {
           `UPDATE browser_sessions SET state='closed',controlled_tab_id=NULL,recovery_state=?,
                   lease_epoch=lease_epoch+1,updated_at=?,closed_at=? WHERE browser_session_id=?`,
         ).run(String(sanitize(reason)).slice(0, 500), now, now, checked.session.browser_session_id);
-        db.prepare('UPDATE browser_tabs SET controlled=0,updated_at=? WHERE browser_session_id=?')
-          .run(now, checked.session.browser_session_id);
+        db.prepare(
+          `UPDATE browser_tabs SET controlled=0,
+                  closed_at=CASE WHEN close_policy='aiden_owned' THEN COALESCE(closed_at,?) ELSE closed_at END,
+                  updated_at=? WHERE browser_session_id=?`,
+        ).run(now, now, checked.session.browser_session_id);
       }).immediate();
       return mapSession(sessionRow(checked.session.browser_session_id)!);
     },

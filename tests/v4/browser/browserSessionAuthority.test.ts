@@ -299,6 +299,10 @@ describe('BrowserSession authority', () => {
     engine.browser!.closeSession(binding, 'completed');
     expect(engine.browser!.getSession(session.browserSessionId)?.state).toBe('closed');
     expect(engine.browser!.listTabs(session.browserSessionId).every((tab) => !tab.controlled)).toBe(true);
+    expect(engine.browser!.listTabs(session.browserSessionId)).toEqual([
+      expect.objectContaining({ tabId: 'owned', closedAt: expect.any(Number) }),
+      expect.objectContaining({ tabId: 'user', closedAt: null }),
+    ]);
   });
 
   it('removes actionable browser authority when the owning lifecycle settles', () => {

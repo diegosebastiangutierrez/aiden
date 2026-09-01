@@ -7,7 +7,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { pwClose } from '../../../core/playwrightBridge';
+import { pwClose, pwCloseBrowserSessionResources } from '../../../core/playwrightBridge';
 import { runMigrations } from '../../../core/v4/daemon/db/migrations';
 import { runWithJobExecutionContext } from '../../../core/v4/daemon/jobExecutionContext';
 import { createJobEngine, type JobEngine } from '../../../core/v4/daemon/jobEngine';
@@ -19,6 +19,7 @@ import { browserCloseTool } from '../../../tools/v4/browser/browserClose';
 import { browserExtractTool } from '../../../tools/v4/browser/browserExtract';
 import { browserFillTool } from '../../../tools/v4/browser/browserFill';
 import { browserNavigateTool } from '../../../tools/v4/browser/browserNavigate';
+import { browserScreenshotTool } from '../../../tools/v4/browser/browserScreenshot';
 import { browserSnapshotTool } from '../../../tools/v4/browser/browserSnapshot';
 import { browserUploadTool } from '../../../tools/v4/browser/browserUpload';
 import { browserTabTool, browserTabsTool } from '../../../tools/v4/browser/browserTabs';
@@ -164,6 +165,9 @@ physical('physical durable Browser Operator fixture', () => {
     expect(initial.forms).toEqual(expect.arrayContaining([
       expect.objectContaining({ fields: expect.arrayContaining([expect.objectContaining({ label: 'Name' })]) }),
     ]));
+    const screenshot = await run(browserScreenshotTool, {});
+    expect(screenshot).toMatchObject({ success: true, path: expect.stringMatching(/\.png$/i) });
+    expect((await fs.stat(screenshot.path)).size).toBeGreaterThan(0);
 
     expect(await run(browserFillTool, { fields: { '#name': 'Browser Smoke' } }))
       .toMatchObject({ success: true, verified: true });
@@ -241,6 +245,30 @@ physical('physical durable Browser Operator fixture', () => {
     expect(engine.browser.getSession(activeSession.browserSessionId)).toMatchObject({
       state: 'closed', recoveryState: 'explicit close', controlledTabId: null,
     });
+  }, 60_000);
+
+  it('closes the controlled owned tab without rebinding its durable identity to another blank page', async () => {
+    jobContext = admit('controlled-tab-close');
+    const initial = await run(browserTabsTool, {});
+    expect(initial).toMatchObject({ success: true, tabs: [expect.objectContaining({ controlled: true })] });
+    const primaryTabId = initial.tabs[0].tab_id;
+
+    const opened = await run(browserTabTool, {
+      action: 'open', url: `${baseUrl}/product-b`, name: 'Temporary source',
+    });
+    expect(opened).toMatchObject({ success: true, verified: true });
+    expect(opened.tab_id).not.toBe(primaryTabId);
+
+    const closed = await run(browserTabTool, { action: 'close', tab_id: opened.tab_id });
+    expect(closed).toMatchObject({ success: true, verified: true, tab_id: opened.tab_id });
+    expect(closed.tabs).toEqual([
+      expect.objectContaining({ tab_id: primaryTabId, controlled: true }),
+    ]);
+
+    const sessionId = initial.browser_session_id;
+    expect(engine.browser.listTabs(sessionId).find((tab) => tab.tabId === opened.tab_id)?.closedAt)
+      .not.toBeNull();
+    expect(await run(browserCloseTool, {})).toMatchObject({ success: true, verified: true });
   }, 60_000);
 
   it('rehydrates the same durable named tabs after the browser host restarts', async () => {
@@ -357,4 +385,34 @@ physical('physical durable Browser Operator fixture', () => {
       .toHaveLength(2);
     expect(await run(browserCloseTool, {})).toMatchObject({ success: true, verified: true });
   }, 90_000);
+
+  it('starts a fresh browser session after terminal lifecycle cleanup closes the prior physical surface', async () => {
+    const first = admit('terminal-cleanup-first');
+    jobContext = first;
+    const firstTabs = await run(browserTabsTool, {});
+    expect(firstTabs).toMatchObject({
+      success: true,
+      browser_session_id: expect.stringMatching(/^browser_session_/),
+      tabs: [expect.objectContaining({ controlled: true })],
+    });
+    const temporary = await run(browserTabTool, {
+      action: 'open', url: `${baseUrl}/product-b`, name: 'Temporary source',
+    });
+    expect(temporary).toMatchObject({ success: true, verified: true });
+    expect(await run(browserTabTool, { action: 'close', tab_id: temporary.tab_id }))
+      .toMatchObject({ success: true, verified: true, tab_id: temporary.tab_id });
+    await pwCloseBrowserSessionResources(firstTabs.browser_session_id);
+    completeJob(first, firstTabs.browser_session_id);
+
+    const second = admit('terminal-cleanup-second');
+    jobContext = second;
+    const secondTabs = await run(browserTabsTool, {});
+    expect(secondTabs).toMatchObject({
+      success: true,
+      browser_session_id: expect.stringMatching(/^browser_session_/),
+      tabs: [expect.objectContaining({ controlled: true })],
+    });
+    expect(secondTabs.browser_session_id).not.toBe(firstTabs.browser_session_id);
+    expect(await run(browserCloseTool, {})).toMatchObject({ success: true, verified: true });
+  }, 60_000);
 });

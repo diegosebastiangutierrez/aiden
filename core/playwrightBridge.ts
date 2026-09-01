@@ -371,7 +371,15 @@ async function rehydrateDurableSessionPages(
 
   for (const tab of durableTabs) {
     const targetUrl = urls.get(tab.tabId)!
-    let page = available.find((candidate) => !claimed.has(candidate) && candidate.url() === targetUrl)
+    const boundPage = registry.pageById(tab.tabId) as any
+    const boundMeta = boundPage ? registry.get(boundPage) : undefined
+    let page = boundPage
+      && !claimed.has(boundPage)
+      && !(boundPage.isClosed && boundPage.isClosed())
+      && boundMeta?.browserSessionId === scope.session.browserSessionId
+      ? boundPage
+      : undefined
+    if (!page) page = available.find((candidate) => !claimed.has(candidate) && candidate.url() === targetUrl)
     if (!page) page = available.find((candidate) => !claimed.has(candidate) && candidate.url() === 'about:blank')
     if (!page) page = await ctx.newPage()
     claimed.add(page)
@@ -514,6 +522,16 @@ function wireContext(ctx: any, existingAs: 'aiden' | 'user'): void {
     for (const pg of (ctx.pages() as any[])) { reg.track(pg, existingAs, null); wirePageClose(pg) }
   } catch { /* mock */ }
   try { ctx.on('page', (pg: any) => { void handleNewPage(pg) }) } catch { /* mock */ }
+  try { ctx.on('close', () => {
+    if (_browserContext !== ctx) return
+    if (_idleTimer) { clearTimeout(_idleTimer); _idleTimer = null }
+    _browserContext = null
+    _activePage = null
+    _controlledPage = null
+    _sessionPages.clear()
+    reg.clear()
+    clearDialogSupervisors()
+  }) } catch { /* mock */ }
 }
 
 /** Refresh live url/title/origin onto each tracked tab and return the list. */
@@ -1589,6 +1607,22 @@ export async function pwClose(options: { announce?: boolean } = {}): Promise<voi
     }
     _sessionPages.delete(scope.session.browserSessionId)
     getDialogSupervisor(scope.session.browserSessionId).clear()
+    // Chromium's persistent context can become unusable after its last page is
+    // closed while still retaining the profile lock. When no other durable
+    // session owns a physical tab, release that empty host completely so the
+    // next Job starts from a fresh observable page instead of a stale context.
+    if (_mode === 'owned' && registry.list().length === 0 && _browserContext) {
+      if (_idleTimer) { clearTimeout(_idleTimer); _idleTimer = null }
+      _preserveDurableTabsDuringHostClose = true
+      try { await _browserContext.close() } catch {}
+      finally { _preserveDurableTabsDuringHostClose = false }
+      _browserContext = null
+      _activePage = null
+      _controlledPage = null
+      _sessionPages.clear()
+      registry.clear()
+      clearDialogSupervisors()
+    }
     return
   }
   if (_idleTimer) { clearTimeout(_idleTimer); _idleTimer = null }
@@ -1619,13 +1653,37 @@ export async function pwClose(options: { announce?: boolean } = {}): Promise<voi
 export async function pwCloseBrowserSessionResources(browserSessionId: string): Promise<void> {
   const registry = getTabRegistry()
   const ownedTabs = registry.list(browserSessionId).filter((tab) => tab.createdBy === 'aiden')
-  for (const tab of ownedTabs) {
-    const page = registry.pageById(tab.tab_id) as any
-    if (!page || (page.isClosed && page.isClosed())) continue
-    try { await page.close() } catch {}
-    registry.remove(page)
-    if (page === _controlledPage) _controlledPage = null
-    if (page === _activePage) _activePage = null
+  const ownedPages = new Set(ownedTabs
+    .map((tab) => registry.pageById(tab.tab_id) as any)
+    .filter(Boolean))
+  const otherLivePages = registry.entries().some(([page]) => (
+    !ownedPages.has(page)
+    && !((page as any).isClosed && (page as any).isClosed())
+  ))
+
+  if (_mode === 'owned' && _browserContext && ownedPages.size > 0 && !otherLivePages) {
+    const context = _browserContext
+    if (_idleTimer) { clearTimeout(_idleTimer); _idleTimer = null }
+    _preserveDurableTabsDuringHostClose = true
+    try { await context.close() } catch {}
+    finally { _preserveDurableTabsDuringHostClose = false }
+    if (_browserContext === context) {
+      _browserContext = null
+      _activePage = null
+      _controlledPage = null
+      _sessionPages.clear()
+      registry.clear()
+      clearDialogSupervisors()
+    }
+  } else {
+    for (const tab of ownedTabs) {
+      const page = registry.pageById(tab.tab_id) as any
+      if (!page || (page.isClosed && page.isClosed())) continue
+      try { await page.close() } catch {}
+      registry.remove(page)
+      if (page === _controlledPage) _controlledPage = null
+      if (page === _activePage) _activePage = null
+    }
   }
   _sessionPages.delete(browserSessionId)
   clearLeaseStore(browserSessionId)
