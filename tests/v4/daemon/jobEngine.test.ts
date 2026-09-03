@@ -957,4 +957,68 @@ describe('Durable child Job contracts', () => {
       producer: 'test', idempotencyKey: 'late-result',
     })).toMatchObject({ applied: false, conflict: 'terminal_state' });
   });
+
+  it('rejects clean parent completion when a required child failed verification', () => {
+    const parent = submit({
+      idempotencyKey: 'parent-required-child-failure',
+      requestFingerprint: 'parent-required-child-failure',
+    });
+    const parentLease = claimJob(parent, 'parent-owner');
+    engine.transitionAttempt({
+      attemptId: parent.attemptId, expectedStateVersion: 1, generation: parentLease.generation,
+      fenceToken: parentLease.fenceToken, to: 'running', eventIdempotencyKey: 'parent-attempt-running-failed-child', producer: 'test',
+    });
+    engine.transitionJob({
+      jobId: parent.jobId, attemptId: parent.attemptId, generation: parentLease.generation,
+      fenceToken: parentLease.fenceToken, expectedStateVersion: 0, to: 'running',
+      eventIdempotencyKey: 'parent-job-running-failed-child', producer: 'test',
+    });
+    const child = submit({
+      idempotencyKey: 'required-child-verification-failed',
+      requestFingerprint: 'required-child-verification-failed',
+      sessionId: 'required-child-verification-failed',
+      parentJobId: parent.jobId,
+      rootJobId: parent.jobId,
+      childContract: {
+        workerId: 'automation-occurrence-test',
+        capabilities: [],
+        allowedResources: {},
+        budget: {},
+      },
+    });
+    const childLease = claimJob(child, 'child-owner');
+    engine.transitionAttempt({
+      attemptId: child.attemptId, expectedStateVersion: 1, generation: childLease.generation,
+      fenceToken: childLease.fenceToken, to: 'running', eventIdempotencyKey: 'failed-child-attempt-running', producer: 'test',
+    });
+    engine.transitionJob({
+      jobId: child.jobId, attemptId: child.attemptId, generation: childLease.generation,
+      fenceToken: childLease.fenceToken, expectedStateVersion: 0, to: 'running',
+      eventIdempotencyKey: 'failed-child-job-running', producer: 'test',
+    });
+    expect(engine.recordChildResult({
+      childJobId: child.jobId, attemptId: child.attemptId, generation: childLease.generation,
+      fenceToken: childLease.fenceToken, status: 'failed',
+      evidence: { verdict: 'verification_failed' }, evidenceHandles: [], producer: 'test',
+      idempotencyKey: 'failed-child-result',
+    }).applied).toBe(true);
+    engine.transitionAttempt({
+      attemptId: child.attemptId, expectedStateVersion: 2, generation: childLease.generation,
+      fenceToken: childLease.fenceToken, to: 'failed', eventIdempotencyKey: 'failed-child-attempt-terminal', producer: 'test',
+    });
+    expect(engine.finalizeJob({
+      jobId: child.jobId, attemptId: child.attemptId, generation: childLease.generation,
+      fenceToken: childLease.fenceToken, expectedStateVersion: 1, status: 'failed',
+      outcome: 'verification_failed', finishReason: 'verification_failed', evidence: {},
+      eventIdempotencyKey: 'failed-child-job-terminal', producer: 'test',
+    }).applied).toBe(true);
+
+    expect(engine.finalizeJob({
+      jobId: parent.jobId, attemptId: parent.attemptId, generation: parentLease.generation,
+      fenceToken: parentLease.fenceToken, expectedStateVersion: 1, status: 'completed',
+      outcome: 'verified', finishReason: 'stop', evidence: { claimedChildSuccess: true },
+      eventIdempotencyKey: 'parent-must-not-complete-over-failed-child', producer: 'test',
+    })).toMatchObject({ applied: false, conflict: 'illegal_transition' });
+    expect(engine.getJob(parent.jobId)?.status).toBe('running');
+  });
 });

@@ -138,6 +138,25 @@ describe('Workbench product presentation', () => {
     }
   });
 
+  it('presents a structured process as an exact local Node action', () => {
+    const approval = presentApproval({
+      approvalId: 'approval_process', jobId: 'job_process', attemptId: 'attempt_process', generation: 1,
+      toolCallId: 'tool_process', effectId: 'effect_process', toolName: 'process_spawn', target: null,
+      riskTier: 'dangerous', state: 'displayed', requestedAt: 2, externalCoding: null,
+      localProcess: {
+        executable: 'C:\\runtime\\node.exe', script: 'C:\\workspace\\task.mjs',
+        workspace: 'C:\\workspace', arguments: [], networkPolicy: 'unavailable', environmentPolicy: 'isolated',
+      },
+    });
+
+    expect(approval).toMatchObject({
+      what: 'Run a local Node process',
+      where: 'C:\\workspace\\task.mjs',
+      risk: 'Dangerous risk',
+      actionable: true,
+    });
+  });
+
   it('reduces real activity into stable semantic phases without fabricating progress', () => {
     const phases = projectSemanticProgress([
       { id: 'skill_1', eventId: 1, kind: 'skill', label: 'systematic-debugging', status: 'ok' },

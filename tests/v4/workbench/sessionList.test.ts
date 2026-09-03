@@ -14,6 +14,9 @@
 import { describe, it, expect } from 'vitest';
 import { SessionStore } from '../../../core/v4/sessionStore';
 import { createSessionLister } from '../../../core/v4/workbench/sessionList';
+import Database from 'better-sqlite3';
+import { runMigrations } from '../../../core/v4/daemon/db/migrations';
+import { createJobEngine } from '../../../core/v4/daemon/jobEngine';
 
 function rowFor(store: SessionStore, id: string) {
   return createSessionLister(store).listSessions().find((x) => x.id === id)!;
@@ -73,5 +76,54 @@ describe('createSessionLister — readable labels, never raw ids', () => {
     const row = rowFor(s, rec.id);
     expect(row.id).toBe(rec.id);
     expect(typeof row.lastActive).toBe('number');
+  });
+
+  it('projects the exact latest durable run identity for completed-history reopening', () => {
+    const sessions = new SessionStore(':memory:');
+    const session = sessions.createSession({ title: 'Verified artifact run' });
+    const db = new Database(':memory:');
+    runMigrations(db);
+    const now = Date.now();
+    db.prepare(`INSERT INTO daemon_instances
+      (instance_id,pid,hostname,started_at,last_heartbeat,version)
+      VALUES ('session-list-test',1,'localhost',?,?,'4.21.0')`).run(now, now);
+    const engine = createJobEngine({ db });
+    const admitted = engine.submitJob({
+      entryPoint: 'workbench', source: 'test', sessionId: session.id,
+      instanceId: 'session-list-test', idempotencyNamespace: 'session-list',
+      idempotencyKey: 'completed-run', requestFingerprint: 'completed-run',
+      goal: 'Create and verify summary.md',
+    });
+    const lease = engine.claimAttempt({ attemptId: admitted.attemptId, ownerId: 'test', ttlMs: 30_000 });
+    if (!lease.acquired || !lease.fenceToken || lease.generation === undefined) throw new Error('claim failed');
+    engine.transitionAttempt({
+      attemptId: admitted.attemptId, expectedStateVersion: 1, generation: lease.generation,
+      fenceToken: lease.fenceToken, to: 'running', eventIdempotencyKey: 'attempt-running', producer: 'test',
+    });
+    engine.transitionJob({
+      jobId: admitted.jobId, attemptId: admitted.attemptId, generation: lease.generation,
+      fenceToken: lease.fenceToken, expectedStateVersion: 0, to: 'running',
+      eventIdempotencyKey: 'job-running', producer: 'test',
+    });
+    engine.transitionAttempt({
+      attemptId: admitted.attemptId, expectedStateVersion: 2, generation: lease.generation,
+      fenceToken: lease.fenceToken, to: 'succeeded', eventIdempotencyKey: 'attempt-succeeded', producer: 'test',
+    });
+    engine.finalizeJob({
+      jobId: admitted.jobId, attemptId: admitted.attemptId, generation: lease.generation,
+      fenceToken: lease.fenceToken, expectedStateVersion: 1, status: 'completed', outcome: 'verified',
+      finishReason: 'stop', evidence: { artifact: 'summary.md' }, eventIdempotencyKey: 'job-completed', producer: 'test',
+    });
+
+    const row = createSessionLister(sessions, 40, engine).listSessions()[0];
+    expect(row).toMatchObject({
+      id: session.id,
+      jobId: admitted.jobId,
+      attemptId: admitted.attemptId,
+      runId: admitted.runId,
+      status: 'completed',
+    });
+    sessions.close();
+    db.close();
   });
 });

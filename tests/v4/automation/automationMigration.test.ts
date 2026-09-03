@@ -137,7 +137,7 @@ describe('legacy schedule compatibility import', () => {
       .not.toEqual(expect.arrayContaining([expect.objectContaining({ name: 'removed_at' })]));
 
     expect(runMigrations(legacy)).toEqual({ from: 54, to: LATEST_SCHEMA_VERSION });
-    expect(LATEST_SCHEMA_VERSION).toBe(55);
+    expect(LATEST_SCHEMA_VERSION).toBe(56);
     expect(legacy.prepare('PRAGMA table_info(automation_definitions)').all()).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'removed_at' }),
       expect.objectContaining({ name: 'removed_by' }),

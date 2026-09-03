@@ -111,6 +111,28 @@ describe('SessionStore', () => {
     expect(store.getMessages(s.id)[1]?.toolCalls).toEqual([pending]);
   });
 
+  it('3c. checkpoints a retry against its original user anchor without storing a duplicate prompt', () => {
+    const s = store.createSession();
+    store.appendMessage(s.id, { role: 'user', content: 'run once', turnNumber: 7 });
+    store.appendMessage(s.id, { role: 'assistant', content: 'Stopped.', turnNumber: 7 });
+    store.appendMessage(s.id, { role: 'user', content: 'a later question', turnNumber: 8 });
+    store.appendMessage(s.id, { role: 'assistant', content: 'a later answer', turnNumber: 8 });
+
+    store.replaceTurnMessages(s.id, 9, [
+      { role: 'user', content: 'run once' },
+      { role: 'assistant', content: 'retry checkpoint' },
+    ], { userAnchorTurnNumber: 7 });
+
+    const messages = store.getMessages(s.id);
+    expect(messages.filter((message) => message.role === 'user')).toMatchObject([
+      { content: 'run once', turnNumber: 7 },
+      { content: 'a later question', turnNumber: 8 },
+    ]);
+    expect(messages.filter((message) => message.turnNumber === 9)).toMatchObject([
+      { role: 'assistant', content: 'retry checkpoint' },
+    ]);
+  });
+
   it('4. search finds keyword matches in message content', () => {
     const s = store.createSession({ title: 'docker chat' });
     store.appendMessage(s.id, { role: 'user', content: 'How do I deploy via docker?' });

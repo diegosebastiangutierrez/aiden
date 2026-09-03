@@ -93,6 +93,23 @@ describe('dispatcher — happy path', () => {
     expect(row?.runId).not.toBeNull();
   });
 
+  it('passes an immutable retry conversation anchor to the runner', async () => {
+    bus.insert({
+      source: 'manual',
+      sourceKey: 'retry-anchor',
+      idempotencyKey: 'retry-anchor-1',
+      payload: { conversation_anchor_trigger_event_id: 17 },
+    });
+    const { dispatcher, calls } = build({
+      invoke: async () => ({ runId: 0, finishReason: 'stop' }),
+    });
+
+    await dispatcher._pumpOnce();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.conversationAnchorTriggerEventId).toBe(17);
+  });
+
   it('uses spec.prompt_template when set; missing vars → trigger_misconfigured', async () => {
     // Seed a trigger row with a template that references {{missingvar}}.
     db.prepare(`INSERT INTO triggers (id, source, name, spec_json, enabled, prompt_template, deliver_only, created_at, updated_at)

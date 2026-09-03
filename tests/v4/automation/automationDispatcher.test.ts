@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createAutomationAuthority } from '../../../core/v4/automation/automationAuthority';
 import { createAutomationControlAuthority } from '../../../core/v4/automation/controlAuthority';
+import { automationParentFenceDigest } from '../../../core/v4/automation/controlAuthority';
 import { runMigrations } from '../../../core/v4/daemon/db/migrations';
 import { createDispatcher, makeRunner, type DaemonAgentInput } from '../../../core/v4/daemon/dispatcher';
 import { createJobEngine } from '../../../core/v4/daemon/jobEngine';
@@ -94,5 +95,53 @@ describe('automation dispatcher admission', () => {
       .toEqual({ count: 1 });
     expect(db.prepare('SELECT COUNT(*) AS count FROM tasks WHERE automation_id = ?').get(created.definition.id))
       .toEqual({ count: 1 });
+  });
+
+  it('binds a model-requested Automation occurrence as a required child of the exact parent Job', async () => {
+    const bus = createTriggerBus({ db });
+    const engine = createJobEngine({ db });
+    const parent = engine.submitJob({
+      entryPoint: 'workbench', source: 'test', sessionId: 'parent-session',
+      instanceId: 'automation-instance', idempotencyNamespace: 'automation-parent',
+      idempotencyKey: 'parent', requestFingerprint: 'parent', goal: 'Run the Automation and report its outcome',
+    });
+    const parentLease = engine.claimAttempt({ attemptId: parent.attemptId, ownerId: 'parent-owner', ttlMs: 30_000 });
+    if (!parentLease.acquired || !parentLease.fenceToken || parentLease.generation === undefined) throw new Error('parent claim failed');
+    engine.transitionAttempt({
+      attemptId: parent.attemptId, expectedStateVersion: 1, generation: parentLease.generation,
+      fenceToken: parentLease.fenceToken, to: 'running', eventIdempotencyKey: 'parent-attempt-running', producer: 'test',
+    });
+    engine.transitionJob({
+      jobId: parent.jobId, attemptId: parent.attemptId, generation: parentLease.generation,
+      fenceToken: parentLease.fenceToken, expectedStateVersion: 0, to: 'running',
+      eventIdempotencyKey: 'parent-job-running', producer: 'test',
+    });
+    const created = createAutomationAuthority({ db }).create({
+      name: 'Required child', action: { kind: 'prompt', prompt: 'Return CHILD_OK.' },
+      trigger: { kind: 'manual' },
+      policies: { misfire: { kind: 'skip' }, overlap: 'skip', retry: { maxAttempts: 1 } },
+      capabilities: [], credentialRefs: [], createdBy: 'test',
+    });
+    createAutomationControlAuthority({ db, triggerBus: bus }).runNow(created.definition.id, Date.now(), {
+      jobId: parent.jobId,
+      attemptId: parent.attemptId,
+      generation: parentLease.generation,
+      fenceTokenDigest: automationParentFenceDigest(parentLease.fenceToken),
+    });
+    const dispatcher = createDispatcher({
+      db, triggerBus: bus, runStore: createRunStore({ db }), jobEngine: engine,
+      ownerId: 'automation-instance', instanceId: 'automation-instance', workerCount: 1,
+      runnerFactory: () => makeRunner(async (input) => ({ runId: input.admission!.runId, finishReason: 'stop' })),
+    });
+
+    await dispatcher._pumpOnce();
+
+    const child = engine.listJobs({ entryPoint: 'automation' })[0];
+    expect(child.parentJobId).toBe(parent.jobId);
+    expect(engine.getChildContract(child.id)).toMatchObject({
+      parentJobId: parent.jobId,
+      childJobId: child.id,
+      required: true,
+    });
   });
 });

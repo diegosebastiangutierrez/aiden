@@ -268,6 +268,56 @@ describe('createRealAgentRunner durable identity', () => {
     }
   });
 
+  it('executes a retry from a virtual original prompt without duplicating durable user history', async () => {
+    const sessionStore = new SessionStore(':memory:');
+    try {
+      const sessionId = 'session_workbench_retry';
+      sessionStore.ensureSession(sessionId, { title: 'Retry' });
+      sessionStore.appendMessage(sessionId, { role: 'user', content: 'run the fixture', turnNumber: 7 });
+      sessionStore.appendMessage(sessionId, { role: 'assistant', content: 'Stopped.', turnNumber: 7 });
+      let seenHistory: Array<{ role: string; content: string }> = [];
+      const runner = createRealAgentRunner({
+        db, runStore, jobEngine: createJobEngine({ db }),
+        taskStore: createTaskStore({ db }), sessionStore,
+        persistedDefault: PERSISTED,
+        agentBuilder: (() => ({
+          runConversation: async (
+            history: Array<{ role: string; content: string }>,
+            options: { onConversationCheckpoint?: (messages: unknown[]) => void },
+          ) => {
+            seenHistory = history;
+            options.onConversationCheckpoint?.([
+              ...history,
+              { role: 'assistant', content: 'retry checkpoint' },
+            ]);
+            return { ...mkResult(), finalContent: 'retry completed', turnCount: 1 } as AidenAgentResult;
+          },
+        } as unknown as AidenAgent)) as AgentBuilder,
+      });
+
+      const result = await runner.invoke(mkInput({
+        sessionId,
+        triggerEventId: 9,
+        conversationAnchorTriggerEventId: 7,
+        initialMessage: 'run the fixture',
+      }));
+
+      expect(result.finishReason).toBe('stop');
+      expect(seenHistory.slice(-2)).toEqual([
+        { role: 'assistant', content: 'Stopped.' },
+        { role: 'user', content: 'run the fixture' },
+      ]);
+      expect(sessionStore.getMessages(sessionId).filter((message) => message.role === 'user')).toMatchObject([
+        { content: 'run the fixture', turnNumber: 7 },
+      ]);
+      expect(sessionStore.getMessages(sessionId).filter((message) => message.turnNumber === 9)).toMatchObject([
+        { role: 'assistant', content: 'retry completed' },
+      ]);
+    } finally {
+      sessionStore.close();
+    }
+  });
+
   it('creates the canonical daemon conversation before persisting its first checkpoint', async () => {
     const sessionStore = new SessionStore(':memory:');
     try {
@@ -299,7 +349,7 @@ describe('createRealAgentRunner durable identity', () => {
       expect(sessionStore.getSession(sessionId)).not.toBeNull();
       expect(sessionStore.getMessages(sessionId)).toMatchObject([
         { role: 'user', content: 'run the automation once' },
-        { role: 'assistant', content: 'automation checkpoint' },
+        { role: 'assistant', content: 'automation complete' },
       ]);
     } finally {
       sessionStore.close();
@@ -461,6 +511,83 @@ describe('createRealAgentRunner durable identity', () => {
     expect(artifactStore.listRecent({ sessionId: 'trigger:file:t1:abc' })).toMatchObject([{
       path: 'C:\\Temp\\sun.svg', tool: 'file_write', runId: result.runId, taskId: job.id,
     }]);
+  });
+
+  it('replaces a clean parent draft when a required child failed verification', async () => {
+    const engine = createJobEngine({ db });
+    const sessionStore = new SessionStore(':memory:');
+    const sessionId = 'session_required_child_failure';
+    sessionStore.ensureSession(sessionId, { title: 'Required child' });
+    try {
+      const agent = {
+        runConversation: async () => {
+          const parent = engine.listJobs({ sessionId })[0]!;
+          const child = engine.submitJob({
+            entryPoint: 'automation', source: 'test', sessionId: 'automation:required-child',
+            instanceId: 'inst-1', idempotencyNamespace: 'required-child-test',
+            idempotencyKey: 'child', requestFingerprint: 'child', goal: 'Return CHILD_OK',
+            parentJobId: parent.id, rootJobId: parent.rootJobId,
+            childContract: {
+              required: true, workerId: 'automation:test', capabilities: [],
+              allowedResources: {}, budget: {},
+            },
+          });
+          const lease = engine.claimAttempt({ attemptId: child.attemptId, ownerId: 'child-owner', ttlMs: 30_000 });
+          if (!lease.acquired || !lease.fenceToken || lease.generation === undefined) throw new Error('child claim failed');
+          engine.transitionAttempt({
+            attemptId: child.attemptId, expectedStateVersion: 1, generation: lease.generation,
+            fenceToken: lease.fenceToken, to: 'running', eventIdempotencyKey: 'child-attempt-running', producer: 'test',
+          });
+          engine.transitionJob({
+            jobId: child.jobId, attemptId: child.attemptId, generation: lease.generation,
+            fenceToken: lease.fenceToken, expectedStateVersion: 0, to: 'running',
+            eventIdempotencyKey: 'child-job-running', producer: 'test',
+          });
+          engine.recordChildResult({
+            childJobId: child.jobId, attemptId: child.attemptId, generation: lease.generation,
+            fenceToken: lease.fenceToken, status: 'failed', evidence: { verdict: 'verification_failed' },
+            evidenceHandles: [{ kind: 'job', value: child.jobId }], producer: 'test', idempotencyKey: 'child-result-failed',
+          });
+          engine.transitionAttempt({
+            attemptId: child.attemptId, expectedStateVersion: 2, generation: lease.generation,
+            fenceToken: lease.fenceToken, to: 'failed', eventIdempotencyKey: 'child-attempt-failed', producer: 'test',
+          });
+          engine.finalizeJob({
+            jobId: child.jobId, attemptId: child.attemptId, generation: lease.generation,
+            fenceToken: lease.fenceToken, expectedStateVersion: 1, status: 'failed',
+            outcome: 'verification_failed', finishReason: 'verification_failed', evidence: {},
+            eventIdempotencyKey: 'child-job-failed', producer: 'test',
+          });
+          return {
+            ...mkResult(), turnCount: 1, toolCallTrace: [],
+            finalContent: 'The Automation lifecycle completed successfully.',
+          } as AidenAgentResult;
+        },
+      } as unknown as AidenAgent;
+      const runner = createRealAgentRunner({
+        db, runStore, jobEngine: engine, taskStore: createTaskStore({ db }), sessionStore,
+        agentBuilder: () => agent, persistedDefault: PERSISTED,
+      });
+
+      const result = await runner.invoke(mkInput({ sessionId, initialMessage: 'Run the Automation and report the result' }));
+
+      const parent = engine.listJobs({ sessionId })[0]!;
+      expect(parent).toMatchObject({ status: 'failed', terminalOutcome: 'required_child_verification_failed' });
+      expect(result).toMatchObject({
+        finishReason: 'error',
+        finalization: { status: 'failed', outcome: 'required_child_verification_failed' },
+      });
+      expect(result.finalContent).toMatch(/did not complete successfully/i);
+      expect(result.finalContent).not.toMatch(/lifecycle completed successfully/i);
+      expect(engine.listEvents(parent.id).filter((event) => event.type === 'job.required_child_contradiction')).toHaveLength(1);
+      const replies = runStore.listEvents(result.runId).filter((event) => event.name === 'assistant_message');
+      expect(replies.map((event) => JSON.parse(event.payload).text).join('')).toBe(result.finalContent);
+      expect(sessionStore.getMessages(sessionId).filter((message) => message.role === 'assistant')).toMatchObject([
+        { content: result.finalContent },
+      ]);
+    } finally {
+      sessionStore.close();
+    }
   });
 
   it('creates and starts the Job and Attempt before invoking the agent', async () => {

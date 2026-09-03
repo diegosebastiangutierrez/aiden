@@ -298,7 +298,7 @@ describe('v14 migration — Slice 10.8 tasks table', () => {
       'repository_snapshot_id',
       'request_fingerprint',
       // v4.13 Gap 4 (v18 migration) — wake-loop cap.
-      'resume_count', 'root_job_id', 'session_id',
+      'resume_count', 'retry_of_job_id', 'root_job_id', 'session_id',
       // v4.13 Gap 3 (v17 migration) — job-card columns.
       'side_effects', 'source', 'state_version', 'status',
       'terminal_at', 'terminal_outcome', 'title', 'trace_ids', 'updated_at',
@@ -308,6 +308,7 @@ describe('v14 migration — Slice 10.8 tasks table', () => {
     expect(idx.map((i) => i.name).sort()).toEqual([
       'idx_tasks_automation_occurrence',
       'idx_tasks_idempotency',
+      'idx_tasks_retry_origin',
       'idx_tasks_root_job',
       'idx_tasks_session_created',
       'idx_tasks_session_created_id',

@@ -102,6 +102,34 @@ describe('Workbench reliable automation port', () => {
     expect(port.snapshot().scheduler).toEqual({ ready: true, dueBindings: 0 });
   });
 
+  it('distinguishes trigger admission from a terminal failed occurrence', async () => {
+    const port = createWorkbenchAutomationPort({
+      db, triggerBus: createTriggerBus({ db }), edition: buildEditionAuthority('pro'),
+      schedulerReady: () => true,
+    });
+    const created = port.create({
+      name: 'Observed run', createdBy: 'test', action: { kind: 'prompt', prompt: 'Run once' },
+      trigger: { kind: 'manual' },
+      policies: { misfire: { kind: 'skip' }, overlap: 'skip', retry: { maxAttempts: 1 } },
+      capabilities: [], credentialRefs: [],
+    });
+    const queued = port.runNow(created.automationId);
+    db.prepare(
+      `INSERT INTO automation_occurrences (
+         occurrence_id,occurrence_key,automation_id,revision_id,trigger_kind,source_identity,
+         scheduled_for,triggered_at,trigger_event_id,state,created_at,updated_at,terminal_at
+       ) VALUES ('occurrence_failed','key-failed',?,?,'manual','manual-failed',NULL,1000,?,'failed',1000,1000,1000)`,
+    ).run(created.automationId, created.revisionId, queued.triggerEventId);
+
+    await expect(port.waitForRun(queued.triggerEventId, { timeoutMs: 0 })).resolves.toMatchObject({
+      triggerEventId: queued.triggerEventId,
+      settled: true,
+      state: 'failed',
+      occurrenceId: 'occurrence_failed',
+      jobId: null,
+    });
+  });
+
   it('removes an automation from active control while retaining its durable history', () => {
     const port = createWorkbenchAutomationPort({
       db, triggerBus: createTriggerBus({ db }), edition: buildEditionAuthority('pro'),

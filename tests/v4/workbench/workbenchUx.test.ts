@@ -173,6 +173,7 @@ describe('Workbench premium UX projections', () => {
       state: 'displayed',
       requestedAt: 100,
       externalCoding: null,
+      localProcess: null,
     }]);
   });
 
@@ -214,6 +215,40 @@ describe('Workbench premium UX projections', () => {
       generation: 3, tool_call_id: 'tool_done', effect_id: 'effect_done',
       tool_name: 'file_write', risk_tier: 'mutating', state: 'denied', requested_at: 90,
     }])).toMatchObject([{ approvalId: 'approval_done', state: 'denied', generation: 3 }]);
+  });
+
+  it('projects the exact structured local-process envelope for approval', () => {
+    const approvals = pendingApprovalCards([{
+      approval_id: 'approval_process', job_id: 'job_process', attempt_id: 'attempt_process',
+      generation: 2, tool_call_id: 'tool_process', effect_id: 'effect_process',
+      tool_name: 'process_spawn', risk_tier: 'dangerous', state: 'displayed',
+      normalized_execution_plan: JSON.stringify({
+        cwd: 'C:\\workspace',
+        executable: 'C:\\runtime\\node.exe',
+        affectedResources: ['C:\\workspace\\task.mjs'],
+        args: {
+          runtime: 'node',
+          executable: 'C:\\runtime\\node.exe',
+          script: 'C:\\workspace\\task.mjs',
+          args: ['one', 'two'],
+          cwd: 'C:\\workspace',
+        },
+      }),
+      requested_at: 130,
+    }]);
+
+    expect(approvals).toMatchObject([{
+      approvalId: 'approval_process',
+      toolName: 'process_spawn',
+      localProcess: {
+        executable: 'C:\\runtime\\node.exe',
+        script: 'C:\\workspace\\task.mjs',
+        workspace: 'C:\\workspace',
+        arguments: ['one', 'two'],
+        networkPolicy: 'unavailable',
+        environmentPolicy: 'isolated',
+      },
+    }]);
   });
 
   it('restores pending approvals from the exact durable projection identity, not stale browser selection', () => {

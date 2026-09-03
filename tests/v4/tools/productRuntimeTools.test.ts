@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ToolContext } from '../../../core/v4/toolRegistry';
 import { aidenStatusTool, createAidenRuntimeStatus } from '../../../tools/v4/system/aidenStatus';
 import { automationManageTool, automationStatusTool } from '../../../tools/v4/automation/automationTools';
+import { runWithJobExecutionContext } from '../../../core/v4/daemon/jobExecutionContext';
+import type { JobEngine } from '../../../core/v4/daemon/jobEngine';
 
 function context(overrides: Partial<ToolContext> = {}): ToolContext {
   return { cwd: process.cwd(), paths: {} as ToolContext['paths'], ...overrides };
@@ -176,5 +178,39 @@ describe('Reliable Automations model tools', () => {
       automationId: 'automation-1', removedAt: 2_000,
     });
     expect(remove).toHaveBeenCalledWith('automation-1', 'local-user');
+  });
+
+  it('returns the exact failed child outcome instead of equating trigger admission with success', async () => {
+    const runNow = vi.fn(() => ({ triggerEventId: 17, state: 'queued' as const, schedulerReady: true }));
+    const waitForRun = vi.fn(async () => ({
+      triggerEventId: 17, settled: true, state: 'failed', occurrenceId: 'occurrence-1',
+      jobId: 'task-child', attemptId: 'attempt-child', jobStatus: 'failed',
+      terminalOutcome: 'verification_failed',
+    }));
+    const automation = { runNow, waitForRun } as unknown as NonNullable<ToolContext['automation']>;
+    const appendJobEvent = vi.fn(() => ({ applied: true, duplicate: false }));
+    const engine = { appendJobEvent } as unknown as JobEngine;
+
+    const result = await runWithJobExecutionContext({
+      engine, jobId: 'task-parent', attemptId: 'attempt-parent', generation: 3,
+      fenceToken: 'fence-parent', producer: 'test',
+    }, () => automationManageTool.execute({
+      action: 'run_now', automation_id: 'automation-1',
+    }, context({ automation })));
+
+    expect(runNow).toHaveBeenCalledWith('automation-1', {
+      jobId: 'task-parent', attemptId: 'attempt-parent', generation: 3,
+      fenceTokenDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(appendJobEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'automation.child_requested',
+      payload: { automationId: 'automation-1', triggerEventId: 17, required: true },
+    }));
+    expect(waitForRun).toHaveBeenCalledWith(17, expect.objectContaining({ timeoutMs: 120_000 }));
+    expect(result).toMatchObject({
+      success: false,
+      execution: { jobId: 'task-child', terminalOutcome: 'verification_failed' },
+      error: expect.stringMatching(/verification_failed/),
+    });
   });
 });

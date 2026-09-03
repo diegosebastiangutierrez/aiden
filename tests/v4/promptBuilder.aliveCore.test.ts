@@ -26,6 +26,7 @@ const MEMORY_HEADER          = '## Persistent memory';
 const SESSION_SEARCH_HEADER  = '## Session recall';
 const SKILLS_HEADER          = '## Skill upkeep';
 const APPS_HEADER            = '## Apps and external content';
+const PROCESS_HEADER         = '## Supervised local processes';
 const EXECUTION_HEADER       = '## Tool use enforcement';
 
 describe('PromptBuilder alive-core guidance slots', () => {
@@ -110,6 +111,20 @@ describe('PromptBuilder alive-core guidance slots', () => {
     expect(prompt).not.toContain(MEMORY_HEADER);
     expect(prompt).not.toContain(SESSION_SEARCH_HEADER);
     expect(prompt).not.toContain(SKILLS_HEADER);
+  });
+
+  it('routes long-running local work through the supervised process tools', async () => {
+    const root = await makeTempRoot();
+    const paths = resolveAidenPaths({ rootOverride: root });
+    await ensureAidenDirsExist(paths);
+    const prompt = await (new PromptBuilder()).build({
+      paths,
+      toolsetsLoaded: new Set(['process']),
+    });
+    expect(prompt).toContain(PROCESS_HEADER);
+    expect(prompt).toMatch(/long-running or cancellable local work[\s\S]*process_spawn[\s\S]*process_wait/iu);
+    expect(prompt).toMatch(/do not use `shell_exec`/iu);
+    expect(prompt).toMatch(/inspect the active workspace/iu);
   });
 
   it('emits all three blocks deterministically (memory → session → skills) when all three loaded', async () => {

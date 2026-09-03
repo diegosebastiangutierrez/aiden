@@ -15,7 +15,8 @@
  * dormancy — process_* were "registry not configured").
  */
 import { describe, it, expect, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import { resolve } from 'node:path';
 import { ProcessRegistry } from '../../core/v4/processRegistry';
 import { processListTool } from '../../tools/v4/process/processList';
@@ -164,15 +165,28 @@ describe('PM.1 — tools: redaction + owner passthrough', () => {
 
   it('process_spawn tags the owning session from ctx.sessionId + returns creation-time', async () => {
     const r = new ProcessRegistry();
+    const root = mkdtempSync(resolve(os.tmpdir(), 'aiden-process-owner-'));
+    const script = resolve(root, 'owner.mjs');
+    writeFileSync(script, "console.log('hi');\n", 'utf8');
     // stub the registry.spawn creation-time via a spy on the instance method's default:
     const spy = vi.spyOn(r, 'spawn');
-    const out = (await processSpawnTool.execute({ command: 'echo hi' }, ctx(r, 'sess-xyz'))) as { success: boolean; id: string };
-    expect(out.success).toBe(true);
-    // the tool forwarded sessionId to the registry as the owner
-    expect(spy).toHaveBeenCalledWith('echo hi', expect.objectContaining({ sessionId: 'sess-xyz' }));
-    const h = r.get(out.id)!;
-    expect(h.ownerSessionId).toBe('sess-xyz');
-    r.cleanup();
+    try {
+      const out = (await processSpawnTool.execute(
+        { runtime: 'node', executable: process.execPath, script, args: [], cwd: root },
+        { ...ctx(r, 'sess-xyz'), cwd: root },
+      )) as { success: boolean; id: string };
+      expect(out.success).toBe(true);
+      // the tool forwarded exact argv without a shell and retained ownership
+      expect(spy).toHaveBeenCalledWith(
+        process.execPath,
+        expect.objectContaining({ sessionId: 'sess-xyz', shell: false, args: expect.arrayContaining([script]) }),
+      );
+      const h = r.get(out.id)!;
+      expect(h.ownerSessionId).toBe('sess-xyz');
+    } finally {
+      r.cleanup();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
