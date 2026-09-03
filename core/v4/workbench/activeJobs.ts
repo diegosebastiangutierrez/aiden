@@ -136,6 +136,9 @@ export function listWorkbenchActiveJobs(
       const approvals = deps.approvals?.listPending(job.id) ?? [];
       const waits = deps.waits?.listPending(job.id) ?? [];
       const status = semanticStatus(job, approvals.length, waits.map((wait) => wait.kind));
+      const statusDetail = job.retryOfJobId
+        ? `${status.statusDetail} · Retried from previous run`
+        : status.statusDetail;
       return {
         sessionId: job.sessionId || null,
         jobId: job.id,
@@ -143,6 +146,7 @@ export function listWorkbenchActiveJobs(
         runId: attempt?.rowId ?? null,
         title: job.goal,
         ...status,
+        statusDetail,
         updatedAt: Math.max(
           trigger?.updatedAt ?? 0,
           attempt?.leaseHeartbeatAt ?? 0,

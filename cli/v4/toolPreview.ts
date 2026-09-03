@@ -108,7 +108,7 @@ export const TOOL_PRIMARY_ARG: Record<string, ToolPreviewExtractor> = {
   session_summary:   'trigger',
 
   // ── process ──────────────────────────────────────────────────────────
-  process_spawn:     'command',
+  process_spawn:     'script',
   process_kill:      'pid',
   process_list:      '',
   process_wait:      'pid',

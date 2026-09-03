@@ -319,7 +319,7 @@ export interface ToolHandler {
   /** True for any tool that mutates state (disk, processes, network writes). */
   mutates: boolean;
   /** Fail-closed validation that runs before hooks, approval, persistence or execution. */
-  validateArguments?: (args: Readonly<Record<string, unknown>>) => string | null;
+  validateArguments?: (args: Readonly<Record<string, unknown>>, context?: ToolContext) => string | null;
   /** Group label — `web`, `files`, `browser`, `sessions`, `skills`, etc. */
   toolset?: string;
   /**
@@ -699,7 +699,7 @@ export class ToolRegistry {
           error: `Invalid arguments for ${call.name}: ${argShapeError}`,
         }, 'failed');
       }
-      const handlerArgumentError = handler.validateArguments?.(args) ?? null;
+      const handlerArgumentError = handler.validateArguments?.(args, context) ?? null;
       if (handlerArgumentError) {
         return finish({
           id: call.id,

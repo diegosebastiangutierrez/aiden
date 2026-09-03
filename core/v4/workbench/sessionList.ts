@@ -13,6 +13,7 @@
  * align with run_events, so a sidebar selection drives /api/sessions/<id>/events.
  */
 import type { SessionStore, SessionRecord } from '../sessionStore';
+import type { JobEngine } from '../daemon/jobEngine';
 import type { SessionLister, SessionSummary } from './bridgeServer';
 
 /** Strip bracketed-paste markers (ESC[200~ / ESC[201~, and their ESC-stripped
@@ -50,17 +51,31 @@ function labelFor(store: SessionStore, s: SessionRecord): string {
  * Build a read-only lister that returns recent sessions (newest-active first)
  * with readable labels. `limit` caps the list (default 40).
  */
-export function createSessionLister(store: SessionStore, limit = 40): SessionLister {
+export function createSessionLister(store: SessionStore, limit = 40, jobs?: JobEngine): SessionLister {
   return {
     listSessions(): SessionSummary[] {
       const rows = store.listSessions({ orderBy: 'updated', limit });
-      return rows.map((s) => ({
-        id:         s.id,
-        label:      labelFor(store, s),
-        lastActive: s.updatedAt || s.createdAt || 0,
-        provider:   s.providerId,
-        model:      s.modelId,
-      }));
+      return rows.map((s) => {
+        const latest = jobs
+          ? jobs.listJobs({ sessionId: s.id, limit: 1_000 })
+            .filter((job) => job.parentJobId === null)
+            .flatMap((job) => jobs.listAttempts(job.id).map((attempt) => ({ job, attempt })))
+            .sort((a, b) => b.attempt.rowId - a.attempt.rowId)[0]
+          : undefined;
+        return {
+          id:         s.id,
+          label:      labelFor(store, s),
+          lastActive: s.updatedAt || s.createdAt || 0,
+          provider:   s.providerId,
+          model:      s.modelId,
+          ...(latest ? {
+            jobId: latest.job.id,
+            attemptId: latest.attempt.id,
+            runId: latest.attempt.rowId,
+            status: latest.job.status,
+          } : {}),
+        };
+      });
     },
   };
 }

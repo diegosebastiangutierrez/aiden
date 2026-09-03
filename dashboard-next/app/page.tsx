@@ -78,6 +78,7 @@ import {
   type WorkbenchAppearance,
   type WorkbenchDensity,
 } from '../lib/workbenchProduct'
+import { completedRunMessages, resolveWorkbenchOnboarding } from '../lib/completedRunRecovery'
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -140,12 +141,13 @@ interface ActivityLog {
 // Tool calls + verified/unverified verdicts live here, OUT of the chat
 // conversation. The chat shows the written reply; this shows what ran to
 // produce it. Fed from the v4 event stream (see lib/aidenClient.ts).
-function ActivityView({ logs, jobId, attemptId, runId, onContinued }: {
+function ActivityView({ logs, jobId, attemptId, runId, onContinued, onRetried }: {
   logs: ActivityLog[]
   jobId: string | null
   attemptId: string | null
   runId: number | null
   onContinued?: (jobId: string, attemptId: string, runId: number) => void
+  onRetried?: (jobId: string, attemptId: string, runId: number, sessionId: string | null) => void
 }) {
   const {
     activeJobs, selectActiveJob, presence, presenceBriefing, refreshPresence, sessionId,
@@ -154,6 +156,7 @@ function ActivityView({ logs, jobId, attemptId, runId, onContinued }: {
   const [projection, setProjection] = useState<aiden.WorkbenchRunProjection | null>(null)
   const [continuity, setContinuity] = useState<aiden.ContinuityCheckpointView | null>(null)
   const [continueResult, setContinueResult] = useState<{ pending: boolean; accepted?: boolean; reason?: string }>({ pending: false })
+  const [retryResult, setRetryResult] = useState<{ pending: boolean; accepted?: boolean; reason?: string }>({ pending: false })
   const continueKeys = useRef<Record<string, string>>({})
   const [projectionRevision, setProjectionRevision] = useState(0)
   const [presenceReasons, setPresenceReasons] = useState<Record<string, string>>({})
@@ -192,6 +195,8 @@ function ActivityView({ logs, jobId, attemptId, runId, onContinued }: {
     verdict: projection.receipt.verdict?.verdict,
     evidenceCount: projection.evidence?.length ?? 0,
   }) : null
+  const retryEligible = projection?.receipt.terminal === true
+    && ['cancelled', 'failed', 'dead_letter', 'verification_failed'].includes(projection.receipt.status)
   useEffect(() => {
     let current = true
     if (!jobId || !attemptId || runId === null) { setProjection(null); setContinuity(null); return () => { current = false } }
@@ -328,9 +333,44 @@ function ActivityView({ logs, jobId, attemptId, runId, onContinued }: {
         <article className={`result-card tone-${result.tone}`}>
           <div><span className="eyebrow">Result</span><h2>{result.title}</h2></div>
           <p>{result.summary}</p>
+          {retryEligible && projection && (
+            <div className="result-actions">
+              <button
+                type="button"
+                disabled={retryResult.pending}
+                onClick={() => {
+                  const key = `retry:${projection.identity.jobId}`
+                  setRetryResult({ pending: true })
+                  void aiden.retryTask(projection.identity.runId, key)
+                    .then((next) => {
+                      setRetryResult({ pending: false, accepted: true })
+                      aiden.persistRunHandle({
+                        admission: {
+                          accepted: true,
+                          duplicate: next.duplicate,
+                          jobId: next.jobId,
+                          attemptId: next.attemptId,
+                          runId: next.runId,
+                        },
+                        lastEventId: 0,
+                      })
+                      onRetried?.(next.jobId, next.attemptId, next.runId, projection.identity.sessionId ?? null)
+                      setProjectionRevision((value) => value + 1)
+                    })
+                    .catch((error) => setRetryResult({
+                      pending: false,
+                      accepted: false,
+                      reason: error instanceof Error ? error.message : String(error),
+                    }))
+                }}
+              >{retryResult.pending ? 'Retrying as new work…' : 'Retry'}</button>
+              {retryResult.reason && <span role="alert">{retryResult.reason}</span>}
+            </div>
+          )}
           <details><summary>{result.proofLabel}</summary><p>Open durable details below to inspect the recorded Evidence, Verification, and exact execution identity.</p></details>
         </article>
       )}
+      {projection?.job?.retryOfJobId && <p className="retry-lineage-label">Retried from previous run</p>}
       {projection && (
         <details className="work-details">
           <summary>Selected work details</summary>
@@ -3286,6 +3326,16 @@ function LiveActivitySurface() {
                   <dt>Package installation</dt><dd>Not allowed</dd>
                   <dt>Git write operations</dt><dd>Commit / Push / Tag / Merge disabled</dd>
                   <dt>Changes</dt><dd>Isolated until you review and apply them</dd>
+                </dl>
+              )}
+              {approval.localProcess && (
+                <dl className="approval-details">
+                  <dt>Executable</dt><dd>{approval.localProcess.executable}</dd>
+                  <dt>Script</dt><dd>{approval.localProcess.script}</dd>
+                  <dt>Workspace</dt><dd>{approval.localProcess.workspace}</dd>
+                  <dt>Arguments</dt><dd>{JSON.stringify(approval.localProcess.arguments)}</dd>
+                  <dt>Network</dt><dd>Unavailable under this execution profile</dd>
+                  <dt>Environment</dt><dd>Parent credentials are not inherited</dd>
                 </dl>
               )}
               {approval.target && <code className="approval-target">{approval.target}</code>}
@@ -6596,7 +6646,18 @@ export default function Home() {
   const [onboardingVisible, setOnboardingVisible] = useState(true)
 
   useEffect(() => {
-    setOnboardingDone(window.localStorage.getItem('aiden:first-run:v1') === 'complete')
+    let current = true
+    const stored = window.localStorage.getItem('aiden:first-run:v1')
+    void aiden.listSessions().then((sessions) => {
+      if (!current) return
+      const resolved = resolveWorkbenchOnboarding(stored, sessions.length)
+      if (resolved.persist) window.localStorage.setItem('aiden:first-run:v1', 'complete')
+      setOnboardingDone(resolved.done)
+      if (resolved.done) setOnboardingVisible(false)
+    }).catch(() => {
+      if (current) setOnboardingDone(stored === 'complete')
+    })
+    return () => { current = false }
   }, [])
 
   // ── Load active model label for header ───────────────────────
@@ -6866,6 +6927,25 @@ export default function Home() {
     }, 1_000)
     return () => { current = false; if (timer !== null) window.clearInterval(timer) }
   }, [activeJobId, activeAttemptId, activeRunId, projectionRevision, runProjection?.receipt.terminal])
+  useEffect(() => {
+    if (!runProjection?.receipt.terminal) return
+    if (
+      runProjection.identity.jobId !== activeJobId
+      || runProjection.identity.attemptId !== activeAttemptId
+      || runProjection.identity.runId !== activeRunId
+    ) return
+    const recovered = completedRunMessages(runProjection, Date.now()) as Message[]
+    if (recovered.length === 0) return
+    setMessages((current) => current.length > 0 ? current : recovered)
+    setConversations((current) => current.map((conversation) => {
+      const exact = conversation.jobId === activeJobId
+        && conversation.attemptId === activeAttemptId
+        && conversation.runId === activeRunId
+      return exact && conversation.messages.length === 0
+        ? { ...conversation, messages: recovered }
+        : conversation
+    }))
+  }, [activeAttemptId, activeJobId, activeRunId, runProjection])
   useEffect(() => {
     let current = true
     const generation = runProjection?.identity.generation
@@ -7295,13 +7375,23 @@ export default function Home() {
       .then((sessions) => {
         if (!sessions.length) return
         setConversations(prev => {
-          const existingIds = new Set(prev.map((c: Conversation) => c.id))
-          const fromBackend = sessions
-            .filter(s => !existingIds.has(s.id))
-            .map(s => ({ id: s.id, title: s.label || 'Untitled', timestamp: s.lastActive, messages: [] as Message[] }))
-          const next = fromBackend.length > 0
-            ? [...prev, ...fromBackend].sort((a: Conversation, b: Conversation) => b.timestamp - a.timestamp)
-            : prev
+          const byId = new Map(prev.map((conversation) => [conversation.id, conversation]))
+          for (const session of sessions) {
+            const existing = byId.get(session.id)
+            byId.set(session.id, {
+              id: session.id,
+              title: session.label || existing?.title || 'Untitled',
+              timestamp: session.lastActive,
+              messages: existing?.messages ?? [],
+              channels: existing?.channels,
+              depth: existing?.depth,
+              sessionId: session.id,
+              jobId: session.jobId,
+              attemptId: session.attemptId,
+              runId: session.runId,
+            })
+          }
+          const next = Array.from(byId.values()).sort((a, b) => b.timestamp - a.timestamp)
           conversationsRef.current = next
           return next
         })
@@ -7922,6 +8012,13 @@ export default function Home() {
                   setActiveAttemptId(attemptId)
                   setActiveRunId(runId)
                   activeRunIdRef.current = runId
+                }}
+                onRetried={(jobId, attemptId, runId, retrySessionId) => {
+                  setActiveJobId(jobId)
+                  setActiveAttemptId(attemptId)
+                  setActiveRunId(runId)
+                  activeRunIdRef.current = runId
+                  selectContext({ sessionId: retrySessionId, jobId, attemptId, runId })
                 }}
               />
             )}

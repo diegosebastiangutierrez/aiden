@@ -8,7 +8,7 @@ import { statSync } from 'node:fs';
 
 import type { Db } from '../daemon/db/connection';
 import { createActionAuthority, type ActionAuthority } from '../actionAuthority';
-import type { JobEngine } from '../daemon/jobEngine';
+import type { JobEngine, JobRecord } from '../daemon/jobEngine';
 import { admitDurableJob } from '../daemon/jobLifecycle';
 import { createJobControlAuthority, type JobControlAuthority } from '../daemon/jobControlAuthority';
 import type { RunStore } from '../daemon/runStore';
@@ -88,7 +88,91 @@ export function createWorkbenchJobCommands(options: {
     return { trigger, admission, sessionId };
   }).immediate;
 
+  const retryTx = options.db.transaction((task: {
+    originalJobId: string;
+    prompt: string;
+    sessionId: string;
+    idempotencyKey: string;
+    conversationAnchorTriggerEventId: number;
+    modelBinding?: { provider: string; model: string; source: 'session' | 'default' } | null;
+  }) => {
+    const actionKey = `retry:${task.originalJobId}:${task.idempotencyKey}`;
+    const trigger = options.triggerBus.insert({
+      source: 'manual',
+      sourceKey: `workbench-retry:${task.originalJobId}`,
+      idempotencyKey: actionKey,
+      payload: {
+        body: { prompt: task.prompt, source: 'workbench-retry' },
+        sessionId: task.sessionId,
+        retry_of_job_id: task.originalJobId,
+        conversation_anchor_trigger_event_id: task.conversationAnchorTriggerEventId,
+        ...(task.modelBinding ? { model_binding: task.modelBinding } : {}),
+      },
+    });
+    const admission = options.jobEngine.retryJob({
+      originalJobId: task.originalJobId,
+      instanceId: options.instanceId,
+      idempotencyNamespace: 'workbench-retry',
+      idempotencyKey: actionKey,
+      triggerEventId: trigger.id,
+      producer: 'workbench',
+    });
+    options.db.prepare('UPDATE trigger_events SET payload_json = ? WHERE id = ?').run(JSON.stringify({
+      body: { prompt: task.prompt, source: 'workbench-retry' },
+      sessionId: task.sessionId,
+      retry_of_job_id: task.originalJobId,
+      conversation_anchor_trigger_event_id: task.conversationAnchorTriggerEventId,
+      durable_job: {
+        job_id: admission.jobId,
+        attempt_id: admission.attemptId,
+        run_id: admission.runId,
+      },
+      ...(task.modelBinding ? { model_binding: task.modelBinding } : {}),
+    }), trigger.id);
+    return { trigger, admission };
+  }).immediate;
+
   const finalRun = new Set(['completed', 'succeeded', 'failed', 'cancelled', 'interrupted']);
+  const conversationAnchorForRetry = (job: JobRecord, prompt: string): number => {
+    const visited = new Set<string>();
+    let root = job;
+    while (root.retryOfJobId) {
+      if (!visited.add(root.id)) throw new Error('Retry lineage contains a cycle and cannot be executed safely.');
+      const parent = options.jobEngine.getJob(root.retryOfJobId);
+      if (!parent) throw new Error('Retry lineage is incomplete and cannot be executed safely.');
+      if (parent.sessionId !== job.sessionId) {
+        throw new Error('Retry lineage crossed a conversation boundary and cannot be executed safely.');
+      }
+      root = parent;
+    }
+    const run = options.db.prepare(
+      `SELECT trigger_event_id
+         FROM runs
+        WHERE task_id = ? AND trigger_event_id IS NOT NULL
+        ORDER BY id ASC LIMIT 1`,
+    ).get(root.id) as { trigger_event_id: number | null } | undefined;
+    const triggerEventId = run?.trigger_event_id;
+    if (!triggerEventId || !Number.isSafeInteger(triggerEventId)) {
+      throw new Error('The original durable conversation anchor is unavailable and cannot be retried safely.');
+    }
+    const trigger = options.triggerBus.get(triggerEventId);
+    const payload = trigger?.payload ?? {};
+    const body = payload.body && typeof payload.body === 'object'
+      ? payload.body as Record<string, unknown>
+      : null;
+    if (payload.sessionId !== job.sessionId || body?.prompt !== prompt) {
+      throw new Error('The retry lineage does not match the original durable request.');
+    }
+    if (options.sessionStore) {
+      const durableUser = options.sessionStore.getMessages(job.sessionId).find((message) =>
+        message.role === 'user' && message.turnNumber === triggerEventId,
+      );
+      if (!durableUser || durableUser.content !== prompt) {
+        throw new Error('The original durable conversation message is unavailable and cannot be retried safely.');
+      }
+    }
+    return triggerEventId;
+  };
   const activeTarget = (runId: number) => {
     const run = options.runStore.get(runId);
     if (!run?.taskId) return null;
@@ -212,6 +296,59 @@ export function createWorkbenchJobCommands(options: {
           });
         }
         return { accepted: true, runId };
+      },
+    },
+    retry: {
+      retry(runId: number, idempotencyKey?: string) {
+        const run = options.runStore.get(runId);
+        if (!run?.taskId) return { accepted: false as const, runId };
+        const originalJob = options.jobEngine.getJob(run.taskId);
+        if (!originalJob) return { accepted: false as const, runId };
+        const originalTrigger = run.triggerEventId ? options.triggerBus.get(run.triggerEventId) : null;
+        const payload = originalTrigger?.payload ?? {};
+        const body = payload.body && typeof payload.body === 'object'
+          ? payload.body as Record<string, unknown>
+          : null;
+        const prompt = typeof body?.prompt === 'string' ? body.prompt : '';
+        if (!prompt.trim()) throw new Error('The exact original Workbench request is unavailable and cannot be retried safely.');
+        const rawBinding = payload.model_binding && typeof payload.model_binding === 'object'
+          ? payload.model_binding as Record<string, unknown>
+          : null;
+        const modelBinding = typeof rawBinding?.provider === 'string' && rawBinding.provider.trim()
+          && typeof rawBinding?.model === 'string' && rawBinding.model.trim()
+          ? {
+              provider: rawBinding.provider.trim(),
+              model: rawBinding.model.trim(),
+              source: rawBinding.source === 'session' ? 'session' as const : 'default' as const,
+            }
+          : null;
+        const conversationAnchorTriggerEventId = conversationAnchorForRetry(originalJob, prompt);
+        const stableKey = idempotencyKey?.trim() || originalJob.id;
+        const retried = retryTx({
+          originalJobId: originalJob.id,
+          prompt,
+          sessionId: originalJob.sessionId,
+          idempotencyKey: stableKey,
+          conversationAnchorTriggerEventId,
+          modelBinding,
+        });
+        captureBoundary(
+          retried.admission.jobId,
+          retried.admission.attemptId,
+          retried.admission.generation,
+          'retried as new work',
+          `retried:${retried.admission.attemptId}`,
+        );
+        return {
+          accepted: true as const,
+          duplicate: !retried.trigger.inserted || retried.admission.reused,
+          originalJobId: retried.admission.originalJobId,
+          jobId: retried.admission.jobId,
+          attemptId: retried.admission.attemptId,
+          runId: retried.admission.runId,
+          generation: retried.admission.generation,
+          triggerEventId: retried.trigger.id,
+        };
       },
     },
     input: {

@@ -55,7 +55,7 @@ export const shellExecTool: ToolHandler = {
   schema: {
     name: 'shell_exec',
     description:
-      'Execute a shell command. PowerShell on Windows, bash elsewhere. Use `cwd` to change the working dir; `timeoutMs` to bound runtime (default 30000).',
+      'Execute a short, one-shot shell command. PowerShell on Windows, bash elsewhere. Never use this for long-running or cancellable work; use process_spawn followed by process_wait so lifecycle and Stop remain authoritative. Use `cwd` to change the working dir; `timeoutMs` to bound runtime (default 30000).',
     inputSchema: {
       type: 'object',
       properties: {

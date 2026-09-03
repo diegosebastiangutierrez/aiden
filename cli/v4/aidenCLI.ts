@@ -718,7 +718,7 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
          VALUES (?, ?, ?, ?, ?, ?)`,
       ).run(workbenchInstanceId, process.pid, os.hostname(), workbenchStartedAt, workbenchStartedAt, VERSION);
       const sessionStore = new SessionStore(paths.sessionsDb);
-      const sessions = createSessionLister(sessionStore);
+      const sessions = createSessionLister(sessionStore, 40, jobEngine);
       // WRITE path: a per-launch token gates it, and the task is only ENQUEUED
       // onto the daemon's safe job path (manual trigger → dispatcher runs it
       // under the default safe-only policy: risky/mutating tools auto-denied).
@@ -727,7 +727,7 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
       const actionAuthority = createActionAuthority({ db, jobEngine });
       const workbenchAutomationContinuations = createAutomationApprovalContinuationAuthority({ db, jobEngine });
       const jobControlAuthority = createJobControlAuthority({ db, jobEngine });
-      const { enqueue, cancel, input, control, approval, continuity, continueTask } = createWorkbenchJobCommands({
+      const { enqueue, cancel, retry, input, control, approval, continuity, continueTask } = createWorkbenchJobCommands({
         db, triggerBus, jobEngine, runStore, instanceId: workbenchInstanceId, sessionStore,
         workspacePath: process.cwd(),
         actionAuthority, controlAuthority: jobControlAuthority,
@@ -1115,6 +1115,7 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
         } : undefined,
         continuity,
         continueTask,
+        retry,
         token,
         staticDir,
         port,

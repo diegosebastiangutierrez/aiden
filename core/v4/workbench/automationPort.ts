@@ -9,6 +9,7 @@ import type { EditionAuthority } from '../commercial/edition';
 import type { TriggerBus } from '../daemon/triggerBus';
 import { createAutomationAuthority } from '../automation/automationAuthority';
 import { createAutomationControlAuthority } from '../automation/controlAuthority';
+import type { AutomationParentExecution } from '../automation/controlAuthority';
 import { previewSchedule } from '../automation/schedule';
 import type { AutomationRevisionSpec } from '../automation/types';
 
@@ -53,6 +54,17 @@ export interface WorkbenchAutomationOccurrence {
   };
 }
 
+export interface WorkbenchAutomationRunOutcome {
+  triggerEventId: number;
+  settled: boolean;
+  state: string;
+  occurrenceId: string | null;
+  jobId: string | null;
+  attemptId: string | null;
+  jobStatus: string | null;
+  terminalOutcome: string | null;
+}
+
 export interface WorkbenchAutomationPort {
   snapshot(): WorkbenchAutomationSnapshot;
   create(input: AutomationRevisionSpec & { name: string; createdBy: string }): WorkbenchAutomationSummary;
@@ -61,7 +73,10 @@ export interface WorkbenchAutomationPort {
   remove(automationId: string, removedBy: string, now?: number): {
     automationId: string; removedAt: number; removedBy: string;
   };
-  runNow(automationId: string): { triggerEventId: number; state: 'queued'; schedulerReady: boolean };
+  runNow(automationId: string, parentExecution?: AutomationParentExecution): {
+    triggerEventId: number; state: 'queued'; schedulerReady: boolean;
+  };
+  waitForRun(triggerEventId: number, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<WorkbenchAutomationRunOutcome>;
   replay(occurrenceId: string): { triggerEventId: number; state: 'queued'; schedulerReady: boolean };
   preview(input: { expression: string; timezone: string; count?: number }): readonly string[];
 }
@@ -194,14 +209,53 @@ export function createWorkbenchAutomationPort(options: {
         removedBy: removed.removedBy!,
       };
     },
-    runNow(automationId) {
+    runNow(automationId, parentExecution) {
       requireCapability();
-      const result = control.runNow(automationId);
+      const result = control.runNow(automationId, Date.now(), parentExecution);
       return {
         triggerEventId: result.triggerEventId,
         state: 'queued',
         schedulerReady: options.schedulerReady?.() === true,
       };
+    },
+    async waitForRun(triggerEventId, waitOptions = {}) {
+      requireCapability();
+      const timeoutMs = Math.max(0, waitOptions.timeoutMs ?? 120_000);
+      const startedAt = Date.now();
+      const read = (): WorkbenchAutomationRunOutcome => {
+        const row = db.prepare(
+          `SELECT o.occurrence_id,o.state,o.job_id,o.attempt_id,
+                  t.status AS job_status,t.terminal_outcome
+             FROM automation_occurrences o
+             LEFT JOIN tasks t ON t.id = o.job_id
+            WHERE o.trigger_event_id = ?
+            ORDER BY o.created_at DESC,o.occurrence_id DESC LIMIT 1`,
+        ).get(triggerEventId) as {
+          occurrence_id: string; state: string; job_id: string | null; attempt_id: string | null;
+          job_status: string | null; terminal_outcome: string | null;
+        } | undefined;
+        const terminal = row
+          ? ['completed', 'failed', 'cancelled', 'blocked', 'unknown', 'skipped_overlap'].includes(row.state)
+            || ['completed', 'failed', 'cancelled', 'blocked', 'unknown', 'dead_letter'].includes(row.job_status ?? '')
+          : false;
+        return {
+          triggerEventId,
+          settled: terminal,
+          state: row?.state ?? 'queued',
+          occurrenceId: row?.occurrence_id ?? null,
+          jobId: row?.job_id ?? null,
+          attemptId: row?.attempt_id ?? null,
+          jobStatus: row?.job_status ?? null,
+          terminalOutcome: row?.terminal_outcome ?? null,
+        };
+      };
+      for (;;) {
+        const current = read();
+        if (current.settled || waitOptions.signal?.aborted || Date.now() - startedAt >= timeoutMs) {
+          return current;
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      }
     },
     replay(occurrenceId) {
       requireCapability();

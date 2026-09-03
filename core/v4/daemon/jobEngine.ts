@@ -101,6 +101,8 @@ export interface JobRecord {
   activeAttemptId: string | null;
   rootJobId: string;
   parentJobId: string | null;
+  /** Terminal Job whose explicit user retry created this new Job. */
+  retryOfJobId?: string | null;
   sessionId: string;
   goal: string;
   entryPoint: string | null;
@@ -200,6 +202,18 @@ export interface AdmissionResult {
   reused: boolean;
 }
 
+export interface RetryAdmissionResult extends AdmissionResult {
+  originalJobId: string;
+  generation: number;
+}
+
+export type RetryNotAllowedReason =
+  | 'not_found'
+  | 'not_terminal'
+  | 'completed'
+  | 'reconciliation_required'
+  | 'delegated_job';
+
 export interface TransitionResult {
   applied: boolean;
   stateVersion?: number;
@@ -275,6 +289,15 @@ export interface JobEngine {
    * for narrow legacy test doubles; production engines always provide it. */
   readonly continuity?: ContinuityCheckpointAuthority;
   submitJob(command: SubmitJobCommand): AdmissionResult;
+  retryJob(command: {
+    originalJobId: string;
+    instanceId: string;
+    idempotencyNamespace: string;
+    idempotencyKey: string;
+    triggerEventId?: number | null;
+    producer: string;
+    now?: number;
+  }): RetryAdmissionResult;
   getJob(jobId: string): JobRecord | null;
   listJobs(filters?: {
     sessionId?: string;
@@ -549,6 +572,14 @@ export class IdempotencyConflictError extends Error {
   }
 }
 
+export class RetryNotAllowedError extends Error {
+  readonly code = 'RETRY_NOT_ALLOWED';
+  constructor(readonly reason: RetryNotAllowedReason, message: string) {
+    super(message);
+    this.name = 'RetryNotAllowedError';
+  }
+}
+
 interface JobSqlRow {
   id: string;
   status: string;
@@ -556,6 +587,7 @@ interface JobSqlRow {
   active_attempt_id: string | null;
   root_job_id: string | null;
   parent_task_id: string | null;
+  retry_of_job_id: string | null;
   session_id: string;
   goal: string;
   entry_point: string | null;
@@ -657,6 +689,8 @@ function fingerprintOf(command: SubmitJobCommand): string {
     .digest('hex');
 }
 
+type SubmitJobInternalCommand = SubmitJobCommand & { retryOfJobId?: string | null };
+
 const RECONCILIATION_EVIDENCE_KEYS = new Set([
   'reason', 'effectKind', 'exists', 'size', 'mtimeMs', 'contentSha256',
   'processId', 'running', 'finalUrl', 'externalId', 'receiptId', 'registry',
@@ -685,6 +719,7 @@ function mapJob(row: JobSqlRow): JobRecord {
     activeAttemptId: row.active_attempt_id,
     rootJobId: row.root_job_id ?? row.id,
     parentJobId: row.parent_task_id,
+    retryOfJobId: row.retry_of_job_id,
     sessionId: row.session_id,
     goal: row.goal,
     entryPoint: row.entry_point,
@@ -782,7 +817,7 @@ export function createJobEngine(opts: CreateJobEngineOptions): JobEngine {
 
   const getJobRow = (jobId: string): JobSqlRow | undefined => db.prepare(
     `SELECT id, status, state_version, active_attempt_id, root_job_id,
-            parent_task_id, session_id, goal, entry_point, source, workspace_id,
+            parent_task_id, retry_of_job_id, session_id, goal, entry_point, source, workspace_id,
             terminal_at, terminal_outcome, finish_reason, next_event_sequence,
             repository_snapshot_id, automation_id, automation_revision_id,
             automation_occurrence_id
@@ -896,7 +931,7 @@ export function createJobEngine(opts: CreateJobEngineOptions): JobEngine {
     return { eventId: Number(inserted.lastInsertRowid), jobSequence, duplicate: false };
   };
 
-  const submitTx = db.transaction((command: SubmitJobCommand): AdmissionResult => {
+  const submitTx = db.transaction((command: SubmitJobInternalCommand): AdmissionResult => {
     const key = command.idempotencyKey ?? randomId('internal');
     const fingerprint = fingerprintOf(command);
     const existing = db.prepare(
@@ -924,13 +959,13 @@ export function createJobEngine(opts: CreateJobEngineOptions): JobEngine {
     db.prepare(
       `INSERT INTO tasks (
          id, title, goal, status, created_at, updated_at,
-         channel_id, session_id, parent_task_id, trace_ids, artifact_ids,
+         channel_id, session_id, parent_task_id, retry_of_job_id, trace_ids, artifact_ids,
          state_version, active_attempt_id, root_job_id,
          idempotency_namespace, idempotency_key, request_fingerprint,
          entry_point, source, workspace_id, principal_id,
          recovery_state, crash_count, next_event_sequence,
          automation_id, automation_revision_id, automation_occurrence_id
-       ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, '[]', '[]',
+       ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, '[]', '[]',
                  0, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', 0, 1, ?, ?, ?)`,
     ).run(
       jobId,
@@ -941,6 +976,7 @@ export function createJobEngine(opts: CreateJobEngineOptions): JobEngine {
       command.channelId ?? null,
       command.sessionId,
       command.parentJobId ?? null,
+      command.retryOfJobId ?? null,
       attemptId,
       rootJobId,
       command.idempotencyNamespace,
@@ -1016,6 +1052,114 @@ export function createJobEngine(opts: CreateJobEngineOptions): JobEngine {
       });
     }
     return { jobId, attemptId, runId, reused: false };
+  }).immediate;
+
+  type RetrySourceRow = JobSqlRow & {
+    title: string;
+    channel_id: string | null;
+    principal_id: string | null;
+    request_fingerprint: string | null;
+  };
+
+  const retryJobTx = db.transaction((command: Parameters<JobEngine['retryJob']>[0]): RetryAdmissionResult => {
+    const original = db.prepare('SELECT * FROM tasks WHERE id = ?').get(command.originalJobId) as RetrySourceRow | undefined;
+    if (!original) throw new RetryNotAllowedError('not_found', 'The original work no longer exists.');
+    if (original.parent_task_id) {
+      throw new RetryNotAllowedError('delegated_job', 'Delegated child work cannot be retried from the Workbench.');
+    }
+    if (!JOB_TERMINAL.has(original.status)) {
+      throw new RetryNotAllowedError('not_terminal', 'Only finished work can be retried as a new Job.');
+    }
+    if (['completed', 'completed_unverified'].includes(original.status)) {
+      throw new RetryNotAllowedError('completed', 'Completed work does not need to be retried.');
+    }
+    if (!['cancelled', 'failed', 'dead_letter', 'verification_failed'].includes(original.status)) {
+      throw new RetryNotAllowedError('not_terminal', 'This outcome must be reviewed before it can be retried.');
+    }
+    const unresolved = db.prepare(
+      `SELECT 1 FROM side_effect_ledger
+        WHERE job_id = ? AND reconciliation_required = 1
+          AND effect_state IN ('unknown','partial','started','committed')
+        LIMIT 1`,
+    ).get(original.id);
+    if (unresolved) {
+      throw new RetryNotAllowedError(
+        'reconciliation_required',
+        'The previous external effect must be reconciled before retrying.',
+      );
+    }
+
+    const key = command.idempotencyKey.trim();
+    if (!key) throw new IdempotencyConflictError(command.idempotencyNamespace, command.idempotencyKey);
+    const fingerprint = createHash('sha256').update(`retry:${original.id}`).digest('hex');
+    const existing = db.prepare(
+      `SELECT id, retry_of_job_id, request_fingerprint
+         FROM tasks WHERE idempotency_namespace = ? AND idempotency_key = ?`,
+    ).get(command.idempotencyNamespace, key) as {
+      id: string; retry_of_job_id: string | null; request_fingerprint: string | null;
+    } | undefined;
+    if (existing) {
+      if (existing.retry_of_job_id !== original.id || existing.request_fingerprint !== fingerprint) {
+        throw new IdempotencyConflictError(command.idempotencyNamespace, key);
+      }
+      const attempt = db.prepare(
+        `SELECT id, attempt_id, generation FROM runs
+          WHERE task_id = ? ORDER BY attempt_number DESC, id DESC LIMIT 1`,
+      ).get(existing.id) as { id: number; attempt_id: string; generation: number } | undefined;
+      if (!attempt) throw new Error(`Retry Job ${existing.id} has no Attempt`);
+      return {
+        originalJobId: original.id, jobId: existing.id, attemptId: attempt.attempt_id,
+        runId: attempt.id, generation: attempt.generation, reused: true,
+      };
+    }
+
+    const budgetRows = db.prepare(
+      'SELECT kind, limit_value FROM job_budgets WHERE job_id = ? ORDER BY kind',
+    ).all(original.id) as Array<{ kind: JobBudgetKind; limit_value: number | null }>;
+    const capabilityRow = db.prepare('SELECT * FROM job_capability_sets WHERE job_id = ?')
+      .get(original.id) as Record<string, string> | undefined;
+    const capabilityList = (column: string): string[] => capabilityRow
+      ? parseArray(capabilityRow[column]).filter((value): value is string => typeof value === 'string')
+      : [];
+    const resourcePolicy = budgetRows.length > 0 || capabilityRow
+      ? {
+          budgets: Object.fromEntries(budgetRows.map((row) => [row.kind, row.limit_value])) as Partial<Record<JobBudgetKind, number | null>>,
+          ...(capabilityRow ? { capabilities: {
+            tools: capabilityList('allowed_tools_json'),
+            paths: capabilityList('allowed_paths_json'),
+            hosts: capabilityList('allowed_hosts_json'),
+            applications: capabilityList('allowed_applications_json'),
+            connections: capabilityList('allowed_connections_json'),
+            accounts: capabilityList('allowed_accounts_json'),
+            workers: capabilityList('allowed_workers_json'),
+            effectKinds: capabilityList('allowed_effect_kinds_json'),
+          } satisfies JobCapabilities } : {}),
+        }
+      : undefined;
+    const admitted = submitTx({
+      entryPoint: original.entry_point ?? 'retry',
+      source: original.source ?? command.producer,
+      sessionId: original.session_id,
+      workspaceId: original.workspace_id,
+      principalId: original.principal_id,
+      instanceId: command.instanceId,
+      idempotencyNamespace: command.idempotencyNamespace,
+      idempotencyKey: key,
+      requestFingerprint: fingerprint,
+      goal: original.goal,
+      title: original.title,
+      channelId: original.channel_id,
+      triggerEventId: command.triggerEventId ?? null,
+      retryOfJobId: original.id,
+      ...(resourcePolicy ? { resourcePolicy } : {}),
+    });
+    appendEvent({
+      jobId: admitted.jobId, runId: admitted.runId, attemptId: admitted.attemptId,
+      generation: 1, type: 'job.retried', producer: command.producer,
+      idempotencyKey: `job-retried:${admitted.jobId}`,
+      payload: { retryOfJobId: original.id },
+    });
+    return { originalJobId: original.id, ...admitted, generation: 1 };
   }).immediate;
 
   type ChildContractRow = {
@@ -1293,14 +1437,36 @@ export function createJobEngine(opts: CreateJobEngineOptions): JobEngine {
           return { applied: false, conflict: 'illegal_transition', stateVersion: job.state_version };
         }
       }
-      const unresolvedChild = db.prepare(
+      const unacceptableChild = db.prepare(
         `SELECT 1 FROM child_job_contracts c
           JOIN tasks child ON child.id = c.child_job_id
          WHERE c.parent_job_id = ? AND c.required = 1
-           AND (c.result_attempt_id IS NULL OR child.status NOT IN ('completed','failed','cancelled','unknown','dead_letter'))
+           AND (
+             c.result_attempt_id IS NULL
+             OR c.result_status <> 'completed'
+             OR child.status <> 'completed'
+           )
          LIMIT 1`,
       ).get(command.jobId);
-      if (unresolvedChild) return { applied: false, conflict: 'illegal_transition', stateVersion: job.state_version };
+      if (unacceptableChild) return { applied: false, conflict: 'illegal_transition', stateVersion: job.state_version };
+      const pendingRequiredAutomationChild = db.prepare(
+        `SELECT 1
+           FROM run_events requested
+          WHERE requested.job_id = ?
+            AND requested.kind = 'automation.child_requested'
+            AND COALESCE(json_extract(requested.payload, '$.required'), 1) = 1
+            AND NOT EXISTS (
+              SELECT 1
+                FROM child_job_contracts contract
+                JOIN runs child_run ON child_run.task_id = contract.child_job_id
+               WHERE contract.parent_job_id = requested.job_id
+                 AND child_run.trigger_event_id = CAST(json_extract(requested.payload, '$.triggerEventId') AS INTEGER)
+            )
+          LIMIT 1`,
+      ).get(command.jobId);
+      if (pendingRequiredAutomationChild) {
+        return { applied: false, conflict: 'illegal_transition', stateVersion: job.state_version };
+      }
       const unresolved = db.prepare(
         `SELECT 1 FROM side_effect_ledger
           WHERE job_id = ? AND reconciliation_required = 1
@@ -3007,6 +3173,7 @@ export function createJobEngine(opts: CreateJobEngineOptions): JobEngine {
     external,
     get continuity() { return continuity; },
     submitJob: submitTx,
+    retryJob: retryJobTx,
     getJob(jobId) {
       const row = getJobRow(jobId);
       return row ? mapJob(row) : null;
@@ -3023,7 +3190,7 @@ export function createJobEngine(opts: CreateJobEngineOptions): JobEngine {
       const limit = Math.max(1, Math.min(1_000, filters.limit ?? 100));
       const rows = db.prepare(
         `SELECT id, status, state_version, active_attempt_id, root_job_id,
-                parent_task_id, session_id, goal, entry_point, source, workspace_id,
+                parent_task_id, retry_of_job_id, session_id, goal, entry_point, source, workspace_id,
                 terminal_at, terminal_outcome, finish_reason, next_event_sequence,
                 repository_snapshot_id,automation_id,automation_revision_id,
                 automation_occurrence_id

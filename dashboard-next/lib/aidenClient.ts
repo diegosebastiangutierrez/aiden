@@ -28,6 +28,10 @@ export interface SessionSummary {
   lastActive: number;
   provider?: string | null;
   model?: string | null;
+  jobId?: string;
+  attemptId?: string;
+  runId?: number;
+  status?: string;
 }
 
 export interface ActivityItem {
@@ -168,7 +172,7 @@ export interface WorkbenchResultReceipt {
 
 export interface WorkbenchRunProjection {
   identity: { jobId: string; attemptId: string; runId: number; generation?: number; sessionId?: string | null };
-  job?: { id?: string; status?: string; goal?: string; terminalOutcome?: string | null; finishReason?: string | null };
+  job?: { id?: string; status?: string; goal?: string; terminalOutcome?: string | null; finishReason?: string | null; retryOfJobId?: string | null };
   receipt: WorkbenchResultReceipt;
   attempts?: Array<{ rowId?: number; id: string; generation: number; status: string }>;
   timeline?: Array<{ eventId: number; jobSequence: number; type: string; createdAt: number }>;
@@ -823,6 +827,47 @@ export async function cancelTask(target: number | WorkbenchRunHandle | null): Pr
     const body = await response.json() as { accepted?: unknown; runId?: unknown };
     return body.accepted === true && Number(body.runId) === runId;
   } catch { return false; }
+}
+
+export interface RetryTaskResult {
+  accepted: boolean;
+  duplicate: boolean;
+  originalJobId: string;
+  jobId: string;
+  attemptId: string;
+  runId: number;
+  generation: number;
+  triggerEventId: number;
+}
+
+export async function retryTask(runId: number, idempotencyKey?: string): Promise<RetryTaskResult> {
+  const response = await fetch(`/api/tasks/${encodeURIComponent(String(runId))}/retry`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-workbench-token': token() },
+    body: JSON.stringify({ ...(idempotencyKey ? { idempotencyKey } : {}) }),
+  });
+  const body = await response.json() as {
+    accepted?: unknown; duplicate?: unknown; original_job_id?: unknown; job_id?: unknown;
+    attempt_id?: unknown; run_id?: unknown; generation?: unknown; trigger_event_id?: unknown; error?: unknown;
+  };
+  if (!response.ok || body.accepted !== true) {
+    throw new Error(typeof body.error === 'string' ? body.error : 'Retry could not be started safely.');
+  }
+  if (
+    typeof body.original_job_id !== 'string' || typeof body.job_id !== 'string'
+    || typeof body.attempt_id !== 'string' || !Number.isSafeInteger(body.run_id)
+    || !Number.isSafeInteger(body.generation) || !Number.isSafeInteger(body.trigger_event_id)
+  ) throw new Error('Retry returned an invalid durable identity.');
+  return {
+    accepted: true,
+    duplicate: body.duplicate === true,
+    originalJobId: body.original_job_id,
+    jobId: body.job_id,
+    attemptId: body.attempt_id,
+    runId: Number(body.run_id),
+    generation: Number(body.generation),
+    triggerEventId: Number(body.trigger_event_id),
+  };
 }
 
 const TOOL_VERB: Record<string, string> = {

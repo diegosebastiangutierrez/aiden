@@ -228,6 +228,9 @@ export interface CreateRealAgentRunnerOptions {
   /** Internal durable-wrapper seam: collect candidates without persisting them
    * before generation/fence/lease settlement has succeeded. */
   artifactCandidateSink?: (entries: readonly TraceEntryLike[]) => void;
+  /** The outer durable lifecycle projects the final assistant reply only after
+   * canonical parent/child settlement has been reconciled. */
+  deferAssistantProjection?: boolean;
 }
 
 const RUN_EVENT_INLINE_BYTES = 4096;
@@ -510,7 +513,12 @@ export function createRealAgentRunner(
           signal: invocationSignal,
           resumePendingToolCallIds: durableHistory.resumePendingToolCallIds,
           onConversationCheckpoint: (messages) => {
-            persistDurableConversationCheckpoint(opts.sessionStore, input, messages);
+            persistDurableConversationCheckpoint(
+              opts.sessionStore,
+              input,
+              messages,
+              opts.deferAssistantProjection === true,
+            );
           },
           waitForResumeIfPaused: async () => {
             if (!jobControls || !durableJobId) return;
@@ -610,23 +618,10 @@ export function createRealAgentRunner(
       // as a dedicated run_event it can render as the assistant's chat message.
       // Persistence-only — a locked DB must never break dispatch.
       const finalReply = result?.finalContent ?? '';
-      if (finalReply.trim()) {
-        try {
-          for (const text of assistantReplyEventChunks(finalReply)) {
-            opts.runStore.emitEventRich({
-              runId,
-              category:   'assistant',
-              kind:       'assistant.message',
-              name:       'assistant_message',
-              sessionId:  input.sessionId,
-              payload:    { text },
-              visibility: 'user',
-              source:     'daemon',
-            });
-          }
-        } catch { /* persistence faults must never break dispatch */ }
+      if (!opts.deferAssistantProjection) {
+        projectDurableAssistantReply(opts.runStore, input, runId, finalReply);
+        persistDurableAssistantReply(opts.sessionStore, input, finalReply, invocationError);
       }
-      persistDurableAssistantReply(opts.sessionStore, input, finalReply, invocationError);
 
       // ── 9: post-turn budget consume + dispatcher:completed ─────────────
       const finalSnapshot = consumePostTurn({
@@ -786,6 +781,28 @@ function loadDurableHistory(
 ): { messages: Message[]; resumePendingToolCallIds: string[] } {
   if (!store) return { messages: buildInitialHistory(input), resumePendingToolCallIds: [] };
   const records = store.getMessages(input.sessionId);
+  if (input.conversationAnchorTriggerEventId !== undefined) {
+    const anchor = records.find((record) =>
+      record.role === 'user' && record.turnNumber === input.conversationAnchorTriggerEventId,
+    );
+    if (!anchor) throw new Error('Retry durable conversation anchor not found');
+    if (anchor.content !== input.initialMessage) {
+      throw new Error('Retry durable conversation anchor does not match the admitted request');
+    }
+    const checkpointRecords = records.filter((record) =>
+      record.role !== 'user' && record.turnNumber === input.triggerEventId,
+    );
+    const history = records
+      .filter((record) => !(record.role !== 'user' && record.turnNumber === input.triggerEventId))
+      .map(messageFromDurableRecord);
+    const currentTurnStart = history.length;
+    history.push({ role: 'user', content: input.initialMessage });
+    history.push(...checkpointRecords.map(messageFromDurableRecord));
+    return {
+      messages: history,
+      resumePendingToolCallIds: unansweredTailToolCallIds(history.slice(currentTurnStart)),
+    };
+  }
   const history = records.map(messageFromDurableRecord);
   let currentTurnStart = records.findIndex((record) =>
     record.role === 'user' && record.turnNumber === input.triggerEventId,
@@ -829,6 +846,7 @@ function persistDurableConversationCheckpoint(
   store: SessionStore | undefined,
   input: DaemonAgentInput,
   messages: readonly Message[],
+  deferFinalAssistant = false,
 ): void {
   if (!store) return;
   if (!store.getSession(input.sessionId)) throw new Error('Durable checkpoint session not found');
@@ -841,16 +859,150 @@ function persistDurableConversationCheckpoint(
     }
   }
   if (userIndex < 0) throw new Error('Durable checkpoint user anchor not found');
+  const turnMessages = messages.slice(userIndex);
+  const finalMessage = turnMessages[turnMessages.length - 1];
+  const projectedMessages = deferFinalAssistant
+    && finalMessage?.role === 'assistant'
+    && !finalMessage.toolCalls?.length
+      ? turnMessages.slice(0, -1)
+      : turnMessages;
   store.replaceTurnMessages(
     input.sessionId,
     input.triggerEventId,
-    messages.slice(userIndex).map((message) => ({
+    projectedMessages.map((message) => ({
       role: message.role,
       content: message.content,
       ...('toolCalls' in message && message.toolCalls ? { toolCalls: message.toolCalls } : {}),
       ...(message.role === 'tool' ? { toolCallId: message.toolCallId } : {}),
     })),
+    input.conversationAnchorTriggerEventId === undefined
+      ? undefined
+      : { userAnchorTurnNumber: input.conversationAnchorTriggerEventId },
   );
+}
+
+function projectDurableAssistantReply(
+  runStore: RunStore,
+  input: DaemonAgentInput,
+  runId: number,
+  finalReply: string,
+): void {
+  if (!finalReply.trim()) return;
+  try {
+    for (const text of assistantReplyEventChunks(finalReply)) {
+      runStore.emitEventRich({
+        runId,
+        category: 'assistant',
+        kind: 'assistant.message',
+        name: 'assistant_message',
+        sessionId: input.sessionId,
+        payload: { text },
+        visibility: 'user',
+        source: 'daemon',
+      });
+    }
+  } catch { /* projection faults must never rewrite canonical Job truth */ }
+}
+
+function childEvidenceHandles(evidence: unknown): unknown[] {
+  if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) return [];
+  const handles = (evidence as { handles?: unknown }).handles;
+  return Array.isArray(handles) ? handles : [];
+}
+
+function recordRequiredChildResult(
+  engine: JobEngine,
+  handle: DurableJobHandle,
+  finalization: NonNullable<DaemonAgentResult['finalization']>,
+): void {
+  if (!engine.getJob(handle.jobId)?.automationOccurrenceId) return;
+  const contract = engine.getChildContract(handle.jobId);
+  if (!contract || contract.resultAttemptId !== null) return;
+  const outcome = String(finalization.outcome ?? finalization.status);
+  const result = engine.recordChildResult({
+    childJobId: handle.jobId,
+    attemptId: handle.attemptId,
+    generation: handle.generation,
+    fenceToken: handle.fenceToken,
+    status: finalization.status === 'completed'
+      ? 'completed'
+      : outcome.includes('unknown') ? 'unknown' : finalization.status,
+    evidence: finalization.evidence,
+    evidenceHandles: childEvidenceHandles(finalization.evidence),
+    producer: 'daemon-child-settlement',
+    idempotencyKey: `child-result:${handle.attemptId}:${handle.generation}`,
+  });
+  if (!result.applied && !result.duplicate) {
+    throw new Error(`Required child result could not be recorded: ${result.conflict ?? 'conflict'}`);
+  }
+}
+
+function reconcileRequiredChildren(
+  engine: JobEngine,
+  handle: DurableJobHandle,
+  result: DaemonAgentResult,
+): DaemonAgentResult {
+  const required = engine.listChildContracts(handle.jobId).filter((contract) => contract.required);
+  const events = engine.listEvents(handle.jobId);
+  const requested = new Set(events
+    .filter((event) => event.type === 'automation.child_requested')
+    .map((event) => event.payload?.triggerEventId)
+    .filter((id): id is number => typeof id === 'number'));
+  const admitted = new Set(events
+    .filter((event) => event.type === 'automation.child_admitted')
+    .map((event) => event.payload?.triggerEventId)
+    .filter((id): id is number => typeof id === 'number'));
+  const pendingTriggerIds = [...requested].filter((id) => !admitted.has(id));
+  const children = required.map((contract) => {
+    const child = engine.getJob(contract.childJobId);
+    return {
+      childJobId: contract.childJobId,
+      resultAttemptId: contract.resultAttemptId,
+      resultStatus: contract.resultStatus,
+      jobStatus: child?.status ?? 'missing',
+      terminalOutcome: child?.terminalOutcome ?? null,
+      evidenceHandles: contract.evidenceHandles,
+    };
+  });
+  const unacceptable = children.filter((child) =>
+    child.resultAttemptId === null
+    || child.resultStatus !== 'completed'
+    || child.jobStatus !== 'completed');
+  if (unacceptable.length === 0 && pendingTriggerIds.length === 0) return result;
+
+  const outcome = unacceptable.some((child) => child.terminalOutcome === 'verification_failed')
+    ? 'required_child_verification_failed'
+    : pendingTriggerIds.length > 0 || unacceptable.some((child) => child.resultAttemptId === null)
+      ? 'required_child_unsettled'
+      : 'required_child_failed';
+  const summary = unacceptable.length > 0
+    ? unacceptable.map((child) => `${child.childJobId}: ${child.terminalOutcome ?? child.resultStatus ?? child.jobStatus}`).join('; ')
+    : `trigger ${pendingTriggerIds.join(', ')} did not settle`;
+  engine.appendJobEvent({
+    jobId: handle.jobId,
+    attemptId: handle.attemptId,
+    generation: handle.generation,
+    type: 'job.required_child_contradiction',
+    payload: { outcome, requiredChildren: children, pendingTriggerIds },
+    producer: 'daemon-finalization',
+    idempotencyKey: `required-child-contradiction:${handle.attemptId}:${handle.generation}`,
+  });
+  return {
+    ...result,
+    finishReason: 'error',
+    error: `Required child execution did not complete successfully: ${summary}`,
+    finalContent: `The requested Automation did not complete successfully. ${summary}. Any completed setup or cleanup remains recorded separately in Activity.`,
+    finalization: {
+      status: 'failed',
+      outcome,
+      finishReason: outcome,
+      evidence: {
+        requiredChildren: children,
+        pendingTriggerIds,
+        priorEvidence: result.finalization?.evidence ?? null,
+      },
+    },
+  };
 }
 
 function durableConversationError(error: string): string {
@@ -1155,6 +1307,7 @@ async function invokeDurableDaemon(
           taskStore: undefined,
           artifactStore: undefined,
           artifactCandidateSink: (entries) => { artifactCandidates = entries; },
+          deferAssistantProjection: true,
           jobControlAuthority: jobControls,
           executionSignal: handle.signal,
           agentBuilder: (builderInput) => opts.agentBuilder({
@@ -1195,11 +1348,18 @@ async function invokeDurableDaemon(
         });
         return deliverAutomationResult(handle, projectedResult);
       },
-      finalize: (result) => result.finalization ?? {
-        status: result.finishReason === 'interrupted' ? 'cancelled' : 'failed',
-        outcome: result.finishReason === 'interrupted' ? 'cancelled' : 'failed',
-        finishReason: result.finishReason,
-        evidence: { error: result.error ?? null },
+      finalize: (result, handle) => {
+        const initial = result.finalization ?? {
+          status: result.finishReason === 'interrupted' ? 'cancelled' as const : 'failed' as const,
+          outcome: result.finishReason === 'interrupted' ? 'cancelled' : 'failed',
+          finishReason: result.finishReason,
+          evidence: { error: result.error ?? null },
+        };
+        recordRequiredChildResult(opts.jobEngine, handle, initial);
+        const reconciled = reconcileRequiredChildren(opts.jobEngine, handle, { ...result, finalization: initial });
+        Object.assign(result, reconciled);
+        projectedResult = reconciled;
+        return reconciled.finalization!;
       },
     });
     if (activeHandle && opts.artifactStore && artifactCandidates.length > 0) {
@@ -1211,6 +1371,13 @@ async function invokeDurableDaemon(
         activeHandle.jobId,
       );
     }
+    projectDurableAssistantReply(opts.runStore, input, execution.value.runId, execution.value.finalContent ?? '');
+    persistDurableAssistantReply(
+      opts.sessionStore,
+      input,
+      execution.value.finalContent ?? '',
+      execution.value.error ?? null,
+    );
     return execution.value;
   } catch (error) {
     if (error instanceof DurableJobHostDetachedError) throw error;

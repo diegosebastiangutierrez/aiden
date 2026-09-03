@@ -3877,6 +3877,18 @@ function applyV55(db: Database.Database): void {
   `);
 }
 
+/** Explicit origin for a new Job created by retrying terminal work. */
+function applyV56(db: Database.Database): void {
+  addMissingColumns(db, 'tasks', [
+    ['retry_of_job_id', 'TEXT'],
+  ]);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_tasks_retry_origin
+      ON tasks(retry_of_job_id, created_at)
+      WHERE retry_of_job_id IS NOT NULL;
+  `);
+}
+
 const MIGRATIONS: ReadonlyArray<Migration> = [
   { version: 1, name: 'phase 1 — daemon foundation',                  sql: V1_SQL },
   { version: 2, name: 'phase 2 — file watcher observations',          sql: V2_SQL },
@@ -3933,6 +3945,7 @@ const MIGRATIONS: ReadonlyArray<Migration> = [
   { version: 53, name: 'durable Skill Intelligence authority', apply: applyV53 },
   { version: 54, name: 'secure external protocol authority', apply: applyV54 },
   { version: 55, name: 'durable automation removal tombstones', apply: applyV55 },
+  { version: 56, name: 'durable terminal Job retry lineage', apply: applyV56 },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

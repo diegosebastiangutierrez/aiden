@@ -74,6 +74,12 @@ export interface AppendMessageInput {
   turnNumber?: number | null;
 }
 
+export interface TurnCheckpointOptions {
+  /** A retry reuses the exact original durable user message as a virtual
+   * execution anchor without storing a second copy in conversation history. */
+  userAnchorTurnNumber?: number;
+}
+
 export interface ListSessionsOptions {
   limit?: number;
   orderBy?: 'created' | 'updated';
@@ -476,8 +482,11 @@ export class SessionStore {
     sessionId: string,
     turnNumber: number,
     messages: readonly AppendMessageInput[],
+    options: TurnCheckpointOptions = {},
   ): MessageRecord[] {
     if (!Number.isInteger(turnNumber)) throw new Error('turn number must be an integer');
+    const anchorTurnNumber = options.userAnchorTurnNumber ?? turnNumber;
+    if (!Number.isInteger(anchorTurnNumber)) throw new Error('user anchor turn number must be an integer');
     const first = messages[0];
     if (!first || first.role !== 'user') {
       throw new Error('turn checkpoint must begin with its durable user message');
@@ -493,13 +502,24 @@ export class SessionStore {
           WHERE session_id = ? AND role = 'user'
           ORDER BY id DESC LIMIT 1`,
       ).get(sessionId) as MessageRow | undefined;
-      if (latestUser && latestUser.turn_number !== turnNumber) {
+      const virtualRetryAnchor = anchorTurnNumber !== turnNumber;
+      const anchorUser = virtualRetryAnchor
+        ? this.db.prepare(
+            `SELECT * FROM messages
+              WHERE session_id = ? AND role = 'user' AND turn_number = ?
+              ORDER BY id DESC LIMIT 1`,
+          ).get(sessionId, anchorTurnNumber) as MessageRow | undefined
+        : latestUser;
+      if (virtualRetryAnchor && !anchorUser) {
+        throw new Error('retry checkpoint durable user anchor was not found');
+      }
+      if (!virtualRetryAnchor && latestUser && latestUser.turn_number !== turnNumber) {
         throw new Error('turn checkpoint is not the latest durable user turn');
       }
-      if (latestUser && latestUser.content !== first.content) {
+      if (anchorUser && anchorUser.content !== first.content) {
         throw new Error('turn checkpoint user message does not match durable history');
       }
-      if (!latestUser) {
+      if (!virtualRetryAnchor && !latestUser) {
         this.appendMessage(sessionId, { ...first, turnNumber });
       }
 

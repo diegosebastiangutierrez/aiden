@@ -410,6 +410,13 @@ export function createDispatcher(opts: CreateDispatcherOptions): Dispatcher {
       const durable = (event.payload as {
         durable_job?: { job_id?: unknown; attempt_id?: unknown; run_id?: unknown };
       } | null)?.durable_job;
+      const rawConversationAnchor = (event.payload as {
+        conversation_anchor_trigger_event_id?: unknown;
+      } | null)?.conversation_anchor_trigger_event_id;
+      const conversationAnchorTriggerEventId = typeof rawConversationAnchor === 'number'
+        && Number.isSafeInteger(rawConversationAnchor) && rawConversationAnchor > 0
+          ? rawConversationAnchor
+          : undefined;
       const workerAssignmentId = typeof event.payload.worker_assignment_id === 'string'
         ? event.payload.worker_assignment_id
         : undefined;
@@ -434,6 +441,7 @@ export function createDispatcher(opts: CreateDispatcherOptions): Dispatcher {
         automationId?: unknown; revisionId?: unknown; triggerKind?: unknown;
         scheduledFor?: unknown; sourceIdentity?: unknown;
         replayOfOccurrenceId?: unknown;
+        parentExecution?: unknown;
       };
       const isAutomation = opts.jobEngine
         && typeof automationPayload.automationId === 'string'
@@ -451,6 +459,16 @@ export function createDispatcher(opts: CreateDispatcherOptions): Dispatcher {
             sourceIdentity: automationPayload.sourceIdentity as string,
             replayOfOccurrenceId: typeof automationPayload.replayOfOccurrenceId === 'string'
               ? automationPayload.replayOfOccurrenceId : null,
+            ...(automationPayload.parentExecution
+              && typeof automationPayload.parentExecution === 'object'
+              && typeof (automationPayload.parentExecution as Record<string, unknown>).jobId === 'string'
+              && typeof (automationPayload.parentExecution as Record<string, unknown>).attemptId === 'string'
+              && typeof (automationPayload.parentExecution as Record<string, unknown>).generation === 'number'
+              && typeof (automationPayload.parentExecution as Record<string, unknown>).fenceTokenDigest === 'string'
+              ? { parentExecution: automationPayload.parentExecution as {
+                  jobId: string; attemptId: string; generation: number; fenceTokenDigest: string;
+                } }
+              : {}),
             instanceId: opts.instanceId,
           })
         : undefined;
@@ -484,6 +502,7 @@ export function createDispatcher(opts: CreateDispatcherOptions): Dispatcher {
         triggerContext: context,
         initialMessage: executionMessage,
         deliverOnly,
+        ...(conversationAnchorTriggerEventId ? { conversationAnchorTriggerEventId } : {}),
         ...(admittedOccurrence?.scriptSpec ? { automationScriptSpec: admittedOccurrence.scriptSpec } : {}),
         ...(admittedOccurrence ? { automationApprovalMode: admittedOccurrence.approvalMode } : {}),
         ...(admittedOccurrence?.deliverySpec ? {
@@ -514,6 +533,10 @@ export function createDispatcher(opts: CreateDispatcherOptions): Dispatcher {
       // Map finishReason to bus action.
       if (result.finishReason === 'error') {
         const errMsg = result.error ?? 'agent reported error finish';
+        if (admittedOccurrence) {
+          createOccurrenceAuthority({ db: opts.db, jobEngine: opts.jobEngine! })
+            .reconcileJob(admittedOccurrence.occurrenceId);
+        }
         opts.triggerBus.markFailed(event.id, event.claimToken, errMsg, {
           maxAttempts: effectiveMaxAttempts,
           cooldownMs: computeRetryCooldownMs(event.attempts),

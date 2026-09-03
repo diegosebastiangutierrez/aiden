@@ -30,7 +30,8 @@ export interface JobEventProjectionAuthority {
 
 type JobRow = {
   id: string; status: string; state_version: number; active_attempt_id: string | null;
-  root_job_id: string | null; parent_task_id: string | null; session_id: string; goal: string;
+  root_job_id: string | null; parent_task_id: string | null; retry_of_job_id: string | null;
+  session_id: string; goal: string;
   entry_point: string | null; source: string | null; terminal_at: number | null;
   terminal_outcome: string | null; finish_reason: string | null; next_event_sequence: number;
 };
@@ -48,6 +49,7 @@ type EventRow = {
 const mapJob = (row: JobRow): JobRecord => ({
   id: row.id, status: row.status, stateVersion: row.state_version, activeAttemptId: row.active_attempt_id,
   rootJobId: row.root_job_id ?? row.id, parentJobId: row.parent_task_id, sessionId: row.session_id,
+  retryOfJobId: row.retry_of_job_id,
   goal: row.goal, entryPoint: row.entry_point, source: row.source, terminalAt: row.terminal_at,
   terminalOutcome: row.terminal_outcome, finishReason: row.finish_reason,
   nextEventSequence: row.next_event_sequence,
@@ -109,7 +111,7 @@ export function createJobEventProjectionAuthority(db: Db): JobEventProjectionAut
     },
     rebuild(jobId) {
       const jobRow = db.prepare(
-        `SELECT id, status, state_version, active_attempt_id, root_job_id, parent_task_id,
+        `SELECT id, status, state_version, active_attempt_id, root_job_id, parent_task_id, retry_of_job_id,
                 session_id, goal, entry_point, source, terminal_at, terminal_outcome,
                 finish_reason, next_event_sequence FROM tasks WHERE id = ?`,
       ).get(jobId) as JobRow | undefined;

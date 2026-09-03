@@ -204,6 +204,14 @@ export interface WorkbenchApprovalCard {
     gitWriteOperations: 'disabled';
     isolatedUntilPromotion: true;
   };
+  localProcess?: null | {
+    executable: string;
+    script: string;
+    workspace: string;
+    arguments: string[];
+    networkPolicy: 'unavailable';
+    environmentPolicy: 'isolated';
+  };
 }
 
 const PENDING_APPROVAL_STATES = new Set(['created', 'displayed']);
@@ -249,6 +257,29 @@ function externalCodingApproval(value: unknown, toolName: string): WorkbenchAppr
   };
 }
 
+function localProcessApproval(value: unknown, toolName: string): WorkbenchApprovalCard['localProcess'] {
+  if (toolName !== 'process_spawn') return null;
+  let plan: unknown = value;
+  if (typeof plan === 'string') {
+    try { plan = JSON.parse(plan); } catch { return null; }
+  }
+  if (!plan || typeof plan !== 'object' || Array.isArray(plan)) return null;
+  const record = plan as { cwd?: unknown; executable?: unknown; args?: unknown };
+  if (typeof record.cwd !== 'string' || typeof record.executable !== 'string'
+    || !record.args || typeof record.args !== 'object' || Array.isArray(record.args)) return null;
+  const args = record.args as Record<string, unknown>;
+  if (args.runtime !== 'node' || typeof args.script !== 'string' || !Array.isArray(args.args)
+    || args.args.some((item) => typeof item !== 'string')) return null;
+  return {
+    executable: record.executable,
+    script: args.script,
+    workspace: record.cwd,
+    arguments: args.args as string[],
+    networkPolicy: 'unavailable',
+    environmentPolicy: 'isolated',
+  };
+}
+
 /** Translate the durable SQL projection into the narrow approval-card contract.
  * Rows lacking an exact Job/Attempt/generation/action binding are not actionable. */
 export function durableApprovalCards(rows: readonly WorkbenchApprovalRow[]): WorkbenchApprovalCard[] {
@@ -276,6 +307,7 @@ export function durableApprovalCards(rows: readonly WorkbenchApprovalRow[]): Wor
       state,
       requestedAt: Number.isFinite(Number(row.requested_at)) ? Number(row.requested_at) : 0,
       externalCoding: externalCodingApproval(row.normalized_execution_plan, toolName),
+      localProcess: localProcessApproval(row.normalized_execution_plan, toolName),
     }];
   }).sort((a, b) => a.requestedAt - b.requestedAt || a.approvalId.localeCompare(b.approvalId));
 }

@@ -124,6 +124,14 @@ const BROWSER_ACTION = contract({
   approvalRequirement: 'none', sensitiveFields: ['text', 'value', 'values', 'files'],
   redactionRules: ['digest_arguments', 'omit_sensitive_values'], targetFields: ['selector', 'ref', 'url'],
 });
+const PROCESS_SPAWN = contract({
+  classification: 'unsafe_mutation', kind: 'process.control',
+  retrySafety: 'never_automatic', idempotencySupported: false,
+  reconciliationSupported: false, verificationSupported: true,
+  approvalRequirement: 'always', sensitiveFields: ['args'],
+  redactionRules: ['digest_arguments', 'omit_sensitive_values'],
+  targetFields: ['executable', 'script'], targetLabel: 'structured-local-process',
+});
 const BROWSER_TAB_ACTION = contract({
   classification: 'reconcilable_mutation', kind: 'browser.action',
   retrySafety: 'reconcile_before_retry', idempotencySupported: false,
@@ -164,7 +172,7 @@ const CONTRACTS: Readonly<Record<string, ToolEffectContract>> = Object.freeze({
   open_url: { ...SYSTEM_CONTROL, kind: 'system.external_launch', target: (args) => typeof args.url === 'string' ? args.url : null },
   shell_exec: LOCAL_PROCESS,
   execute_code: LOCAL_PROCESS,
-  process_spawn: PROCESS_CONTROL,
+  process_spawn: PROCESS_SPAWN,
   process_kill: PROCESS_CONTROL,
   browser_navigate: BROWSER_ACTION,
   browser_click: BROWSER_ACTION,

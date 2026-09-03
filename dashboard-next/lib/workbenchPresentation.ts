@@ -55,7 +55,7 @@ const STATUS_PRESENTATIONS: Record<string, RuntimeStatusPresentation> = {
   verified: { label: 'Verified', detail: 'The result is supported by recorded evidence.', nextAction: null, tone: 'success' },
   failed: { label: 'Failed', detail: 'The work did not complete.', nextAction: 'Review the failure', tone: 'danger' },
   denied: { label: 'Denied', detail: 'The requested action was not allowed.', nextAction: null, tone: 'danger' },
-  cancelled: { label: 'Cancelled', detail: 'The work was stopped safely.', nextAction: null, tone: 'neutral' },
+  cancelled: { label: 'Cancelled', detail: 'Stopped safely.', nextAction: 'Retry', tone: 'neutral' },
 };
 
 export function presentRuntimeStatus(status: string | null | undefined): RuntimeStatusPresentation {
@@ -91,10 +91,13 @@ export function presentResult(input: {
   evidenceCount?: number;
   kind?: 'coding' | 'browser' | 'apps' | 'artifact' | 'failure' | 'recovery';
 }): ResultPresentation {
-  const state = presentRuntimeStatus(input.verdict || input.status);
+  const authoritativeStatus = (input.verdict || input.status).trim().toLowerCase();
+  const state = presentRuntimeStatus(authoritativeStatus);
   const evidenceCount = Math.max(0, input.evidenceCount ?? 0);
   const rawSummary = input.summary?.trim() || '';
-  const summary = /ProviderError|Network failure calling|fetch failed/i.test(rawSummary)
+  const summary = authoritativeStatus === 'cancelled'
+    ? state.detail
+    : /ProviderError|Network failure calling|fetch failed/i.test(rawSummary)
     ? 'The selected provider could not be reached. No result was produced.'
     : rawSummary
       ? presentRuntimeDetail(rawSummary, input.status)
@@ -231,6 +234,7 @@ function actionName(toolName: string): string {
   if (key.includes('file_write') || key.includes('write_file')) return 'Write a file';
   if (key.includes('delete')) return 'Delete content';
   if (key.includes('shell') || key.includes('terminal') || key.includes('command')) return 'Run a command';
+  if (key.includes('process_spawn')) return 'Run a local Node process';
   if (key.includes('browser')) return 'Use the browser';
   if (key.includes('external_coding')) return 'Start an isolated coding session';
   return 'Perform a protected action';
@@ -241,7 +245,7 @@ export function presentApproval(approval: WorkbenchApprovalCard): ApprovalPresen
   const risk = approval.riskTier.trim().toLowerCase();
   return {
     what: actionName(approval.toolName),
-    where: approval.target || approval.externalCoding?.repository || 'The selected work',
+    where: approval.localProcess?.script || approval.target || approval.externalCoding?.repository || 'The selected work',
     why: 'This action can change your computer or connected service, so Aiden needs your decision.',
     impact: approval.effectId ? 'The exact effect will be recorded and verified.' : 'The exact requested action will be recorded.',
     risk: `${risk ? risk[0]!.toUpperCase() + risk.slice(1) : 'Unknown'} risk`,

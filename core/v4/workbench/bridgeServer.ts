@@ -79,6 +79,10 @@ export interface SessionSummary {
   lastActive: number;
   provider?:  string | null;
   model?:     string | null;
+  jobId?:     string;
+  attemptId?: string;
+  runId?:     number;
+  status?:    string;
 }
 
 /** Optional read port for the sidebar's recent-sessions list. Read-only. */
@@ -119,6 +123,21 @@ export interface CancelResult {
  *  shows it. When absent, POST /api/tasks/:runId/cancel returns 503. */
 export interface TaskCanceller {
   cancel(runId: number): CancelResult;
+}
+
+export interface RetryResult {
+  accepted: boolean;
+  duplicate?: boolean;
+  originalJobId?: string;
+  jobId?: string;
+  attemptId?: string;
+  runId: number;
+  generation?: number;
+  triggerEventId?: number;
+}
+
+export interface TaskRetrier {
+  retry(runId: number, idempotencyKey?: string): RetryResult;
 }
 
 export interface TaskInputReceiver {
@@ -247,6 +266,8 @@ export interface WorkbenchBridgeOptions {
   enqueue?:    TaskEnqueuer;
   /** Optional STEER port for the stop button. Absent → cancel is 503. */
   cancel?:     TaskCanceller;
+  /** Optional terminal-Job retry port. A retry always admits a new durable Job. */
+  retry?:      TaskRetrier;
   input?:      TaskInputReceiver;
   control?:    TaskController;
   approval?:   ApprovalDecider;
@@ -550,6 +571,8 @@ export function startWorkbenchBridge(opts: WorkbenchBridgeOptions): Promise<Work
     }
     const cancelMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)\/cancel$/);
     if (req.method === 'POST' && cancelMatch) { handleCancelTask(req, res, cancelMatch[1]); return; }
+    const retryMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)\/retry$/);
+    if (req.method === 'POST' && retryMatch) { handleRetryTask(req, res, retryMatch[1]); return; }
     const inputMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)\/input$/);
     if (req.method === 'POST' && inputMatch) { handleTaskInput(req, res, inputMatch[1]); return; }
     const controlMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)\/(pause|resume)$/);
@@ -1195,7 +1218,7 @@ export function startWorkbenchBridge(opts: WorkbenchBridgeOptions): Promise<Work
 
     sendJson(res, 404, {
       error: 'not found',
-    endpoints: ['GET /', 'GET /plain', 'GET /api/health', 'GET /api/workbench/bootstrap', 'GET /api/workbench/capabilities', 'GET /api/workbench/readiness', 'GET /api/providers', 'GET /api/apps', 'GET /api/automations', 'GET /api/presence', 'GET /api/learning', 'GET /api/learning/export', 'GET /api/learning/:id', 'GET /api/skill-intelligence', 'GET /api/skill-intelligence/candidates/:id', 'GET /api/presence/proposals', 'GET /api/presence/preferences', 'GET /api/presence/briefing', 'GET /api/presence/:id/explain', 'GET /api/browser/setup', 'GET /api/sessions', 'GET /api/events', 'GET /api/runs/:runId/events', 'GET /api/sessions/:sessionId/events', 'GET /api/jobs/:jobId/projection', 'GET /api/jobs/:jobId/live-execution', 'GET /api/jobs/:jobId/coding', 'GET /api/coding/promotions/:promotionId/review', 'GET /api/jobs/:jobId/continuity', 'GET /api/artifacts', 'GET /api/artifacts/:artifactId/content', 'GET /api/workspaces/:workspaceId/continuity', 'GET /api/checkpoints/:checkpointId', 'POST /api/tasks', 'POST /api/attachments', 'POST /api/tasks/:runId/cancel', 'POST /api/tasks/:runId/input', 'POST /api/tasks/:runId/pause', 'POST /api/tasks/:runId/resume', 'POST /api/approvals/:approvalId/decision', 'POST /api/coding/configure', 'POST /api/coding/promotions/:promotionId/apply', 'POST /api/coding/promotions/:promotionId/discard', 'POST /api/coding/sessions/:codingSessionId/discard', 'POST /api/checkpoints/:checkpointId/continue', 'POST /api/providers/:id/connect', 'POST /api/providers/:id/test', 'POST /api/providers/model/session', 'POST /api/providers/model/default', 'POST /api/apps/providers/:id/configure', 'POST /api/apps/connect', 'POST /api/automations', 'PUT /api/automations/:id', 'POST /api/automations/preview', 'POST /api/automations/:id/run', 'POST /api/automations/:id/enable', 'POST /api/automations/:id/disable', 'POST /api/automation-occurrences/:id/replay', 'POST /api/presence/preferences', 'POST /api/presence/:id/snooze', 'POST /api/presence/:id/dismiss', 'POST /api/presence/:id/feedback', 'POST /api/presence/:id/proposals', 'POST /api/presence/proposals/:id/accept', 'POST /api/learning/remember', 'POST /api/learning/:id/edit', 'POST /api/learning/:id/rollback', 'POST /api/learning/:id/demote', 'POST /api/learning/:id/archive', 'POST /api/learning/:id/delete', 'POST /api/learning/rebuild', 'POST /api/skill-intelligence/candidates/:id/dismiss', 'POST /api/skill-intelligence/drafts', 'POST /api/skill-intelligence/drafts/:id/edit', 'POST /api/skill-intelligence/drafts/:id/evaluate', 'POST /api/skill-intelligence/drafts/:id/approval', 'POST /api/skill-intelligence/approvals/:id/decision', 'POST /api/skill-intelligence/approvals/:id/activate', 'POST /api/skill-intelligence/skills/:id/disable', 'POST /api/skill-intelligence/skills/:id/rollback'],
+    endpoints: ['GET /', 'GET /plain', 'GET /api/health', 'GET /api/workbench/bootstrap', 'GET /api/workbench/capabilities', 'GET /api/workbench/readiness', 'GET /api/providers', 'GET /api/apps', 'GET /api/automations', 'GET /api/presence', 'GET /api/learning', 'GET /api/learning/export', 'GET /api/learning/:id', 'GET /api/skill-intelligence', 'GET /api/skill-intelligence/candidates/:id', 'GET /api/presence/proposals', 'GET /api/presence/preferences', 'GET /api/presence/briefing', 'GET /api/presence/:id/explain', 'GET /api/browser/setup', 'GET /api/sessions', 'GET /api/events', 'GET /api/runs/:runId/events', 'GET /api/sessions/:sessionId/events', 'GET /api/jobs/:jobId/projection', 'GET /api/jobs/:jobId/live-execution', 'GET /api/jobs/:jobId/coding', 'GET /api/coding/promotions/:promotionId/review', 'GET /api/jobs/:jobId/continuity', 'GET /api/artifacts', 'GET /api/artifacts/:artifactId/content', 'GET /api/workspaces/:workspaceId/continuity', 'GET /api/checkpoints/:checkpointId', 'POST /api/tasks', 'POST /api/attachments', 'POST /api/tasks/:runId/cancel', 'POST /api/tasks/:runId/retry', 'POST /api/tasks/:runId/input', 'POST /api/tasks/:runId/pause', 'POST /api/tasks/:runId/resume', 'POST /api/approvals/:approvalId/decision', 'POST /api/coding/configure', 'POST /api/coding/promotions/:promotionId/apply', 'POST /api/coding/promotions/:promotionId/discard', 'POST /api/coding/sessions/:codingSessionId/discard', 'POST /api/checkpoints/:checkpointId/continue', 'POST /api/providers/:id/connect', 'POST /api/providers/:id/test', 'POST /api/providers/model/session', 'POST /api/providers/model/default', 'POST /api/apps/providers/:id/configure', 'POST /api/apps/connect', 'POST /api/automations', 'PUT /api/automations/:id', 'POST /api/automations/preview', 'POST /api/automations/:id/run', 'POST /api/automations/:id/enable', 'POST /api/automations/:id/disable', 'POST /api/automation-occurrences/:id/replay', 'POST /api/presence/preferences', 'POST /api/presence/:id/snooze', 'POST /api/presence/:id/dismiss', 'POST /api/presence/:id/feedback', 'POST /api/presence/:id/proposals', 'POST /api/presence/proposals/:id/accept', 'POST /api/learning/remember', 'POST /api/learning/:id/edit', 'POST /api/learning/:id/rollback', 'POST /api/learning/:id/demote', 'POST /api/learning/:id/archive', 'POST /api/learning/:id/delete', 'POST /api/learning/rebuild', 'POST /api/skill-intelligence/candidates/:id/dismiss', 'POST /api/skill-intelligence/drafts', 'POST /api/skill-intelligence/drafts/:id/edit', 'POST /api/skill-intelligence/drafts/:id/evaluate', 'POST /api/skill-intelligence/drafts/:id/approval', 'POST /api/skill-intelligence/approvals/:id/decision', 'POST /api/skill-intelligence/approvals/:id/activate', 'POST /api/skill-intelligence/skills/:id/disable', 'POST /api/skill-intelligence/skills/:id/rollback'],
     });
   });
 
@@ -1931,6 +1954,36 @@ export function startWorkbenchBridge(opts: WorkbenchBridgeOptions): Promise<Work
       log(`cancel failed: ${(e as Error).message}`);
       sendJson(res, 500, { error: 'cancel failed' });
     }
+  }
+
+  function handleRetryTask(req: http.IncomingMessage, res: http.ServerResponse, rawRunId: string): void {
+    if (!passesWriteGate(req, res)) return;
+    const runId = Number(decodeURIComponent(rawRunId));
+    if (!Number.isSafeInteger(runId) || runId < 1) {
+      sendJson(res, 400, { error: 'runId must be a positive integer' });
+      return;
+    }
+    if (!opts.retry) { sendJson(res, 503, { error: 'retry unavailable (daemon not wired)' }); return; }
+    readJsonBody(req, 16 * 1024).then((body) => {
+      const key = typeof body.idempotencyKey === 'string' ? body.idempotencyKey.trim() || undefined : undefined;
+      try {
+        const result = opts.retry!.retry(runId, key);
+        sendJson(res, result.accepted ? 202 : 409, {
+          accepted: result.accepted,
+          duplicate: result.duplicate ?? false,
+          original_job_id: result.originalJobId,
+          job_id: result.jobId,
+          attempt_id: result.attemptId,
+          run_id: result.runId,
+          generation: result.generation,
+          trigger_event_id: result.triggerEventId,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Retry is not available for this work.';
+        log(`retry rejected: ${message}`);
+        sendJson(res, 409, { accepted: false, error: message });
+      }
+    }).catch(() => sendJson(res, 400, { error: 'invalid JSON body' }));
   }
 
   function handleTaskInput(req: http.IncomingMessage, res: http.ServerResponse, rawRunId: string): void {

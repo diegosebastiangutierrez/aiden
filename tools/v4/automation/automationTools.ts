@@ -5,6 +5,8 @@
 
 import type { ToolHandler } from '../../../core/v4/toolRegistry';
 import { truncatePreview } from '../../../core/v4/dryRun';
+import { currentJobExecutionContext } from '../../../core/v4/daemon/jobExecutionContext';
+import { automationParentFenceDigest } from '../../../core/v4/automation/controlAuthority';
 
 export const automationStatusTool: ToolHandler = {
   schema: {
@@ -139,7 +141,49 @@ export const automationManageTool: ToolHandler = {
     if (!automationId) return { success: false, error: 'Automation identity is required.' };
     if (action === 'enable') return ctx.automation.setEnabled(automationId, true);
     if (action === 'disable') return ctx.automation.setEnabled(automationId, false);
-    if (action === 'run_now') return ctx.automation.runNow(automationId);
+    if (action === 'run_now') {
+      const parent = currentJobExecutionContext();
+      const queued = ctx.automation.runNow(automationId, parent ? {
+        jobId: parent.jobId,
+        attemptId: parent.attemptId,
+        generation: parent.generation,
+        fenceTokenDigest: automationParentFenceDigest(parent.fenceToken),
+      } : undefined);
+      if (!parent) return queued;
+      const requested = parent.engine.appendJobEvent({
+        jobId: parent.jobId,
+        attemptId: parent.attemptId,
+        generation: parent.generation,
+        type: 'automation.child_requested',
+        payload: { automationId, triggerEventId: queued.triggerEventId, required: true },
+        producer: parent.producer,
+        idempotencyKey: `automation-child-requested:${queued.triggerEventId}`,
+      });
+      if (!requested.applied && !requested.duplicate) {
+        return { ...queued, success: false, error: 'Automation trigger could not be bound to the active parent execution.' };
+      }
+      if (!queued.schedulerReady) {
+        return { ...queued, success: false, error: 'Automation trigger was admitted, but its execution host is unavailable.' };
+      }
+      const outcome = await ctx.automation.waitForRun(queued.triggerEventId, {
+        timeoutMs: 120_000,
+        signal: parent.signal ?? ctx.signal,
+      });
+      const completed = outcome.settled
+        && outcome.state === 'completed'
+        && outcome.jobStatus === 'completed'
+        && outcome.terminalOutcome !== 'verification_failed';
+      return completed
+        ? { ...queued, success: true, execution: outcome }
+        : {
+            ...queued,
+            success: false,
+            execution: outcome,
+            error: outcome.settled
+              ? `Automation child settled as ${outcome.terminalOutcome ?? outcome.jobStatus ?? outcome.state}.`
+              : 'Automation child did not settle inside the reviewed wait bound.',
+          };
+    }
     if (action === 'remove') return ctx.automation.remove(automationId, 'local-user');
     return { success: false, error: 'Unknown Reliable Automations action.' };
   },

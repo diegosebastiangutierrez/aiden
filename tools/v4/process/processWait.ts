@@ -18,7 +18,7 @@ export const processWaitTool: ToolHandler = {
   schema: {
     name: 'process_wait',
     description:
-      'Wait until a background process exits. Pass timeoutMs to bound the wait — without a timeout, this blocks indefinitely.',
+      'Wait until a supervised background process exits. Call this immediately after process_spawn when the current Job must remain active for Stop or until real process completion. Pass timeoutMs to bound the wait; without a timeout, this blocks until terminal process state.',
     inputSchema: {
       type: 'object',
       properties: {

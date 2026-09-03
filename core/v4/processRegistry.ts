@@ -55,6 +55,12 @@ interface Slot {
   finished: boolean;
   /** v4.12 PM.1 — pending graceful→force escalation timer, if any. */
   forceTimer?: ReturnType<typeof setTimeout>;
+  /** Exact Job execution signal which owns this background process. */
+  abortSignal?: AbortSignal;
+  abortListener?: () => void;
+  /** A dispatched tree kill remains authoritative even when Windows reports
+   *  the eventual exit without a POSIX-style signal. */
+  killRequested: boolean;
 }
 
 const MAX_LOG_LINES = 1000;
@@ -65,6 +71,13 @@ const KILL_GRACE_MS = 2000;
 export interface SpawnOpts {
   cwd?: string;
   env?: Record<string, string>;
+  /** Keep the parent environment by default for legacy callers. Structured
+   * local execution disables inheritance so provider and user secrets never
+   * enter the child process. */
+  inheritEnv?: boolean;
+  /** Exact argv for a direct non-shell spawn. When present, `command` is the
+   * executable and no whitespace parsing or shell interpolation occurs. */
+  args?: readonly string[];
   /** When `true` (default), run the command via the platform shell
    *  (PowerShell on Windows, bash on POSIX). When `false`, the first
    *  whitespace-separated token is the executable; the rest are
@@ -78,6 +91,8 @@ export interface SpawnOpts {
   /** v4.12 PM.1 — override `child_process.spawn` (test seam) so idempotency /
    *  kill-routing can be driven with a fake child. Defaults to the real spawn. */
   spawnImpl?: typeof spawn;
+  /** Exact Job execution signal. Cancellation reaps only this spawned tree. */
+  signal?: AbortSignal;
 }
 
 export interface ProcessRegistryOptions {
@@ -104,7 +119,14 @@ export class ProcessRegistry {
     const spawnFn = opts.spawnImpl ?? spawn;
 
     let child: ChildProcess;
-    if (useShell) {
+    if (opts.args) {
+      if (useShell) throw new Error('Structured process arguments require shell:false');
+      child = spawnFn(command, [...opts.args], {
+        cwd: opts.cwd,
+        env: opts.inheritEnv === false ? { ...(opts.env ?? {}) } : { ...process.env, ...(opts.env ?? {}) },
+        ...(isWin ? {} : { detached: true }),
+      });
+    } else if (useShell) {
       if (isWin) {
         child = spawnFn('powershell.exe', ['-NoProfile', '-Command', command], {
           cwd: opts.cwd,
@@ -135,7 +157,7 @@ export class ProcessRegistry {
 
     const handle: ProcessHandle = {
       id,
-      command,
+      command: opts.args ? [command, ...opts.args].map((part) => JSON.stringify(part)).join(' ') : command,
       pid,
       startedAt: Date.now(),
       status: 'running',
@@ -143,7 +165,7 @@ export class ProcessRegistry {
       cwd: resolvedCwd,
       ownerSessionId: opts.sessionId,
     };
-    const slot: Slot = { handle, child, log: [], waiters: [], finished: false };
+    const slot: Slot = { handle, child, log: [], waiters: [], finished: false, killRequested: false };
     this.slots.set(id, slot);
 
     // ★ PM.1 — idempotent move-to-finished. `exit` and `error` can BOTH fire
@@ -153,6 +175,10 @@ export class ProcessRegistry {
       if (slot.finished) return;
       slot.finished = true;
       if (slot.forceTimer) { clearTimeout(slot.forceTimer); slot.forceTimer = undefined; }
+      if (slot.abortSignal && slot.abortListener) {
+        slot.abortSignal.removeEventListener('abort', slot.abortListener);
+        slot.abortListener = undefined;
+      }
       handle.exitedAt = Date.now();
       handle.exitCode = exitCode;
       handle.status = status;
@@ -172,7 +198,7 @@ export class ProcessRegistry {
     child.stderr?.on('data', onData);
 
     child.on('exit', (code, signal) => {
-      const status = signal === 'SIGKILL' || signal === 'SIGTERM' ? 'killed' : 'exited';
+      const status = slot.killRequested || signal === 'SIGKILL' || signal === 'SIGTERM' ? 'killed' : 'exited';
       finish(status, typeof code === 'number' ? code : undefined);
     });
 
@@ -180,6 +206,18 @@ export class ProcessRegistry {
       slot.log.push(`[spawn-error] ${err.message}`);
       finish('exited', -1);
     });
+
+    if (opts.signal) {
+      let handled = false;
+      slot.abortSignal = opts.signal;
+      slot.abortListener = () => {
+        if (handled) return;
+        handled = true;
+        this.kill(id, 'SIGTERM');
+      };
+      opts.signal.addEventListener('abort', slot.abortListener, { once: true });
+      if (opts.signal.aborted) slot.abortListener();
+    }
 
     return handle;
   }
@@ -221,12 +259,14 @@ export class ProcessRegistry {
     if (slot.handle.status !== 'running') return false;
 
     if (this.platform === 'win32') {
-      try { this.killTree(slot.child, 'SIGKILL'); } catch { return false; }
+      slot.killRequested = true;
+      try { this.killTree(slot.child, 'SIGKILL'); } catch { slot.killRequested = false; return false; }
       return true;
     }
 
     // POSIX: graceful → grace window → force.
-    try { this.killTree(slot.child, signal); } catch { return false; }
+    slot.killRequested = true;
+    try { this.killTree(slot.child, signal); } catch { slot.killRequested = false; return false; }
     if (signal !== 'SIGKILL' && !slot.forceTimer) {
       slot.forceTimer = setTimeout(() => {
         slot.forceTimer = undefined;
@@ -274,7 +314,12 @@ export class ProcessRegistry {
   cleanup(): void {
     for (const slot of this.slots.values()) {
       if (slot.forceTimer) { clearTimeout(slot.forceTimer); slot.forceTimer = undefined; }
+      if (slot.abortSignal && slot.abortListener) {
+        slot.abortSignal.removeEventListener('abort', slot.abortListener);
+        slot.abortListener = undefined;
+      }
       if (slot.handle.status === 'running') {
+        slot.killRequested = true;
         try { this.killTree(slot.child, 'SIGKILL'); } catch { /* ignore */ }
         if (!slot.finished) {
           slot.finished = true;

@@ -3,7 +3,7 @@
  * Licensed under AGPL-3.0. See LICENSE for details.
  */
 
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
 
 import type { TriggerBus } from '../daemon/triggerBus';
@@ -13,8 +13,21 @@ function nonce(): string {
   return randomBytes(12).toString('hex');
 }
 
+export interface AutomationParentExecution {
+  jobId: string;
+  attemptId: string;
+  generation: number;
+  fenceTokenDigest: string;
+}
+
+export function automationParentFenceDigest(fenceToken: string): string {
+  return createHash('sha256').update(fenceToken).digest('hex');
+}
+
 export interface AutomationControlAuthority {
-  runNow(automationId: string, now?: number): { triggerEventId: number; sourceIdentity: string };
+  runNow(automationId: string, now?: number, parentExecution?: AutomationParentExecution): {
+    triggerEventId: number; sourceIdentity: string;
+  };
   replay(occurrenceId: string, now?: number): { triggerEventId: number; sourceIdentity: string };
   emitBound(input: { bindingId: string; providerEventId: string; payload: Record<string, unknown> }): {
     triggerEventId: number; inserted: boolean;
@@ -40,7 +53,7 @@ export function createAutomationControlAuthority(options: {
     return row;
   };
   return {
-    runNow(automationId, now = Date.now()) {
+    runNow(automationId, now = Date.now(), parentExecution) {
       const row = current(automationId);
       const sourceIdentity = `manual:${new Date(now).toISOString()}:${nonce()}`;
       const event = triggerBus.insert({
@@ -48,6 +61,7 @@ export function createAutomationControlAuthority(options: {
         payload: {
           automationId, revisionId: row.current_revision_id, triggerKind: 'manual',
           sourceIdentity, untrustedContent: false,
+          ...(parentExecution ? { parentExecution } : {}),
         },
       });
       return { triggerEventId: event.id, sourceIdentity };

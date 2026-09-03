@@ -206,6 +206,17 @@ const AUTOMATION_GUIDANCE = [
   'an Aiden Automation.',
 ].join('\n');
 
+const PROCESS_GUIDANCE = [
+  '## Supervised local processes',
+  '',
+  'For long-running or cancellable local work, use `process_spawn` and then',
+  '`process_wait` so Stop, restart, and terminal-state checks remain authoritative.',
+  'Do not use `shell_exec` for long-running work. `process_spawn` accepts an exact',
+  'existing Node script inside the active workspace; inspect the active workspace',
+  'for a suitable script before choosing an opaque shell command. A successful',
+  'spawn is not completion, and its exact action requires approval.',
+].join('\n');
+
 const SKILLS_GUIDANCE = [
   '## Skill upkeep',
   '',
@@ -672,6 +683,13 @@ export class PromptBuilder {
         slots.push({
           name:     'guidance.automation',
           content:  AUTOMATION_GUIDANCE,
+          optional: true,
+        });
+      }
+      if (toolsets.has('process')) {
+        slots.push({
+          name:     'guidance.process',
+          content:  PROCESS_GUIDANCE,
           optional: true,
         });
       }

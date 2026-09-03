@@ -243,16 +243,41 @@ export function normalizeExecutionPlan(command: {
   const requestedCwd = typeof command.args.cwd === 'string' ? command.args.cwd : command.cwd;
   const cwd = canonicalPath(path.resolve(command.cwd, requestedCwd));
   const rawCommand = typeof command.args.command === 'string' ? command.args.command : null;
-  const executable = rawCommand ? firstCommandToken(rawCommand) : null;
+  const structuredRuntime = command.toolName === 'process_spawn' && command.args.runtime === 'node';
+  const requestedExecutable = typeof command.args.executable === 'string' ? command.args.executable.trim() : '';
+  const executable = rawCommand
+    ? firstCommandToken(rawCommand)
+    : structuredRuntime
+      ? canonicalPath(path.resolve(requestedExecutable && !/^(?:node|node\.exe)$/iu.test(requestedExecutable)
+        ? requestedExecutable
+        : process.execPath))
+      : null;
   const shell = rawCommand ? (process.platform === 'win32' ? (process.env.ComSpec ?? 'cmd.exe') : '/bin/sh') : null;
   const env = command.args.env && typeof command.args.env === 'object' && !Array.isArray(command.args.env)
     ? command.args.env as Record<string, unknown>
     : null;
-  const environmentFingerprint = env ? sha(env) : null;
+  const structuredScript = structuredRuntime && typeof command.args.script === 'string'
+    ? canonicalPath(path.resolve(cwd, command.args.script))
+    : null;
+  const executableIdentity = executable ? (() => {
+    try {
+      const stat = fs.statSync(executable);
+      return { path: executable, size: stat.size, mtimeMs: stat.mtimeMs, ino: stat.ino };
+    } catch { return { path: executable, unavailable: true }; }
+  })() : null;
+  const scriptIdentity = structuredScript ? (() => {
+    try {
+      const contents = fs.readFileSync(structuredScript);
+      return { path: structuredScript, size: contents.byteLength, sha256: createHash('sha256').update(contents).digest('hex') };
+    } catch { return { path: structuredScript, unavailable: true }; }
+  })() : null;
+  const environmentFingerprint = env || executableIdentity || scriptIdentity
+    ? sha({ env, executableIdentity, scriptIdentity })
+    : null;
   const networkTargets = ['url', 'endpoint', 'host'].map((key) => command.args[key])
     .filter((value): value is string => typeof value === 'string' && /^[a-z][a-z0-9+.-]*:\/\//i.test(value))
     .sort();
-  const affectedResources = ['path', 'file', 'from', 'to', 'source', 'destination', 'cwd']
+  const affectedResources = ['path', 'file', 'from', 'to', 'source', 'destination', 'script', 'cwd']
     .map((key) => resolveResource(command.args[key], cwd))
     .filter((value): value is string => value !== null)
     .sort();

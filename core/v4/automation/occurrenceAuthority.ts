@@ -8,6 +8,7 @@ import path from 'node:path';
 import type Database from 'better-sqlite3';
 
 import type { JobEngine } from '../daemon/jobEngine';
+import { automationParentFenceDigest, type AutomationParentExecution } from './controlAuthority';
 import type { JobBudgetKind, JobCapabilities } from '../daemon/jobResourceAuthority';
 import { computeOccurrenceKey } from './occurrenceKey';
 import type { AutomationDeliverySpec, AutomationRevisionSpec } from './types';
@@ -24,6 +25,7 @@ export interface AdmitClaimedOccurrenceCommand {
   sourceIdentity: string;
   replayOfOccurrenceId?: string | null;
   instanceId: string;
+  parentExecution?: AutomationParentExecution;
   now?: number;
 }
 
@@ -158,6 +160,44 @@ export function createOccurrenceAuthority(options: {
     ).get(command.triggerEventId, command.claimToken, now) as { id: number; payload_json: string } | undefined;
     if (!claim) throw new Error('Trigger claim authority is stale, expired, or replaced');
 
+    const parent = command.parentExecution ? (() => {
+      const job = jobEngine.getJob(command.parentExecution!.jobId);
+      const attempt = jobEngine.getAttempt(command.parentExecution!.attemptId);
+      if (
+        !job
+        || !attempt
+        || job.activeAttemptId !== attempt.id
+        || job.terminalAt !== null
+        || attempt.jobId !== job.id
+        || attempt.generation !== command.parentExecution!.generation
+        || !attempt.fenceToken
+        || automationParentFenceDigest(attempt.fenceToken) !== command.parentExecution!.fenceTokenDigest
+        || ['succeeded', 'failed', 'cancelled', 'timed_out', 'crashed', 'unknown'].includes(attempt.status)
+      ) throw new Error('Automation parent execution is stale, terminal, or replaced');
+      return { job, attempt };
+    })() : null;
+    const projectParentAdmission = (occurrenceId: string, childJobId: string): void => {
+      if (!parent) return;
+      const projected = jobEngine.appendJobEvent({
+        jobId: parent.job.id,
+        attemptId: parent.attempt.id,
+        generation: parent.attempt.generation,
+        type: 'automation.child_admitted',
+        payload: {
+          automationId: command.automationId,
+          triggerEventId: command.triggerEventId,
+          occurrenceId,
+          childJobId,
+          required: true,
+        },
+        producer: 'automation-occurrence',
+        idempotencyKey: `automation-child-admitted:${command.triggerEventId}`,
+      });
+      if (!projected.applied && !projected.duplicate) {
+        throw new Error('Automation child admission could not be projected to its parent execution');
+      }
+    };
+
     const occurrenceKey = computeOccurrenceKey(command);
     const existing = db.prepare(
       `SELECT occurrence_id,job_id,attempt_id FROM automation_occurrences
@@ -182,6 +222,7 @@ export function createOccurrenceAuthority(options: {
       const job = jobEngine.getJob(existing.job_id);
       if (!attempt) throw new Error(`Automation occurrence ${existing.occurrence_id} references a missing Attempt`);
       if (!job) throw new Error(`Automation occurrence ${existing.occurrence_id} references a missing Job`);
+      projectParentAdmission(existing.occurrence_id, existing.job_id);
       if (job.status === 'failed' || job.status === 'crashed') {
         if (unavailableCredential) {
           db.prepare("UPDATE automation_occurrences SET state = 'blocked',detail_json = ?,updated_at = ?,terminal_at = COALESCE(terminal_at,?) WHERE occurrence_id = ?")
@@ -306,6 +347,21 @@ export function createOccurrenceAuthority(options: {
       automationId: command.automationId,
       automationRevisionId: command.revisionId,
       automationOccurrenceId: occurrenceId,
+      ...(parent ? {
+        parentJobId: parent.job.id,
+        rootJobId: parent.job.rootJobId,
+        childContract: {
+          required: true,
+          workerId: `automation:${occurrenceId}`,
+          capabilities: spec.capabilities,
+          allowedResources: {
+            automationId: command.automationId,
+            revisionId: command.revisionId,
+            occurrenceId,
+          },
+          budget: spec.budget ? { ...spec.budget } as Record<string, unknown> : {},
+        },
+      } : {}),
       resourcePolicy: projectResourcePolicy(db, spec),
     });
     const linked = db.prepare(
@@ -314,6 +370,7 @@ export function createOccurrenceAuthority(options: {
         WHERE occurrence_id = ? AND job_id IS NULL`,
     ).run(admitted.jobId, admitted.attemptId, now, now, occurrenceId);
     if (linked.changes !== 1) throw new Error('Automation occurrence admission lost atomic ownership');
+    projectParentAdmission(occurrenceId, admitted.jobId);
     return {
       disposition: 'admitted', occurrenceId, occurrenceKey, ...admitted, goal, retryMaxAttempts,
       approvalMode: spec.approval?.mode ?? 'policy',

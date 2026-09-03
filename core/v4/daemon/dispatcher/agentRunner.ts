@@ -71,6 +71,9 @@ export interface DaemonAgentInput {
   triggerContext:   TriggerInvocationContext;
   /** Rendered initial message (already template-substituted). */
   initialMessage:   string;
+  /** Retry-only durable conversation anchor. The provider receives the exact
+   * request again, while SessionStore retains one user-message record. */
+  conversationAnchorTriggerEventId?: number;
   /**
    * When `true`, skip the agent loop entirely. Currently only
    * the run_event log is written + the run is marked completed
