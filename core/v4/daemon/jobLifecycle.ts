@@ -197,6 +197,8 @@ export interface ExecuteDurableJobOptions<T> {
   admission: DurableJobAdmission;
   execute: (handle: DurableJobHandle) => Promise<T>;
   finalize: (value: T, handle: DurableJobHandle) => DurableJobDisposition | Promise<DurableJobDisposition>;
+  /** Record dependent results only after canonical Proof has selected the disposition. */
+  beforeSettlement?: (disposition: DurableJobDisposition, handle: DurableJobHandle) => void;
   classifyError?: (
     error: unknown,
     handle: DurableJobHandle,
@@ -293,7 +295,13 @@ function applyRequiredProof(
     && !(finalization.status === 'failed' && finalization.finishReason === 'stop')) {
     return finalization;
   }
-  if (proof.verdict === 'failed') {
+  const knownPartialFailure = proof.verdict === 'partially_verified'
+    && Number(proof.summary.failedClaims) > 0
+    && proof.summary.unknownClaims === 0
+    && Array.isArray(evidence.effects)
+    && evidence.effects.every((effect: { effect_state?: string }) =>
+      !['unknown', 'partial', 'started'].includes(effect.effect_state ?? 'unknown'));
+  if (proof.verdict === 'failed' || knownPartialFailure) {
     return {
       status: 'failed',
       attemptStatus: 'failed',
@@ -805,6 +813,7 @@ export async function executeDurableJob<T>(
     if (leaseLost) throw leaseLost;
     const authority = assertAuthority(options.engine, handle);
     const finalization = applyRequiredProof(options.engine, handle, requestedFinalization);
+    options.beforeSettlement?.(finalization, handle);
     attemptStateVersion = authority.attempt.stateVersion;
     jobStateVersion = authority.job.stateVersion;
     settle(options.engine, handle, finalization, attemptStateVersion, jobStateVersion, producer);
@@ -838,6 +847,7 @@ export async function executeDurableJob<T>(
           evidence: { errorClass: error instanceof Error ? error.name : 'Error' },
         };
       const authority = assertAuthority(options.engine, handle);
+      options.beforeSettlement?.(disposition, handle);
       settle(
         options.engine,
         handle,

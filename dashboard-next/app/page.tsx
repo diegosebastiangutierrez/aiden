@@ -2946,7 +2946,7 @@ function describeAutomationSchedule(expression: string): string {
 }
 
 function AutomationsView() {
-  const { selectActiveJob, setMainView } = useDevOS()
+  const { selectActiveJob, openWorkbenchDestination } = useDevOS()
   const [snapshot, setSnapshot] = useState<aiden.WorkbenchAutomationSnapshot | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
@@ -3136,7 +3136,7 @@ function AutomationsView() {
                               title: occurrence.execution!.title,
                               statusDetail: occurrence.execution!.verification,
                             })
-                            setMainView('activity')
+                            openWorkbenchDestination({ view: 'activity' })
                           }}>Open child evidence</button>
                         )}
                       </div>

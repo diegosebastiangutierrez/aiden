@@ -2285,6 +2285,9 @@ export function createJobEngine(opts: CreateJobEngineOptions): JobEngine {
     ).get(toolCall.side_effect_id) as { approval_state: string } | undefined;
     if (!row) return { applied: false, conflict: 'not_found' };
     if (row.approval_state === command.state) return { applied: false, duplicate: true, effectId: toolCall.side_effect_id };
+    if (command.state === 'denied' && toolCall.state !== 'prepared') {
+      return { applied: false, conflict: 'illegal_transition' };
+    }
     if (
       ['approved', 'denied', 'interrupted', 'timed_out', 'blocked'].includes(row.approval_state)
       && !(row.approval_state === 'approved' && command.state === 'blocked')
@@ -2310,6 +2313,32 @@ export function createJobEngine(opts: CreateJobEngineOptions): JobEngine {
       command.generation,
     );
     if (changed.changes !== 1) return { applied: false, conflict: 'illegal_transition' };
+    if (command.state === 'denied') {
+      // A denied, never-started operation is known not to have occurred. Settle
+      // the Effect and its source-bound claim in this same fenced transaction.
+      const reconciled = recordEffectReconciliationTx({
+        effectId: toolCall.side_effect_id, expectedJobStateVersion: getJobRow(toolCall.job_id)!.state_version,
+        outcome: 'did_not_occur', confidence: 'high',
+        evidence: { approvalId: command.approvalId ?? null, toolCallId: command.toolCallId, executionStarted: false },
+        retryRecommendation: 'do_not_retry', humanResolutionRequired: false,
+        producer: command.producer, idempotencyKey: `approval-denied:${command.toolCallId}`, now,
+      });
+      if (!reconciled.applied && !reconciled.duplicate) throw new Error('Denied Effect reconciliation failed');
+      db.prepare("UPDATE tool_calls SET state='failed',ended_at=?,updated_at=? WHERE tool_call_id=? AND state='prepared'")
+        .run(now, now, command.toolCallId);
+      const evidence = proof.recordEvidence({
+        jobId: toolCall.job_id, attemptId: command.attemptId, generation: command.generation,
+        fenceToken: command.fenceToken, effectId: toolCall.side_effect_id,
+        source: 'effect.approval_denied', producer: command.producer, observedAt: now,
+        coverage: 'full', verificationResult: 'failed',
+        payload: { toolCallId: command.toolCallId, approvalId: command.approvalId ?? null, executed: false, reason: 'approval_denied' },
+      });
+      changes.settleDeniedEffect({
+        jobId: toolCall.job_id, attemptId: command.attemptId, generation: command.generation,
+        fenceToken: command.fenceToken, toolCallId: command.toolCallId,
+        effectId: toolCall.side_effect_id, evidenceId: evidence.evidenceId,
+      });
+    }
     appendEvent({
       jobId: toolCall.job_id,
       runId: attempt.id,

@@ -958,6 +958,27 @@ describe('Durable child Job contracts', () => {
     })).toMatchObject({ applied: false, conflict: 'terminal_state' });
   });
 
+  it('records one denial receipt, rejects stale denial and never starts the denied Effect', () => {
+    const admitted = submit();
+    const lease = engine.claimAttempt({ attemptId: admitted.attemptId, ownerId: 'owner_a', ttlMs: 30_000 });
+    const identity = { attemptId: admitted.attemptId, generation: lease.generation!, fenceToken: lease.fenceToken!, producer: 'test' };
+    engine.prepareToolCall({ ...identity, jobId: admitted.jobId, toolCallId: 'denied-once', toolName: 'file_write',
+      normalizedArgsDigest: 'exact-action', riskTier: 'caution', mutates: true,
+      effect: { classification: 'reconcilable_mutation', kind: 'filesystem.write', target: '/workspace/denied.txt',
+        retrySafety: 'reconcile_before_retry', idempotencySupported: true, idempotencyKey: 'denied-action',
+        reconciliationSupported: true, verificationSupported: true, approvalRequirement: 'policy',
+        approvalState: 'pending', sensitiveFields: ['content'], redactionRules: ['omit_sensitive_values'], trusted: true } });
+    const command = { ...identity, toolCallId: 'denied-once', state: 'denied' as const };
+    expect(engine.resolveToolCallApproval({ ...command, fenceToken: 'stale' })).toMatchObject({ conflict: 'stale_fence' });
+    expect(engine.resolveToolCallApproval(command).applied).toBe(true);
+    expect(engine.resolveToolCallApproval(command).duplicate).toBe(true);
+    expect(engine.startToolCall({ ...identity, toolCallId: 'denied-once' })).toMatchObject({ conflict: 'illegal_transition' });
+    expect(engine.proof.listEvidence(admitted.jobId)).toHaveLength(1);
+    expect(engine.listEffectReconciliations('side_effect:denied-once')).toHaveLength(1);
+    expect(engine.listEffectsRequiringReconciliation(admitted.jobId)).toEqual([]);
+    expect(db.prepare('SELECT started_at FROM tool_calls WHERE tool_call_id=?').get('denied-once')).toEqual({ started_at: null });
+  });
+
   it('rejects clean parent completion when a required child failed verification', () => {
     const parent = submit({
       idempotencyKey: 'parent-required-child-failure',

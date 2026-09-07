@@ -22,6 +22,7 @@ import { fileWriteTool } from '../../../tools/v4/files/fileWrite';
 import { filePatchTool } from '../../../tools/v4/files/filePatch';
 import { fileMoveTool } from '../../../tools/v4/files/fileMove';
 import { fileDeleteTool } from '../../../tools/v4/files/fileDelete';
+import { fileReadTool } from '../../../tools/v4/files/fileRead';
 
 describe('safe change file-tool integration', () => {
   let db: Database.Database;
@@ -68,7 +69,7 @@ describe('safe change file-tool integration', () => {
       fenceToken: lease.fenceToken!, requestedPath: root, producer: 'test',
     });
     const registry = new ToolRegistry();
-    for (const handler of [fileWriteTool, filePatchTool, fileMoveTool, fileDeleteTool]) {
+    for (const handler of [fileWriteTool, filePatchTool, fileMoveTool, fileDeleteTool, fileReadTool]) {
       registry.register(withBuiltInEffectContract(handler));
     }
     const repositoryChange = {
@@ -123,6 +124,49 @@ describe('safe change file-tool integration', () => {
     expect(engine.changes.listRecords(context.admission.jobId)).toHaveLength(1);
     expect(context.repositoryChange.baseSnapshotId).not.toBe(fresh.id);
     await expect(readFile(path.join(root, 'source.ts'), 'utf8')).resolves.toBe('after\n');
+  });
+
+  it('persists exact read receipts and Verification without copying file contents into Proof', async () => {
+    const content = 'read-only receipt fixture\n';
+    await writeFile(path.join(root, 'report.txt'), content);
+    const execute = context.executor(async () => 'allow');
+    for (const id of ['read-first', 'read-repeat']) {
+      const result = await execute({ id, name: 'file_read', arguments: { path: 'report.txt' } });
+      expect(result.error).toBeUndefined();
+      expect(result.result).toMatchObject({ success: true });
+    }
+    const evidence = engine.proof.listEvidence(context.admission.jobId);
+    expect(evidence).toHaveLength(2);
+    expect(evidence.every((item) => item.source === 'filesystem.read' && item.verificationResult === 'verified')).toBe(true);
+    expect(new Set(evidence.map((item) => (item.payload as { toolCallId: string }).toolCallId)).size).toBe(2);
+    expect(JSON.stringify(evidence)).not.toContain(content.trim());
+    const identity = {
+      jobId: context.admission.jobId, attemptId: context.admission.attemptId,
+      generation: context.lease.generation!, fenceToken: context.lease.fenceToken!,
+    };
+    expect(engine.proof.finalize(identity).verdict).toBe('verified');
+    const reopened = createJobEngine({ db });
+    expect(reopened.proof.listEvidence(identity.jobId)).toEqual(evidence);
+    expect(reopened.proof.getVerdict(identity.jobId)?.verdict).toBe('verified');
+  });
+
+  it('settles denied repository intent and its never-started Effect as failed, not unknown', async () => {
+    const result = await context.run(async () => 'deny')('not authorized\n');
+    expect(result.error).toContain('denied');
+    await expect(readFile(path.join(root, 'source.ts'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(db.prepare('SELECT effect_state, approval_state, reconciliation_required FROM side_effect_ledger').all()).toEqual([
+      { effect_state: 'not_occurred', approval_state: 'denied', reconciliation_required: 0 },
+    ]);
+    expect(db.prepare('SELECT state, started_at FROM tool_calls').all()).toEqual([{ state: 'failed', started_at: null }]);
+    expect(engine.proof.listClaims(context.admission.jobId)).toEqual([expect.objectContaining({ state: 'failed' })]);
+    expect(engine.proof.listEvidence(context.admission.jobId)).toEqual([
+      expect.objectContaining({ source: 'effect.approval_denied', verificationResult: 'failed' }),
+    ]);
+    expect(engine.proof.finalize({
+      jobId: context.admission.jobId, attemptId: context.admission.attemptId,
+      generation: context.lease.generation!, fenceToken: context.lease.fenceToken!,
+    }).verdict).toBe('failed');
+    expect(createJobEngine({ db }).proof.getVerdict(context.admission.jobId)?.verdict).toBe('failed');
   });
 
   it('keeps owned runtime-state updates outside repository change scope', async () => {

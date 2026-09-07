@@ -117,6 +117,10 @@ export interface SafeChangeAuthority {
     jobId: string; attemptId: string; generation: number; fenceToken: string;
     intentId: string; effectId: string; approvalId: string; actionDigest: string;
   }): ChangeIntentRecord;
+  settleDeniedEffect(input: {
+    jobId: string; attemptId: string; generation: number; fenceToken: string;
+    toolCallId: string; effectId: string; evidenceId: string;
+  }): void;
   execute(input: {
     jobId: string; attemptId: string; generation: number; fenceToken: string;
     intentId: string; effectId: string; approvalId: string; actionDigest: string;
@@ -629,6 +633,27 @@ export function createSafeChangeAuthority(deps: Deps, io: SafeChangeIo = {}): Sa
       db.prepare('UPDATE repository_change_intents SET approval_id=?,action_digest=?,updated_at=? WHERE intent_id=?')
         .run(input.approvalId, input.actionDigest, Date.now(), input.intentId);
       return getIntent(input.intentId)!;
+    },
+
+    settleDeniedEffect(input) {
+      assertAuthority(input);
+      const intent = getIntentForToolCall(input.attemptId, input.generation, input.toolCallId);
+      if (!intent) return;
+      if (intent.jobId !== input.jobId || intent.effectId !== input.effectId || intent.state !== 'planned') {
+        throw new SafeChangeAuthorityError('EFFECT_BINDING_MISMATCH', 'Denied effect does not identify a planned change');
+      }
+      const effect = db.prepare("SELECT 1 FROM side_effect_ledger WHERE key=? AND job_id=? AND attempt_id=? AND generation=? AND approval_state='denied' AND effect_state='not_occurred'")
+        .get(input.effectId, input.jobId, input.attemptId, input.generation);
+      const evidence = deps.proof.listEvidence(input.jobId).find((item) => item.evidenceId === input.evidenceId
+        && item.effectId === input.effectId && item.source === 'effect.approval_denied'
+        && item.verificationResult === 'failed');
+      if (!effect || !evidence) throw new SafeChangeAuthorityError('DENIAL_EVIDENCE_MISSING', 'Denial requires exact non-execution Evidence');
+      deps.proof.checkClaim({
+        claimId: intent.claimId, attemptId: input.attemptId, generation: input.generation,
+        evidenceIds: [input.evidenceId], state: 'failed',
+      });
+      db.prepare("UPDATE repository_change_intents SET state='failed',updated_at=? WHERE intent_id=? AND state='planned'")
+        .run(Date.now(), intent.intentId);
     },
 
     async execute(input) {

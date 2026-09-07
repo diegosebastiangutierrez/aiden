@@ -1,5 +1,5 @@
 export type WorkbenchDestination =
-  | { view: 'apps'; settings?: never }
+  | { view: 'apps' | 'activity'; settings?: never }
   | { settings: WorkbenchSettingsSection; view?: never }
   | Record<string, never>
 
@@ -14,7 +14,8 @@ const SETTINGS_SECTIONS = new Set<WorkbenchSettingsSection>([
 
 export function parseWorkbenchDestination(search: string): WorkbenchDestination {
   const params = new URLSearchParams(search)
-  if (params.get('view') === 'apps') return { view: 'apps' }
+  const view = params.get('view')
+  if (view === 'apps' || view === 'activity') return { view }
   const settings = params.get('settings')
   if (settings && SETTINGS_SECTIONS.has(settings as WorkbenchSettingsSection)) return { settings: settings as WorkbenchSettingsSection }
   return {}

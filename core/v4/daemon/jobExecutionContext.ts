@@ -367,6 +367,45 @@ function captureDurableFileProof(
   });
 }
 
+function captureDurableReadProof(context: JobExecutionContext, prepared: PreparedDurableToolCall, result: unknown): void {
+  if (!result || typeof result !== 'object') return;
+  const value = result as Record<string, unknown>;
+  if (value.success !== true || typeof value.path !== 'string') return;
+  const hash = value.pageContentHash ?? value.contentHash;
+  if (typeof hash !== 'string' || !/^[a-f0-9]{64}$/i.test(hash)) return;
+  // A repeated-read stub is emitted only after the handler reads and hashes
+  // the same range again. Never persist the file's contents in Proof.
+  if (typeof value.content === 'string') {
+    if (createHash('sha256').update(value.content).digest('hex') !== hash) return;
+  } else if (value.stub !== true) return;
+  const existing = context.engine.proof.listEvidence(context.jobId).some((item) =>
+    item.attemptId === context.attemptId && item.source === 'filesystem.read'
+    && (item.payload as { toolCallId?: string } | null)?.toolCallId === prepared.toolCallId);
+  if (existing) return;
+  const claim = context.engine.proof.createClaim({
+    jobId: context.jobId, attemptId: context.attemptId, generation: context.generation,
+    category: 'contract', required: true,
+    statement: `file read returned an integrity-checked range: ${value.path}`,
+  });
+  const evidence = context.engine.proof.recordEvidence({
+    jobId: context.jobId, attemptId: context.attemptId, generation: context.generation,
+    fenceToken: context.fenceToken, source: 'filesystem.read', producer: context.producer,
+    observedAt: Date.now(), coverage: 'full', verificationResult: 'verified',
+    repositorySnapshotId: typeof value.snapshotId === 'string' ? value.snapshotId : null,
+    payload: {
+      toolCallId: prepared.toolCallId, path: value.path,
+      rangeHash: hash, offset: value.offset, limit: value.limit,
+      size: value.size, truncated: value.truncated === true,
+      fullContentHash: typeof value.fullContentHash === 'string' ? value.fullContentHash : null,
+      scope: 'returned_file_range',
+    },
+  });
+  context.engine.proof.checkClaim({
+    claimId: claim.claimId, attemptId: context.attemptId, generation: context.generation,
+    evidenceIds: [evidence.evidenceId], state: 'verified',
+  });
+}
+
 function isInside(root: string, candidate: string): boolean {
   const relative = path.relative(root, candidate);
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
@@ -533,6 +572,9 @@ export async function executeWithDurableToolCall<T>(command: {
     if (succeeded && command.captureFilesystemProof !== false) {
       captureDurableFileProof(context, prepared);
       captureDurableArtifactProof(context, prepared, command.toolName, result);
+    }
+    if (succeeded && !command.mutates && command.toolName === 'file_read') {
+      captureDurableReadProof(context, prepared, result);
     }
     return result;
   } catch (error) {

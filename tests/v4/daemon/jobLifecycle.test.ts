@@ -34,6 +34,36 @@ describe('executeDurableJob', () => {
 
   afterEach(() => db.close());
 
+  it('settles known failed required work even when an earlier read was verified', async () => {
+    const execution = await executeDurableJob({
+      engine, ownerId: 'instance_lifecycle',
+      admission: {
+        entryPoint: 'test', source: 'test', sessionId: 'known-failure', instanceId: 'instance_lifecycle',
+        idempotencyNamespace: 'lifecycle', idempotencyKey: 'known-failure', goal: 'Read source and perform approved work',
+      },
+      execute: async (handle) => {
+        for (const state of ['verified', 'failed'] as const) {
+          const claim = engine.proof.createClaim({
+            jobId: handle.jobId, attemptId: handle.attemptId, generation: handle.generation,
+            category: 'contract', required: true, statement: state === 'verified' ? 'Source was read' : 'Required action was authorized',
+          });
+          const evidence = engine.proof.recordEvidence({
+            ...handle, source: state === 'verified' ? 'filesystem.read' : 'effect.approval_denied',
+            producer: 'test', observedAt: Date.now(), coverage: 'full', verificationResult: state,
+            payload: { state },
+          });
+          engine.proof.checkClaim({ claimId: claim.claimId, attemptId: handle.attemptId,
+            generation: handle.generation, evidenceIds: [evidence.evidenceId], state });
+        }
+        return null;
+      },
+      finalize: () => ({ status: 'failed', outcome: 'verification_failed', finishReason: 'stop' }),
+    });
+    expect(engine.proof.getVerdict(execution.jobId)?.verdict).toBe('partially_verified');
+    expect(engine.getJob(execution.jobId)).toMatchObject({ status: 'failed', activeAttemptId: null });
+    expect(engine.getAttempt(execution.attemptId)?.status).toBe('failed');
+  });
+
   it('creates, leases, starts, executes, and finalizes one Job and Attempt', async () => {
     let identityDuringWork: ReturnType<typeof currentJobExecutionContext>;
     const execution = await executeDurableJob({

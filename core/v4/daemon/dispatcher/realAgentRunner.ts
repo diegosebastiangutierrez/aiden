@@ -94,6 +94,7 @@ import {
   DurableJobHostDetachedError,
   executeDurableJob,
   type DurableJobHandle,
+  type DurableJobDisposition,
   type DurableJobLifecycleScope,
 } from '../jobLifecycle';
 import { createAutomationApprovalContinuationAuthority } from '../../automation/approvalContinuation';
@@ -913,7 +914,7 @@ function childEvidenceHandles(evidence: unknown): unknown[] {
 function recordRequiredChildResult(
   engine: JobEngine,
   handle: DurableJobHandle,
-  finalization: NonNullable<DaemonAgentResult['finalization']>,
+  finalization: DurableJobDisposition,
 ): void {
   if (!engine.getJob(handle.jobId)?.automationOccurrenceId) return;
   const contract = engine.getChildContract(handle.jobId);
@@ -1355,12 +1356,12 @@ async function invokeDurableDaemon(
           finishReason: result.finishReason,
           evidence: { error: result.error ?? null },
         };
-        recordRequiredChildResult(opts.jobEngine, handle, initial);
         const reconciled = reconcileRequiredChildren(opts.jobEngine, handle, { ...result, finalization: initial });
         Object.assign(result, reconciled);
         projectedResult = reconciled;
         return reconciled.finalization!;
       },
+      beforeSettlement: (disposition, handle) => recordRequiredChildResult(opts.jobEngine, handle, disposition),
     });
     if (activeHandle && opts.artifactStore && artifactCandidates.length > 0) {
       registerArtifacts(
