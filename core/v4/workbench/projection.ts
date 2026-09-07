@@ -111,11 +111,17 @@ const TERMINAL_JOBS = new Set([
   'completed_unverified', 'verification_failed', 'abandoned',
 ]);
 
+function isReconciledDenial(job: JobRecord): boolean {
+  return job.status === 'failed' && job.terminalAt !== null
+    && job.terminalOutcome === 'approval_denied' && job.finishReason === 'required_action_denied';
+}
+
 export function projectWorkbenchStatus(
   job: JobRecord,
   verdict: JobVerdictRecord | null,
   hasRequiredClaims = false,
 ): WorkbenchProjectionStatus {
+  if (isReconciledDenial(job)) return 'failed';
   if (verdict?.verdict === 'verified') return 'verified';
   if (verdict?.verdict === 'partially_verified') return 'partially_verified';
   if (verdict?.verdict === 'failed') return 'failed';
@@ -270,6 +276,9 @@ function failureSummary(
   verdict: JobVerdictRecord | null,
   timeline: JobEventRecord[],
 ): string {
+  if (isReconciledDenial(job)) {
+    return 'Required action was denied before execution. Historical Evidence was not recorded.';
+  }
   if (!['failed', 'unknown', 'blocked'].includes(status)) {
     return verdict?.verdict ?? job.terminalOutcome ?? status;
   }

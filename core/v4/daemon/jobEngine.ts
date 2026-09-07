@@ -530,6 +530,7 @@ export interface JobEngine {
   }): TransitionResult;
   listEffectReconciliations(effectId: string): EffectReconciliationRecord[];
   listEffectsRequiringReconciliation(jobId: string): EffectForReconciliation[];
+  reconcileHistoricalDeniedActions(command: { producer: string; now?: number }): number;
   recoverExpiredAttempts(command: {
     now?: number;
     instanceId: string;
@@ -2614,6 +2615,88 @@ export function createJobEngine(opts: CreateJobEngineOptions): JobEngine {
     return { applied: true, effectId: effect.key };
   }).immediate;
 
+  const reconcileHistoricalDeniedActionsTx = db.transaction((command: {
+    producer: string; now?: number;
+  }): number => {
+    const now = command.now ?? Date.now();
+    const candidates = db.prepare(`SELECT t.id FROM tasks t JOIN runs r ON r.attempt_id=t.active_attempt_id
+      JOIN automation_occurrences o ON o.job_id=t.id AND o.attempt_id=r.attempt_id
+        AND o.occurrence_id=t.automation_occurrence_id AND o.automation_id=t.automation_id
+      WHERE t.status='unknown' AND t.terminal_at IS NULL AND r.status='unknown' AND r.ended_at IS NOT NULL
+        AND o.state='unknown'
+      ORDER BY t.created_at,t.id LIMIT 100`).all() as Array<{ id: string }>;
+    let settled = 0;
+    for (const candidate of candidates) {
+      const job = getJobRow(candidate.id)!;
+      const attempt = getAttemptRow(job.active_attempt_id!)!;
+      // A terminal Attempt alone does not prove an external operation stopped.
+      // Limit this recovery to old local file-only occurrences with no child,
+      // Worker, external session, live lease, or other unfinished operation.
+      if (!attempt.fence_token || job.parent_task_id !== null
+        || db.prepare('SELECT 1 FROM job_evidence WHERE job_id=? LIMIT 1').get(job.id)
+        || db.prepare('SELECT 1 FROM runs WHERE task_id=? AND attempt_id<>? LIMIT 1').get(job.id, attempt.attempt_id)
+        || db.prepare(`SELECT 1 FROM runs WHERE task_id=? AND
+          (status NOT IN ('succeeded','completed','failed','cancelled','timed_out','crashed','unknown','interrupted')
+          OR lease_id IS NOT NULL OR lease_owner IS NOT NULL OR lease_expires_at IS NOT NULL) LIMIT 1`).get(job.id)
+        || db.prepare('SELECT 1 FROM child_job_contracts WHERE child_job_id=? OR parent_job_id=? LIMIT 1').get(job.id, job.id)
+        || db.prepare('SELECT 1 FROM worker_assignments WHERE child_job_id=? OR parent_job_id=? LIMIT 1').get(job.id, job.id)
+        || db.prepare('SELECT 1 FROM external_coding_workspace_leases WHERE child_job_id=? LIMIT 1').get(job.id)
+        || db.prepare(`SELECT 1 FROM tool_calls WHERE job_id=? AND
+          (tool_name NOT IN ('file_read','file_write','file_patch','file_move','file_delete')
+          OR (mutates=0 AND state NOT IN ('completed','failed','cancelled'))
+          OR (mutates=1 AND (state<>'prepared' OR started_at IS NOT NULL OR ended_at IS NOT NULL))) LIMIT 1`).get(job.id)) continue;
+
+      const denied = db.prepare(`SELECT e.key,tc.tool_call_id,a.approval_id,a.decided_at
+        FROM side_effect_ledger e JOIN tool_calls tc ON tc.side_effect_id=e.key AND tc.tool_call_id=e.tool_call_id
+        JOIN approvals a ON a.approval_id=e.approval_id AND a.effect_id=e.key AND a.tool_call_id=tc.tool_call_id
+        WHERE e.job_id=? AND e.attempt_id=? AND e.generation=?
+          AND tc.job_id=e.job_id AND tc.attempt_id=e.attempt_id AND tc.generation=e.generation AND tc.mutates=1
+          AND a.job_id=e.job_id AND a.attempt_id=e.attempt_id AND a.generation=e.generation
+          AND a.state='denied' AND a.decision='denied' AND a.decided_at IS NOT NULL
+          AND a.executed_at IS NULL AND a.invalidated_at IS NULL
+          AND a.action_digest=e.action_digest AND a.fence_token_digest=?
+          AND e.approval_state='denied' AND e.effect_state='requested' AND e.confirmed_at IS NULL
+          AND e.reconciliation_required=0`).all(job.id, attempt.attempt_id, attempt.generation,
+            createHash('sha256').update(attempt.fence_token).digest('hex')) as Array<{
+              key: string; tool_call_id: string; approval_id: string; decided_at: number;
+            }>;
+      const effects = db.prepare('SELECT COUNT(*) AS n FROM side_effect_ledger WHERE job_id=?').get(job.id) as { n: number };
+      const mutations = db.prepare('SELECT COUNT(*) AS n FROM tool_calls WHERE job_id=? AND mutates=1').get(job.id) as { n: number };
+      if (denied.length === 0 || denied.length !== effects.n || denied.length !== mutations.n) continue;
+      const required = denied.some((effect) => db.prepare(`SELECT 1 FROM repository_change_intents i
+        JOIN job_claims c ON c.claim_id=i.claim_id AND c.job_id=i.job_id AND c.attempt_id=i.attempt_id AND c.generation=i.generation
+        WHERE i.job_id=? AND i.attempt_id=? AND i.generation=? AND i.fence_token=?
+          AND i.tool_call_id=? AND i.effect_id=? AND i.state='planned'
+          AND c.required=1 AND c.state='unverified' LIMIT 1`)
+        .get(job.id, attempt.attempt_id, attempt.generation, attempt.fence_token, effect.tool_call_id, effect.key));
+      if (!required) continue;
+
+      for (const effect of denied) {
+        recordEffectReconciliationTx({ effectId: effect.key, expectedJobStateVersion: job.state_version,
+          outcome: 'did_not_occur', confidence: 'high', retryRecommendation: 'do_not_retry', humanResolutionRequired: false,
+          evidence: { basis: 'durable_denial_before_execution', approvalId: effect.approval_id,
+            decidedAt: effect.decided_at, toolCallId: effect.tool_call_id, historicalEvidenceRecorded: false },
+          producer: command.producer, idempotencyKey: `denied-recovery:${effect.key}`, now });
+        db.prepare("UPDATE tool_calls SET state='failed',ended_at=?,updated_at=? WHERE tool_call_id=? AND state='prepared' AND started_at IS NULL")
+          .run(now, now, effect.tool_call_id);
+      }
+      const stored = db.prepare('SELECT evidence FROM tasks WHERE id=?').get(job.id) as { evidence: string };
+      const result = finalizeJobTx({ jobId: job.id, attemptId: attempt.attempt_id, generation: attempt.generation,
+        fenceToken: attempt.fence_token, expectedStateVersion: job.state_version, status: 'failed', outcome: 'approval_denied',
+        finishReason: 'required_action_denied', evidence: parseRecord(stored.evidence),
+        producer: command.producer, eventIdempotencyKey: `denied-recovery:${attempt.attempt_id}`, now });
+      if (!result.applied) throw new Error('Denied action recovery lost Job authority');
+      // Preserve immutable Attempt events, claims and Proof. This is a new
+      // recovery conclusion, not retroactively created execution Evidence.
+      db.prepare(`UPDATE automation_occurrences SET state='failed',updated_at=?,terminal_at=COALESCE(terminal_at,?),
+        detail_json=json_set(detail_json,'$.reason','Required action denied; historical Evidence was not recorded.')
+        WHERE job_id=? AND attempt_id=? AND state='unknown'`).run(now, now, job.id, attempt.attempt_id);
+      graph.settle(job.id, 'failed', command.producer, `denied-recovery-graph:${attempt.attempt_id}`, now);
+      settled += 1;
+    }
+    return settled;
+  }).immediate;
+
   const recoverExpiredAttemptTx = db.transaction((command: {
     attemptId: string;
     now: number;
@@ -3401,6 +3484,7 @@ export function createJobEngine(opts: CreateJobEngineOptions): JobEngine {
       }
       return decisions;
     },
+    reconcileHistoricalDeniedActions: reconcileHistoricalDeniedActionsTx,
   };
   codingPromotions = createExternalCodingPromotionAuthority({ db, engine });
   continuity = createContinuityCheckpointAuthority({ db, engine });

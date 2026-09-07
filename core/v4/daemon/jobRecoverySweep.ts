@@ -96,7 +96,7 @@ export function sweepDurableJobRecovery(input: {
     needsUser: decisions.filter((item) => item.decision === 'ask_user').length,
     deadLettered: decisions.filter((item) => item.decision === 'dead_letter').length,
     enqueued: 0,
-    reconciled: 0,
+    reconciled: input.jobEngine.reconcileHistoricalDeniedActions({ producer: input.producer, now: input.now }),
   };
   const workerSweep = sweepWorkerProviderReconciliation({
     engine: input.jobEngine,

@@ -3112,6 +3112,7 @@ function AutomationsView() {
                     <strong>{occurrence.state.replaceAll('_', ' ')}</strong>
                     <span>{new Date(occurrence.triggeredAt).toLocaleString(customerLocale.locale)}</span>
                     <span>{presentAutomationOccurrence({ state: occurrence.state, delivery: occurrence.detail.delivery ?? null }).label}</span>
+                    {occurrence.detail.reason && <span>{occurrence.detail.reason}</span>}
                     {occurrence.execution && (
                       <div className="automation-child-execution">
                         <strong>{occurrence.execution.title}</strong>

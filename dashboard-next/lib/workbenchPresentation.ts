@@ -91,7 +91,8 @@ export function presentResult(input: {
   evidenceCount?: number;
   kind?: 'coding' | 'browser' | 'apps' | 'artifact' | 'failure' | 'recovery';
 }): ResultPresentation {
-  const authoritativeStatus = (input.verdict || input.status).trim().toLowerCase();
+  const authoritativeStatus = (input.status === 'failed' && input.verdict === 'unknown'
+    ? input.status : input.verdict || input.status).trim().toLowerCase();
   const state = presentRuntimeStatus(authoritativeStatus);
   const evidenceCount = Math.max(0, input.evidenceCount ?? 0);
   const rawSummary = input.summary?.trim() || '';
