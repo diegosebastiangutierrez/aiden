@@ -67,6 +67,14 @@
   "workspaces": [
     "packages/*"
   ],
+  "bundleDependencies": [
+    "@modelcontextprotocol/sdk",
+    "@slack/bolt",
+    "epub2",
+    "express",
+    "imap-simple",
+    "twilio"
+  ],
   "preferGlobal": true,
   "type": "commonjs",
   "scripts": {
