@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import * as client from '../../../dashboard-next/lib/aidenClient';
 import { createRetryIdempotencyKey, retryTask } from '../../../dashboard-next/lib/aidenClient';
 import { presentResult, presentRuntimeStatus } from '../../../dashboard-next/lib/workbenchPresentation';
 
@@ -18,6 +19,35 @@ const response = (body: unknown, status = 202): Response => ({
 
 describe('Workbench retry surface', () => {
   afterEach(() => vi.unstubAllGlobals());
+
+  it.each(['session', 'default'] as const)('invalidates terminal Retry choices after an acknowledged %s model change', async (scope) => {
+    const notify = vi.fn();
+    const unsubscribe = client.subscribeModelSelection(notify);
+    let complete!: (value: Response) => void;
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { complete = resolve; })));
+    try {
+      const binding = { sessionId: 'selected-chat', providerId: 'test-provider', modelId: 'selected-model' };
+      const pending = scope === 'session' ? client.setSessionModel(binding) : client.setDefaultModel(binding);
+      expect(notify).not.toHaveBeenCalled();
+      complete(response(binding));
+      await pending;
+      expect(notify).toHaveBeenCalledTimes(1);
+      unsubscribe();
+      vi.stubGlobal('fetch', vi.fn(async () => response(binding)));
+      await client.setSessionModel(binding);
+      expect(notify).toHaveBeenCalledTimes(1);
+    } finally { unsubscribe(); }
+  });
+
+  it('does not invalidate model truth when the selected model is rejected', async () => {
+    const notify = vi.fn();
+    const unsubscribe = client.subscribeModelSelection(notify);
+    try {
+      vi.stubGlobal('fetch', vi.fn(async () => response({ error: 'model unavailable' }, 400)));
+      await expect(client.setSessionModel({ sessionId: 'chat', providerId: 'unavailable', modelId: 'missing' })).rejects.toThrow();
+      expect(notify).not.toHaveBeenCalled();
+    } finally { unsubscribe(); }
+  });
 
   it('presents a cancelled terminal Job as stopped safely with Retry', () => {
     expect(presentRuntimeStatus('cancelled')).toMatchObject({
@@ -79,6 +109,7 @@ describe('Workbench retry surface', () => {
     expect(page).toContain('Retrying as new work…');
     expect(page).toContain('Retry with original model');
     expect(page).toContain('Retry with selected model');
+    expect(page.includes('aiden.subscribeModelSelection')).toBe(true);
     expect(page).toContain('projection.modelBinding');
     expect(page).toContain('modelOverride');
     expect(page).toContain('retryInFlightRef');
@@ -87,5 +118,13 @@ describe('Workbench retry surface', () => {
     expect(page).toContain('onRetried?.(next.jobId, next.attemptId, next.runId, projection.identity.sessionId ?? null)');
     expect(page).toContain('retry:${projection.identity.jobId}:original');
     expect(page).toContain('retry:${projection.identity.jobId}:selected:');
+  });
+
+  it('applies current-chat model changes to the selected durable conversation rather than the browser session', () => {
+    const page = fs.readFileSync(path.resolve('dashboard-next/app/page.tsx'), 'utf8');
+    const drawer = page.slice(page.indexOf('function SettingsDrawer()'), page.indexOf('function SettingsDrawer()') + 22_000);
+    expect(drawer.includes('selectedContext.sessionId || currentConvId || sessionId')).toBe(true);
+    expect(drawer.includes('<AIModelsSettings sessionId={modelSessionId}')).toBe(true);
+    expect(drawer.includes('<AIModelsSettings sessionId={sessionId}')).toBe(false);
   });
 });

@@ -163,6 +163,7 @@ function ActivityView({ logs, jobId, attemptId, runId, onContinued, onRetried }:
   const retryInFlightRef = useRef(false)
   const retryRequestRef = useRef<{ scope: string; key: string } | null>(null)
   const [projectionRevision, setProjectionRevision] = useState(0)
+  useEffect(() => aiden.subscribeModelSelection(() => setProjectionRevision((revision) => revision + 1)), [])
   const [presenceReasons, setPresenceReasons] = useState<Record<string, string>>({})
   const [presenceProposals, setPresenceProposals] = useState<Record<string, aiden.WorkbenchProposedJob>>({})
   useEffect(() => {
@@ -6301,7 +6302,9 @@ function SettingsDrawer() {
     activeProvider, activeModel, runtimeConnection, executionAvailable,
     executionQueue, workbenchReadOnly, capabilities, startNewChat, clearCurrentView,
     appearance, setAppearance, density, setDensity, setMainView, openWorkbenchDestination, sessionId,
+    selectedContext, currentConvId,
   } = useDevOS()
+  const modelSessionId = selectedContext.sessionId || currentConvId || sessionId
   const [codingHealth, setCodingHealth] = useState<aiden.ExternalCodingHealth | null>(null)
   const [codingHealthError, setCodingHealthError] = useState<string | null>(null)
   const [codingSaving, setCodingSaving] = useState(false)
@@ -6459,7 +6462,7 @@ function SettingsDrawer() {
 
           {settingsTab === 'model' && (
             <SettingsSection title="AI & Models">
-              <AIModelsSettings sessionId={sessionId} />
+              <AIModelsSettings sessionId={modelSessionId} />
             </SettingsSection>
           )}
 

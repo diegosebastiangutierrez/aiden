@@ -1385,12 +1385,24 @@ export function refreshProviderModels(providerId: string): Promise<WorkbenchProv
   });
 }
 
-export function setSessionModel(input: { sessionId: string; providerId: string; modelId: string }): Promise<{ sessionId: string; providerId: string; modelId: string }> {
-  return managementRequest('/api/providers/model/session', { method: 'POST', body: JSON.stringify(input) });
+const modelSelectionListeners = new Set<() => void>();
+
+/** Invalidate projections only after the backend acknowledges a model selection. */
+export function subscribeModelSelection(listener: () => void): () => void {
+  modelSelectionListeners.add(listener);
+  return () => { modelSelectionListeners.delete(listener); };
 }
 
-export function setDefaultModel(input: { providerId: string; modelId: string }): Promise<{ providerId: string; modelId: string }> {
-  return managementRequest('/api/providers/model/default', { method: 'POST', body: JSON.stringify(input) });
+export async function setSessionModel(input: { sessionId: string; providerId: string; modelId: string }): Promise<{ sessionId: string; providerId: string; modelId: string }> {
+  const result = await managementRequest<typeof input>('/api/providers/model/session', { method: 'POST', body: JSON.stringify(input) });
+  modelSelectionListeners.forEach((listener) => listener());
+  return result;
+}
+
+export async function setDefaultModel(input: { providerId: string; modelId: string }): Promise<{ providerId: string; modelId: string }> {
+  const result = await managementRequest<typeof input>('/api/providers/model/default', { method: 'POST', body: JSON.stringify(input) });
+  modelSelectionListeners.forEach((listener) => listener());
+  return result;
 }
 
 export function startProviderOAuth(providerId: string): Promise<WorkbenchAuthSession> {
