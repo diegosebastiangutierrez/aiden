@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { retryTask } from '../../../dashboard-next/lib/aidenClient';
+import { createRetryIdempotencyKey, retryTask } from '../../../dashboard-next/lib/aidenClient';
 import { presentResult, presentRuntimeStatus } from '../../../dashboard-next/lib/workbenchPresentation';
 
 const response = (body: unknown, status = 202): Response => ({
@@ -46,22 +46,46 @@ describe('Workbench retry surface', () => {
     }));
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(retryTask(21, 'retry:job_old')).resolves.toEqual({
+    await expect(retryTask(21, 'retry:job_old', {
+      provider: 'chatgpt-plus', model: 'gpt-5.6-luna',
+    })).resolves.toEqual({
       accepted: true, duplicate: false, originalJobId: 'job_old', jobId: 'job_new',
       attemptId: 'attempt_new', runId: 22, generation: 1, triggerEventId: 44,
     });
     expect(fetchMock).toHaveBeenCalledWith('/api/tasks/21/retry', expect.objectContaining({
       method: 'POST',
-      body: JSON.stringify({ idempotencyKey: 'retry:job_old' }),
+      body: JSON.stringify({
+        idempotencyKey: 'retry:job_old',
+        modelOverride: { provider: 'chatgpt-plus', model: 'gpt-5.6-luna' },
+      }),
     }));
   });
 
-  it('shows retry progress, selects the new Job, and labels lineage without raw IDs', () => {
+  it('gives each deliberate Retry action a fresh request identity', () => {
+    const first = createRetryIdempotencyKey('job_old', 'selected', {
+      provider: 'chatgpt-plus', model: 'gpt-5.6-luna',
+    });
+    const second = createRetryIdempotencyKey('job_old', 'selected', {
+      provider: 'chatgpt-plus', model: 'gpt-5.6-luna',
+    });
+
+    expect(first).toMatch(/^retry:job_old:selected:chatgpt-plus:gpt-5\.6-luna:/);
+    expect(second).toMatch(/^retry:job_old:selected:chatgpt-plus:gpt-5\.6-luna:/);
+    expect(second).not.toBe(first);
+  });
+
+  it('shows explicit original and selected model choices before starting new Retry work', () => {
     const page = fs.readFileSync(path.resolve('dashboard-next/app/page.tsx'), 'utf8');
     expect(page).toContain('Retrying as new work…');
-    expect(page).toContain('aiden.retryTask(projection.identity.runId, key)');
+    expect(page).toContain('Retry with original model');
+    expect(page).toContain('Retry with selected model');
+    expect(page).toContain('projection.modelBinding');
+    expect(page).toContain('modelOverride');
+    expect(page).toContain('retryInFlightRef');
+    expect(page).toContain('createRetryIdempotencyKey');
     expect(page).toContain('Retried from previous run');
     expect(page).toContain('onRetried?.(next.jobId, next.attemptId, next.runId, projection.identity.sessionId ?? null)');
-    expect(page).toContain("const key = `retry:${projection.identity.jobId}`");
+    expect(page).toContain('retry:${projection.identity.jobId}:original');
+    expect(page).toContain('retry:${projection.identity.jobId}:selected:');
   });
 });

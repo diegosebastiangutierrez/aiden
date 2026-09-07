@@ -137,11 +137,38 @@ describe('legacy schedule compatibility import', () => {
       .not.toEqual(expect.arrayContaining([expect.objectContaining({ name: 'removed_at' })]));
 
     expect(runMigrations(legacy)).toEqual({ from: 54, to: LATEST_SCHEMA_VERSION });
-    expect(LATEST_SCHEMA_VERSION).toBe(56);
+    expect(LATEST_SCHEMA_VERSION).toBeGreaterThanOrEqual(56);
     expect(legacy.prepare('PRAGMA table_info(automation_definitions)').all()).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'removed_at' }),
       expect.objectContaining({ name: 'removed_by' }),
     ]));
     legacy.close();
+  });
+
+  it('repairs a latest-version database whose automation tombstone migration was skipped', () => {
+    const stale = new Database(':memory:');
+    for (const migration of MIGRATIONS_FOR_TESTS.filter((entry) => entry.version <= 54)) {
+      stale.transaction(() => {
+        if (migration.apply) migration.apply(stale);
+        else stale.exec(migration.sql ?? '');
+        stale.prepare('INSERT OR REPLACE INTO schema_version (id,version,applied_at) VALUES (1,?,?)')
+          .run(migration.version, 1);
+      }).immediate();
+    }
+    const retryLineage = MIGRATIONS_FOR_TESTS.find((entry) => entry.version === 56)!;
+    stale.transaction(() => {
+      retryLineage.apply!(stale);
+      stale.prepare('INSERT OR REPLACE INTO schema_version (id,version,applied_at) VALUES (1,56,?)').run(1);
+    }).immediate();
+    expect(stale.prepare('PRAGMA table_info(automation_definitions)').all())
+      .not.toEqual(expect.arrayContaining([expect.objectContaining({ name: 'removed_at' })]));
+
+    expect(LATEST_SCHEMA_VERSION).toBeGreaterThan(56);
+    expect(runMigrations(stale)).toEqual({ from: 56, to: LATEST_SCHEMA_VERSION });
+    expect(stale.prepare('PRAGMA table_info(automation_definitions)').all()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'removed_at' }),
+      expect.objectContaining({ name: 'removed_by' }),
+    ]));
+    stale.close();
   });
 });

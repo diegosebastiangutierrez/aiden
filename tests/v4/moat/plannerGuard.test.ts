@@ -63,6 +63,7 @@ const FULL_REGISTRY = new MockRegistry([
   handler('lookup_tool_schema', 'meta'),
   handler('session_search', 'sessions'),
   handler('process_spawn', 'process'),
+  handler('process_wait', 'process'),
   // v4.1.4-media: media-control bundle lives in toolset 'system'.
   // Without the media plannerGuard rule "list media sessions"
   // matched only the 'sessions' rule and filtered these out.
@@ -92,13 +93,58 @@ describe('PlannerGuard — off mode', () => {
     const decision = await guard.decide('anything', []);
     // v4.1.4-media: FULL_REGISTRY grew by 4 (media_sessions,
     // media_transport, media_key, now_playing).
-    expect(decision.selectedTools).toHaveLength(20);
+    expect(decision.selectedTools).toHaveLength(21);
     expect(decision.excludedTools).toEqual([]);
     expect(decision.reason).toBe('no_filter');
+  });
+
+  it('still applies deterministic lifecycle ownership for supervised local work', async () => {
+    const guard = new PlannerGuard(FULL_REGISTRY, 'off');
+    const decision = await guard.decide('Run a local operation for two minutes and wait for it.', []);
+    expect(decision.selectedTools).toEqual(expect.arrayContaining(['process_spawn', 'process_wait', 'file_read']));
+    expect(decision.selectedTools).not.toContain('shell_exec');
   });
 });
 
 describe('PlannerGuard — rule_based', () => {
+  it('routes bounded local work that must stay active through the supervised process toolset', async () => {
+    const guard = new PlannerGuard(FULL_REGISTRY, 'rule_based');
+    const decision = await guard.decide('Run a harmless local task for 90 seconds and wait for it.', []);
+    expect(decision.selectedTools).toContain('process_spawn');
+    expect(decision.selectedTools).toContain('process_wait');
+    expect(decision.selectedTools).toContain('file_read');
+    expect(decision.selectedTools).not.toContain('shell_exec');
+    expect(decision.selectedTools).not.toContain('execute_code');
+  });
+
+  it('does not let a previously activated terminal toolset bypass lifecycle ownership', async () => {
+    const guard = new PlannerGuard(FULL_REGISTRY, 'rule_based');
+    guard.activateToolsets(['terminal', 'execute']);
+    const decision = await guard.decide('Run a harmless local task for 90 seconds and wait for it.', []);
+    expect(decision.selectedTools).toEqual(expect.arrayContaining(['process_spawn', 'process_wait']));
+    expect(decision.selectedTools).not.toContain('shell_exec');
+    expect(decision.selectedTools).not.toContain('execute_code');
+  });
+
+  it('recognizes a bounded-duration adjective without relying on a command name', async () => {
+    const guard = new PlannerGuard(FULL_REGISTRY, 'rule_based');
+    const decision = await guard.decide('Start a harmless local 30-second operation.', []);
+    expect(decision.selectedTools).toEqual(expect.arrayContaining(['process_spawn', 'process_wait', 'file_read']));
+    expect(decision.selectedTools).not.toContain('shell_exec');
+  });
+
+  it('keeps supervised process routing available after a fresh guard instance', async () => {
+    const first = await new PlannerGuard(FULL_REGISTRY, 'rule_based')
+      .decide('Start a harmless local operation that remains active while I wait.', []);
+    const restarted = await new PlannerGuard(FULL_REGISTRY, 'rule_based')
+      .decide('Run a local task for two minutes and wait for completion.', []);
+    expect(first.selectedTools).toContain('process_spawn');
+    expect(restarted.selectedTools).toContain('process_spawn');
+    expect(restarted.selectedTools).toContain('process_wait');
+    expect(restarted.selectedTools).toContain('file_read');
+    expect(restarted.selectedTools).not.toContain('shell_exec');
+  });
+
   it('2. file keywords select files toolset (+ core)', async () => {
     const guard = new PlannerGuard(FULL_REGISTRY, 'rule_based');
     const decision = await guard.decide('please read this file', []);
@@ -214,6 +260,21 @@ describe('PlannerGuard — rule_based', () => {
     for (const n of decision.selectedTools) {
       expect(excludedSet.has(n)).toBe(false);
     }
+  });
+});
+
+describe('PlannerGuard — supervised lifecycle precedence', () => {
+  it('does not let an auxiliary classifier replace the structured lifecycle owner', async () => {
+    const adapter = new FakeAdapter(() => ({
+      content: '["shell_exec"]',
+      toolCalls: [],
+      finishReason: 'stop',
+      usage: { inputTokens: 1, outputTokens: 1 },
+    }));
+    const guard = new PlannerGuard(FULL_REGISTRY, 'llm_classified', adapter);
+    const decision = await guard.decide('Start a harmless local operation that remains active while I wait.', []);
+    expect(decision.selectedTools).toEqual(expect.arrayContaining(['process_spawn', 'process_wait', 'file_read']));
+    expect(decision.selectedTools).not.toContain('shell_exec');
   });
 });
 

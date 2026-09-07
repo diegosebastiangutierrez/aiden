@@ -503,24 +503,30 @@ export class SessionStore {
           ORDER BY id DESC LIMIT 1`,
       ).get(sessionId) as MessageRow | undefined;
       const virtualRetryAnchor = anchorTurnNumber !== turnNumber;
-      const anchorUser = virtualRetryAnchor
+      let anchorUser = virtualRetryAnchor
         ? this.db.prepare(
             `SELECT * FROM messages
               WHERE session_id = ? AND role = 'user' AND turn_number = ?
               ORDER BY id DESC LIMIT 1`,
           ).get(sessionId, anchorTurnNumber) as MessageRow | undefined
-        : latestUser;
+        : latestUser?.turn_number === turnNumber ? latestUser : undefined;
       if (virtualRetryAnchor && !anchorUser) {
         throw new Error('retry checkpoint durable user anchor was not found');
       }
-      if (!virtualRetryAnchor && latestUser && latestUser.turn_number !== turnNumber) {
-        throw new Error('turn checkpoint is not the latest durable user turn');
+      if (!virtualRetryAnchor && !anchorUser) {
+        if (latestUser?.turn_number !== null && latestUser?.turn_number !== undefined
+          && latestUser.turn_number > turnNumber) {
+          throw new Error('turn checkpoint is not the latest durable user turn');
+        }
+        this.appendMessage(sessionId, { ...first, turnNumber });
+        anchorUser = this.db.prepare(
+          `SELECT * FROM messages
+            WHERE session_id = ? AND role = 'user' AND turn_number = ?
+            ORDER BY id DESC LIMIT 1`,
+        ).get(sessionId, turnNumber) as MessageRow | undefined;
       }
       if (anchorUser && anchorUser.content !== first.content) {
         throw new Error('turn checkpoint user message does not match durable history');
-      }
-      if (!virtualRetryAnchor && !latestUser) {
-        this.appendMessage(sessionId, { ...first, turnNumber });
       }
 
       this.db.prepare(

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildEditionAuthority } from '../../../core/v4/commercial/edition';
 import { runMigrations } from '../../../core/v4/daemon/db/migrations';
 import { createTriggerBus } from '../../../core/v4/daemon/triggerBus';
+import { createJobEngine } from '../../../core/v4/daemon/jobEngine';
 import { createWorkbenchAutomationPort } from '../../../core/v4/workbench/automationPort';
 
 describe('Workbench reliable automation port', () => {
@@ -84,6 +85,120 @@ describe('Workbench reliable automation port', () => {
     expect(revised.revisionId).not.toBe(created.revisionId);
     expect(revised.action).toEqual({ kind: 'prompt', prompt: 'Updated prompt' });
     expect(db.prepare('SELECT COUNT(*) AS count FROM automation_revisions WHERE automation_id = ?').get(created.automationId)).toEqual({ count: 2 });
+  });
+
+  it('limits automation history and definitions to the authorized owner and workspace', () => {
+    const triggerBus = createTriggerBus({ db });
+    const first = createWorkbenchAutomationPort({
+      db, triggerBus, edition: buildEditionAuthority('pro'),
+      ownerId: 'owner-a', workspaceId: 'workspace-a', workspaceRoot: process.cwd(),
+    });
+    const second = createWorkbenchAutomationPort({
+      db, triggerBus, edition: buildEditionAuthority('pro'),
+      ownerId: 'owner-b', workspaceId: 'workspace-b', workspaceRoot: process.cwd(),
+    });
+    const spec = {
+      action: { kind: 'prompt' as const, prompt: 'Summarize' }, trigger: { kind: 'manual' as const },
+      policies: { misfire: { kind: 'skip' as const }, overlap: 'skip' as const, retry: { maxAttempts: 1 } },
+      capabilities: [] as string[], credentialRefs: [] as string[], createdBy: 'test',
+    };
+    const visible = first.create({ ...spec, name: 'Visible' });
+    const foreign = second.create({ ...spec, name: 'Foreign' });
+    db.prepare(
+      `INSERT INTO automation_occurrences (
+         occurrence_id,occurrence_key,automation_id,revision_id,trigger_kind,source_identity,
+         scheduled_for,triggered_at,state,created_at,updated_at
+       ) VALUES ('occurrence_visible','visible',?,?,'manual','visible',NULL,1000,'completed',1000,1000),
+                ('occurrence_foreign','foreign',?,?,'manual','foreign',NULL,1001,'failed',1001,1001)`,
+    ).run(visible.automationId, visible.revisionId, foreign.automationId, foreign.revisionId);
+
+    const snapshot = first.snapshot();
+    expect(snapshot.automations.map((item) => item.automationId)).toEqual([visible.automationId]);
+    expect(snapshot.history.map((item) => item.occurrenceId)).toEqual(['occurrence_visible']);
+    expect(snapshot.attention).toEqual([]);
+  });
+
+  it('projects a required child execution from durable contract Verification and Evidence', () => {
+    const now = Date.now();
+    db.prepare(`INSERT INTO daemon_instances
+      (instance_id,pid,hostname,started_at,last_heartbeat,version)
+      VALUES ('automation-history-test',1,'localhost',?,?,'4.21.0')`).run(now, now);
+    const jobs = createJobEngine({ db });
+    const parent = jobs.submitJob({
+      entryPoint: 'workbench', source: 'test', sessionId: 'parent-session',
+      instanceId: 'automation-history-test', idempotencyNamespace: 'automation-history',
+      idempotencyKey: 'parent', requestFingerprint: 'parent', goal: 'Run scheduled work',
+      workspaceId: process.cwd(),
+    });
+    const child = jobs.submitJob({
+      entryPoint: 'automation', source: 'test', sessionId: 'child-session',
+      instanceId: 'automation-history-test', idempotencyNamespace: 'automation-history',
+      idempotencyKey: 'child', requestFingerprint: 'child', goal: 'Verify repository state',
+      workspaceId: process.cwd(), parentJobId: parent.jobId, rootJobId: parent.jobId,
+      childContract: {
+        required: true, workerId: 'scheduled-worker', capabilities: ['read'],
+        allowedResources: { workspace: process.cwd() }, budget: { maxIterations: 1 },
+      },
+    });
+    const lease = jobs.claimAttempt({ attemptId: child.attemptId, ownerId: 'test', ttlMs: 30_000 });
+    if (!lease.acquired || !lease.fenceToken || lease.generation === undefined) throw new Error('claim failed');
+    jobs.transitionAttempt({
+      attemptId: child.attemptId, expectedStateVersion: 1, generation: lease.generation,
+      fenceToken: lease.fenceToken, to: 'running', eventIdempotencyKey: 'child-attempt-running', producer: 'test',
+    });
+    jobs.transitionJob({
+      jobId: child.jobId, attemptId: child.attemptId, generation: lease.generation,
+      fenceToken: lease.fenceToken, expectedStateVersion: 0, to: 'running',
+      eventIdempotencyKey: 'child-job-running', producer: 'test',
+    });
+    const evidenceHandle = {
+      tool: 'file_read', kind: 'path', value: 'package.json', verified: true, code: 'ok',
+    };
+    jobs.recordChildResult({
+      childJobId: child.jobId, attemptId: child.attemptId, generation: lease.generation,
+      fenceToken: lease.fenceToken, status: 'completed',
+      evidence: { v: 1, verdict: 'completed', handles: [evidenceHandle], failures: [] },
+      evidenceHandles: [evidenceHandle],
+      producer: 'test', idempotencyKey: 'child-result',
+    });
+    jobs.transitionAttempt({
+      attemptId: child.attemptId, expectedStateVersion: 2, generation: lease.generation,
+      fenceToken: lease.fenceToken, to: 'succeeded', eventIdempotencyKey: 'child-attempt-done', producer: 'test',
+    });
+    jobs.finalizeJob({
+      jobId: child.jobId, attemptId: child.attemptId, generation: lease.generation,
+      fenceToken: lease.fenceToken, expectedStateVersion: 1, status: 'completed',
+      outcome: 'completed', finishReason: 'done', evidence: { handles: [evidenceHandle] },
+      eventIdempotencyKey: 'child-job-done', producer: 'test',
+    });
+
+    const port = createWorkbenchAutomationPort({
+      db, triggerBus: createTriggerBus({ db }), edition: buildEditionAuthority('pro'),
+      workspaceRoot: process.cwd(), jobs,
+    });
+    const automation = port.create({
+      name: 'Verified schedule', createdBy: 'test', action: { kind: 'prompt', prompt: 'Verify state' },
+      trigger: { kind: 'manual' },
+      policies: { misfire: { kind: 'skip' }, overlap: 'skip', retry: { maxAttempts: 1 } },
+      capabilities: ['repository.read'], credentialRefs: [],
+    });
+    db.prepare(
+      `INSERT INTO automation_occurrences (
+         occurrence_id,occurrence_key,automation_id,revision_id,trigger_kind,source_identity,
+         scheduled_for,triggered_at,admitted_at,job_id,attempt_id,state,created_at,updated_at,terminal_at
+       ) VALUES ('occurrence_verified','verified',?,?,'manual','verified',NULL,?,?,?,?,'completed',?,?,?)`,
+    ).run(
+      automation.automationId, automation.revisionId, now, now,
+      child.jobId, child.attemptId, now, now, now,
+    );
+
+    expect(port.snapshot().history[0]).toMatchObject({
+      occurrenceId: 'occurrence_verified',
+      execution: {
+        title: 'Verify repository state', status: 'completed', verification: 'verified',
+        evidenceCount: 1, parentJobId: parent.jobId, required: true, cleanupState: 'settled',
+      },
+    });
   });
 
   it('reports scheduler readiness from the execution host instead of configuration alone', () => {

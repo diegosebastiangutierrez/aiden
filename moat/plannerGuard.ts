@@ -218,6 +218,19 @@ const RULES: KeywordRule[] = [
   },
 ];
 
+/**
+ * Long-lived local work must stay attached to the supervised process
+ * authority so Stop, wait, receipts, and cleanup remain truthful. This is an
+ * intent shape rather than a command-name special case: a bounded duration,
+ * an explicit wait, or a request to remain active all describe work whose
+ * lifecycle cannot be owned by a one-shot shell call.
+ */
+export function requiresSupervisedProcessIntent(message: string): boolean {
+  const localWork = /\b(local|process|operation|task|script|command|program|service)\b/iu.test(message);
+  const lifecycle = /\b(long[ -]?running|background|remain(?:s|ing)? active|keep running|wait(?:ing)? (?:for|until)|until (?:it|the .+?) (?:finishes|completes|exits)|for\s+(?:\d+|one|two|three|several)\s*(?:milliseconds?|seconds?|minutes?|hours?)|(?:\d+|one|two|three|several)[ -](?:millisecond|second|minute|hour))\b/iu.test(message);
+  return localWork && lifecycle;
+}
+
 /** Always-on tools regardless of mode. The agent needs schema lookup
  *  + skill discovery + session search to be useful even on cold turns. */
 const CORE_TOOL_NAMES = new Set<string>([
@@ -281,6 +294,12 @@ export class PlannerGuard {
       };
     }
 
+    // Lifecycle ownership is deterministic safety metadata, not a model
+    // classification. Apply it before optional/off and LLM-classified modes.
+    if (requiresSupervisedProcessIntent(userMessage)) {
+      return this.decideRuleBased(userMessage, allNames);
+    }
+
     if (this.mode === 'off') {
       return {
         selectedTools: allNames,
@@ -317,8 +336,22 @@ export class PlannerGuard {
         for (const t of rule.toolsets) matchedToolsets.add(t);
       }
     }
+    if (requiresSupervisedProcessIntent(userMessage)) {
+      matchedToolsets.add('process');
+      // The structured process contract requires an existing workspace-owned
+      // script, so the planner also needs read-only discovery tools to select
+      // an eligible target without falling back to an opaque command.
+      matchedToolsets.add('files');
+    }
     // Always include skill-activated toolsets.
     for (const t of this.activeToolsets) matchedToolsets.add(t);
+    if (requiresSupervisedProcessIntent(userMessage)) {
+      // One-shot or opaque execution cannot own a cancellable lifecycle. Apply
+      // this after skill activation so an earlier capability selection cannot
+      // reintroduce a second lifecycle owner for the current request.
+      matchedToolsets.delete('terminal');
+      matchedToolsets.delete('execute');
+    }
 
     // Phase 16g: no keyword rule matched. Pre-16g this returned only
     // CORE_TOOL_NAMES (3 tools), which broke fuzzy multi-step intents
@@ -468,4 +501,4 @@ function parseJsonArray(raw: string): string[] | null {
 }
 
 /** Exported for tests. */
-export const __test__ = { parseJsonArray, RULES, CORE_TOOL_NAMES };
+export const __test__ = { parseJsonArray, RULES, CORE_TOOL_NAMES, requiresSupervisedProcessIntent };

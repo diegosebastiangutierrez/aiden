@@ -42,7 +42,72 @@ describe('canonical Workbench projection', () => {
   it('B3 rejects a mismatched Attempt identity', () => expect(projectWorkbenchJob(fixture(), { jobId: 'job_1', attemptId: 'other' })).toBeNull());
   it('B4 orders the Attempt timeline by durable Job sequence', () => expect(projectWorkbenchJob(fixture(), { jobId: 'job_1' })?.timeline.map((e) => e.jobSequence)).toEqual([1, 2]));
   it('B5 exposes the canonical event cursor', () => expect(projectWorkbenchJob(fixture(), { jobId: 'job_1' })?.eventCursor).toBe(2));
-  it('B6 projects Worker children without making them success authorities', () => expect(projectWorkbenchJob(fixture(), { jobId: 'job_1' })?.workers).toEqual([{ childJobId: 'child_1' }]));
+  it('B6 projects required child execution, Verification, Evidence, and relationship truth', () => {
+    const reader = fixture();
+    const parentGetJob = reader.getJob;
+    const parentGetAttempt = reader.getAttempt;
+    reader.listChildContracts = () => [{
+      childJobId: 'child_1', parentJobId: 'job_1', required: true,
+      workerId: 'automation-run', capabilities: [], allowedResources: {}, budget: {},
+      resultAttemptId: 'attempt_child', resultGeneration: 1, resultStatus: 'completed',
+      evidence: { summary: 'child completed' }, evidenceHandles: ['evidence_child'],
+    }];
+    reader.getJob = (id) => id === 'child_1' ? ({
+      id: 'child_1', status: 'completed', stateVersion: 2, activeAttemptId: null,
+      rootJobId: 'job_1', parentJobId: 'job_1', sessionId: 'automation:child',
+      goal: 'Generate the scheduled report', entryPoint: 'automation', source: 'automation',
+      workspaceId: 'workspace_1', terminalAt: 30, terminalOutcome: 'verified',
+      finishReason: 'stop', nextEventSequence: 3,
+    } as any) : parentGetJob(id);
+    reader.getAttempt = (id) => id === 'attempt_child' ? ({
+      rowId: 10, id: 'attempt_child', jobId: 'child_1', status: 'succeeded', attemptNumber: 1,
+      generation: 1, stateVersion: 3, leaseId: null, leaseOwner: null, leaseExpiresAt: null,
+      leaseHeartbeatAt: null, fenceToken: null, recoveryOfAttemptId: null,
+    } as any) : parentGetAttempt(id);
+    reader.listEvents = (jobId) => jobId === 'child_1' ? [
+      { eventId: 11, jobSequence: 1, jobId: 'child_1', attemptId: 'attempt_child', type: 'job.admitted', payload: null, producer: 'test', generation: 1, idempotencyKey: 'child-1', createdAt: 10 },
+    ] : fixture().listEvents(jobId);
+    const parentProof = reader.proof!;
+    parentProof.getVerdict = (jobId) => jobId === 'child_1'
+      ? ({ jobId, attemptId: 'attempt_child', generation: 1, verdict: 'verified', summary: {}, finalizedAt: 30 } as any)
+      : null;
+    parentProof.listEvidence = (jobId) => jobId === 'child_1' ? [{ evidenceId: 'evidence_child' } as any] : [];
+
+    expect(projectWorkbenchJob(reader, { jobId: 'job_1' })?.workers).toEqual([
+      expect.objectContaining({
+        childJobId: 'child_1', parentJobId: 'job_1', required: true,
+        title: 'Generate the scheduled report', status: 'completed', verification: 'verified',
+        evidenceCount: 1, startedAt: 10, endedAt: 30,
+      }),
+    ]);
+  });
+  it('B6a projects the current child contract Evidence for normal Workbench inspection', () => {
+    const reader = fixture({
+      status: 'completed', terminalAt: 30, terminalOutcome: 'completed',
+      parentJobId: 'parent_1', rootJobId: 'parent_1',
+    });
+    reader.getChildContract = (jobId) => jobId === 'job_1' ? ({
+      childJobId: 'job_1', parentJobId: 'parent_1', required: true,
+      workerId: 'automation-run', capabilities: ['repository.read'], allowedResources: {}, budget: {},
+      resultAttemptId: 'attempt_1', resultGeneration: 1, resultStatus: 'completed',
+      evidence: {
+        v: 1, verdict: 'completed', failures: [],
+        handles: [{ tool: 'file_read', kind: 'path', value: 'package.json', verified: true, code: 'ok' }],
+      },
+      evidenceHandles: [
+        { tool: 'file_read', kind: 'path', value: 'package.json', verified: true, code: 'ok' },
+      ],
+    }) : null;
+    reader.proof!.getVerdict = () => null;
+    reader.proof!.listEvidence = () => [];
+
+    expect(projectWorkbenchJob(reader, { jobId: 'job_1' })?.childContractEvidence).toEqual({
+      parentJobId: 'parent_1',
+      required: true,
+      verification: 'verified',
+      handles: [{ tool: 'file_read', kind: 'path', value: 'package.json', verified: true, code: 'ok' }],
+    });
+  });
   it('B7 projects pending approval records', () => expect(projectWorkbenchJob(fixture(), { jobId: 'job_1' })?.approvals).toEqual([{ approval_id: 'approval_1' }]));
   it('B8 projects Evidence and Claims from Proof authority', () => {
     const value = projectWorkbenchJob(fixture(), { jobId: 'job_1' })!;

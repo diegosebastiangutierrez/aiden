@@ -727,6 +727,7 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
       const actionAuthority = createActionAuthority({ db, jobEngine });
       const workbenchAutomationContinuations = createAutomationApprovalContinuationAuthority({ db, jobEngine });
       const jobControlAuthority = createJobControlAuthority({ db, jobEngine });
+      let workbenchRuntime: AgentRuntime | null = null;
       const { enqueue, cancel, retry, input, control, approval, continuity, continueTask } = createWorkbenchJobCommands({
         db, triggerBus, jobEngine, runStore, instanceId: workbenchInstanceId, sessionStore,
         workspacePath: process.cwd(),
@@ -741,8 +742,18 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
             ? { provider: configured.model.provider, model: configured.model.modelId, source: 'default' }
             : null;
         },
+        async validateModelBinding(binding) {
+          if (!workbenchRuntime) {
+            throw new Error('The selected provider/model is unavailable in the current Workbench runtime.');
+          }
+          await workbenchRuntime.resolver.describe({
+            providerId: binding.provider,
+            modelId: binding.model,
+            config: workbenchRuntime.config,
+            paths,
+          });
+        },
       });
-      let workbenchRuntime: AgentRuntime | null = null;
       let executionHost: ReturnType<typeof createWorkbenchExecutionHost> | null = null;
       let workbenchSkills: Awaited<ReturnType<SkillLoader['list']>> = [];
       let workbenchPlugins: Array<{
@@ -851,6 +862,7 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
         ownerId: workbenchIntegrationRuntime.scope.ownerId,
         workspaceId: workbenchIntegrationRuntime.scope.workspaceId,
         workspaceRoot: process.cwd(),
+        jobs: jobEngine,
         schedulerReady: () => executionHost?.snapshot().available === true,
       });
       const automationReadiness = createAutomationReadinessAuthority({
@@ -1117,6 +1129,7 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
         continueTask,
         retry,
         token,
+        workspacePath: process.cwd(),
         staticDir,
         port,
       });

@@ -12,7 +12,7 @@
  * the artifact_verified verdict — all from the shared run store the CLI writes
  * to. No agent, no UI: just events flowing to a client.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -706,6 +706,7 @@ describe('Workbench attachment and artifact mediation', () => {
 });
 
 describe('Workbench durable Job projections', () => {
+  const PROJECTION_TOKEN = 'durable-projection-token';
   it('queries Job and Attempt identity and replays events from a Job sequence cursor', async () => {
     const jobs = {
       getJob: (id: string) => id === 'job_exact' ? { id, status: 'waiting', activeAttemptId: 'attempt_exact' } : null,
@@ -810,7 +811,10 @@ describe('Workbench durable Job projections', () => {
       jobId: admitted.jobId, attemptId: admitted.attemptId, attemptGeneration: 1,
       reason: 'interrupted', idempotencyNamespace: 'test', idempotencyKey: 'checkpoint',
     });
-    const b = await startWorkbenchBridge({ reader: runStore, jobs: engine, continuity: engine.continuity, port: 0 });
+    const b = await startWorkbenchBridge({
+      reader: runStore, jobs: engine, continuity: engine.continuity,
+      token: PROJECTION_TOKEN, workspacePath: process.cwd(), port: 0,
+    });
     runStore.emitEventRich({
       runId: admitted.runId, category: 'assistant', kind: 'assistant.message', name: 'assistant_message',
       payload: { text: 'first ' }, visibility: 'user', source: 'test',
@@ -822,6 +826,7 @@ describe('Workbench durable Job projections', () => {
     const projection = await httpGet(
       b.port,
       `/api/jobs/${admitted.jobId}/projection?attemptId=${admitted.attemptId}&runId=${admitted.runId}`,
+      { 'x-workbench-token': PROJECTION_TOKEN },
     );
     const checkpoint = await httpGet(b.port, `/api/jobs/${admitted.jobId}/continuity`);
     expect(projection.status).toBe(200);
@@ -838,6 +843,29 @@ describe('Workbench durable Job projections', () => {
     expect(JSON.parse(checkpoint.body)).toMatchObject({
       jobId: admitted.jobId, attemptId: admitted.attemptId, reason: 'interrupted', validity: 'current',
     });
+    await b.close();
+  });
+
+  it('authorizes durable projections and hides Jobs bound to another workspace', async () => {
+    const jobs = {
+      getJob: (id: string) => id === 'job_other'
+        ? { id, status: 'completed', activeAttemptId: null, workspaceId: path.resolve('other-workspace') }
+        : null,
+    } as never;
+    const b = await startWorkbenchBridge({
+      reader: runStore,
+      jobs,
+      token: PROJECTION_TOKEN,
+      workspacePath: process.cwd(),
+      port: 0,
+    });
+
+    expect((await httpGet(b.port, '/api/jobs/job_other/projection')).status).toBe(401);
+    expect((await httpGet(
+      b.port,
+      '/api/jobs/job_other/projection',
+      { 'x-workbench-token': PROJECTION_TOKEN },
+    )).status).toBe(404);
     await b.close();
   });
 
@@ -1011,6 +1039,45 @@ describe('Workbench durable Job projections', () => {
     });
     expect(decisions).toEqual(['apply:promotion_exact', 'discard:promotion_exact', 'discard-unknown:coding_exact']);
     await b.close();
+  });
+});
+
+describe('Workbench Automation lifecycle bridge', () => {
+  it('routes authorized removal through the existing durable Automation authority', async () => {
+    const remove = vi.fn(() => ({
+      automationId: 'automation_exact',
+      removedAt: 123,
+      removedBy: 'workbench',
+    }));
+    const bridge = await startWorkbenchBridge({
+      reader: runStore,
+      token: 'automation-lifecycle-token',
+      automations: { remove } as any,
+      port: 0,
+    });
+    try {
+      expect((await httpPost(
+        bridge.port,
+        '/api/automations/automation_exact/remove',
+        {},
+      )).status).toBe(401);
+      const response = await httpPost(
+        bridge.port,
+        '/api/automations/automation_exact/remove',
+        {},
+        { 'x-workbench-token': 'automation-lifecycle-token' },
+      );
+      expect(response.status).toBe(200);
+      expect(JSON.parse(response.body)).toEqual({
+        automationId: 'automation_exact',
+        removedAt: 123,
+        removedBy: 'workbench',
+      });
+      expect(remove).toHaveBeenCalledOnce();
+      expect(remove).toHaveBeenCalledWith('automation_exact', 'workbench');
+    } finally {
+      await bridge.close();
+    }
   });
 });
 

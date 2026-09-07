@@ -23,7 +23,7 @@ describe('minimal Workbench continuity surface', () => {
     await loadRunProjection('job_1', 'attempt_1', 7);
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/jobs/job_1/projection?attemptId=attempt_1&runId=7',
-      { cache: 'no-store' },
+      { cache: 'no-store', headers: { 'x-workbench-token': '' } },
     );
   });
   it('E2 loads the current continuity checkpoint by Job identity', async () => {

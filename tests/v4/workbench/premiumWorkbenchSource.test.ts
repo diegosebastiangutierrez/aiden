@@ -144,6 +144,29 @@ describe('premium Workbench source contracts', () => {
     expect(page).toContain('settings-section-label');
   });
 
+  it('separates recent and completed durable work and exposes required-child verification', () => {
+    const navigation = page.slice(page.indexOf('function HistorySidebar()'), page.indexOf('// ── EmptyState'));
+    expect(navigation).toContain('groupDurableHistory');
+    expect(navigation).toContain('Completed');
+    expect(navigation).toContain('Recent');
+    const activity = page.slice(page.indexOf('function ActivityView('), page.indexOf('function NavBar('));
+    expect(activity).toContain('Required child runs');
+    expect(activity).toContain('child.verification');
+    expect(activity).toContain('child.evidenceCount');
+    expect(activity).toContain('child.parentJobId');
+    expect(activity).toContain('projection.childContractEvidence');
+    expect(activity).toContain('Required child Evidence');
+    expect(activity).toContain('handle.value');
+    expect(activity).toContain("projection.childContractEvidence?.verification ?? 'not yet verified'");
+  });
+
+  it('offers removal only through the existing Automation lifecycle controls', () => {
+    const automations = page.slice(page.indexOf('function AutomationsView()'), page.indexOf('function SponsorsView()'));
+    expect(automations).toContain("action(automation, 'remove')");
+    expect(automations).toContain('Its durable history will remain available.');
+    expect(automations).toContain("automation.enabled ? 'Pause' : 'Resume'");
+  });
+
   it('uses an outcome-first home and editorial conversation surface', () => {
     expect(page).toContain('What should Aiden take care of?');
     expect(page).toContain('Describe the outcome you want. Aiden will show the work, ask before sensitive actions, and preserve the evidence.');

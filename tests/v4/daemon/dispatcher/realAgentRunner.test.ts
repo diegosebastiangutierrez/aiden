@@ -356,6 +356,49 @@ describe('createRealAgentRunner durable identity', () => {
     }
   });
 
+  it('persists consecutive automation turns in their shared durable session', async () => {
+    const sessionStore = new SessionStore(':memory:');
+    try {
+      const sessionId = 'automation:consecutive-occurrences';
+      const runner = createRealAgentRunner({
+        db, runStore, jobEngine: createJobEngine({ db }),
+        taskStore: createTaskStore({ db }), sessionStore,
+        persistedDefault: PERSISTED,
+        agentBuilder: (() => ({
+          runConversation: async (
+            history: unknown[],
+            options: { onConversationCheckpoint?: (messages: unknown[]) => void },
+          ) => {
+            options.onConversationCheckpoint?.([
+              ...history,
+              { role: 'assistant', content: 'automation checkpoint' },
+            ]);
+            return { ...mkResult(), finalContent: 'automation complete', turnCount: 1 } as AidenAgentResult;
+          },
+        } as unknown as AidenAgent)) as AgentBuilder,
+      });
+
+      await expect(runner.invoke(mkInput({
+        sessionId,
+        triggerEventId: 1,
+        initialMessage: 'run the first occurrence',
+      }))).resolves.toMatchObject({ finishReason: 'stop' });
+      await expect(runner.invoke(mkInput({
+        sessionId,
+        triggerEventId: 2,
+        initialMessage: 'run the second occurrence',
+      }))).resolves.toMatchObject({ finishReason: 'stop' });
+
+      expect(sessionStore.getMessages(sessionId).filter((message) => message.role === 'user'))
+        .toMatchObject([
+          { content: 'run the first occurrence', turnNumber: 1 },
+          { content: 'run the second occurrence', turnNumber: 2 },
+        ]);
+    } finally {
+      sessionStore.close();
+    }
+  });
+
   it('restores an exact in-flight tool tail without creating a second provider plan', async () => {
     const sessionStore = new SessionStore(':memory:');
     try {

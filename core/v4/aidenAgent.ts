@@ -69,9 +69,10 @@ import {
   currentProviderAttemptLedger,
 } from '../../providers/v4/providerAttemptAccounting';
 import { findModel } from '../../providers/v4/modelCatalog';
-import type {
-  PlannerGuard,
-  PlannerGuardDecision,
+import {
+  requiresSupervisedProcessIntent,
+  type PlannerGuard,
+  type PlannerGuardDecision,
 } from '../../moat/plannerGuard';
 import type {
   HonestyEnforcement,
@@ -1441,7 +1442,8 @@ export class AidenAgent {
     // runtime toggles singleton keep working (the lazy getter returns
     // an env-only fallback resolver per runtimeToggles.ts:213).
     const { getRuntimeToggles } = await import('./runtimeToggles');
-    if (!getRuntimeToggles().isEnabled('planner_guard')) {
+    if (!getRuntimeToggles().isEnabled('planner_guard')
+      && !requiresSupervisedProcessIntent(userMsg)) {
       return this.tools;
     }
     const decision = await this.plannerGuard.decide(userMsg, history);

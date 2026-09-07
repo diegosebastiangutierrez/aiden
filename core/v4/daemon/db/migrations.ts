@@ -3889,6 +3889,18 @@ function applyV56(db: Database.Database): void {
   `);
 }
 
+/**
+ * Repair installations that already recorded the latest schema version while
+ * missing the additive automation tombstone columns. This can occur when a
+ * database was opened by a build that recorded the same numeric version
+ * before the additive columns were available. Reapplying the idempotent
+ * migration preserves every definition and restores the canonical Automation
+ * authority.
+ */
+function applyV57(db: Database.Database): void {
+  applyV55(db);
+}
+
 const MIGRATIONS: ReadonlyArray<Migration> = [
   { version: 1, name: 'phase 1 — daemon foundation',                  sql: V1_SQL },
   { version: 2, name: 'phase 2 — file watcher observations',          sql: V2_SQL },
@@ -3946,6 +3958,7 @@ const MIGRATIONS: ReadonlyArray<Migration> = [
   { version: 54, name: 'secure external protocol authority', apply: applyV54 },
   { version: 55, name: 'durable automation removal tombstones', apply: applyV55 },
   { version: 56, name: 'durable terminal Job retry lineage', apply: applyV56 },
+  { version: 57, name: 'repair durable automation tombstones', apply: applyV57 },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

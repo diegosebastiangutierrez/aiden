@@ -592,6 +592,47 @@ describe('ToolRegistry durable execution identity', () => {
     expect(engine.attachToolVerification).toHaveBeenCalledOnce();
   });
 
+  it('returns a machine-readable safe alternative for an admission denial', async () => {
+    const handler = vi.fn(async () => ({ ok: true }));
+    const registry = new ToolRegistry();
+    registry.register({
+      schema: {
+        name: 'opaque_local_execution',
+        description: 'test-only denied execution path',
+        inputSchema: { type: 'object' },
+      },
+      category: 'execute',
+      riskTier: 'dangerous',
+      mutates: true,
+      toolset: 'misc',
+      validateArguments: () => ({
+        code: 'denied_by_policy',
+        message: 'Opaque execution is denied by the current policy.',
+        availableAlternative: {
+          tool: 'process_spawn',
+          reason: 'Use structured supervised local execution when the request is eligible.',
+        },
+      }),
+      execute: handler,
+    });
+    const execute = registry.buildExecutor({
+      cwd: process.cwd(),
+      paths: resolveAidenPaths({ rootOverride: 'C:/tmp/aiden-structured-denial' }),
+    });
+
+    const result = await execute({ id: 'denied-call', name: 'opaque_local_execution', arguments: {} });
+    expect(result.result).toEqual({
+      reason: 'denied_by_policy',
+      message: 'Opaque execution is denied by the current policy.',
+      availableAlternative: {
+        tool: 'process_spawn',
+        reason: 'Use structured supervised local execution when the request is eligible.',
+      },
+    });
+    expect(result.error).toContain('Opaque execution is denied');
+    expect(handler).not.toHaveBeenCalled();
+  });
+
   it('does not execute when durable preparation rejects a stale fence', async () => {
     const handler = vi.fn(async () => ({ ok: true }));
     const engine = {

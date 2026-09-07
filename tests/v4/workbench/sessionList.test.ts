@@ -17,6 +17,9 @@ import { createSessionLister } from '../../../core/v4/workbench/sessionList';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../../core/v4/daemon/db/migrations';
 import { createJobEngine } from '../../../core/v4/daemon/jobEngine';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 function rowFor(store: SessionStore, id: string) {
   return createSessionLister(store).listSessions().find((x) => x.id === id)!;
@@ -125,5 +128,66 @@ describe('createSessionLister — readable labels, never raw ids', () => {
     });
     sessions.close();
     db.close();
+  });
+
+  it('rebuilds completed-history identity from durable state after stores reopen', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aiden-completed-history-'));
+    const sessionsPath = path.join(root, 'sessions.db');
+    const jobsPath = path.join(root, 'jobs.db');
+    let sessions = new SessionStore(sessionsPath);
+    let db = new Database(jobsPath);
+    try {
+      const session = sessions.createSession({ title: 'Durable verified work' });
+      runMigrations(db);
+      const now = Date.now();
+      db.prepare(`INSERT INTO daemon_instances
+        (instance_id,pid,hostname,started_at,last_heartbeat,version)
+        VALUES ('history-reopen-test',1,'localhost',?,?,'4.21.0')`).run(now, now);
+      const engine = createJobEngine({ db });
+      const admitted = engine.submitJob({
+        entryPoint: 'workbench', source: 'test', sessionId: session.id,
+        instanceId: 'history-reopen-test', idempotencyNamespace: 'history-reopen',
+        idempotencyKey: 'verified', requestFingerprint: 'verified',
+        goal: 'Create a verified artifact',
+      });
+      const lease = engine.claimAttempt({ attemptId: admitted.attemptId, ownerId: 'test', ttlMs: 30_000 });
+      if (!lease.acquired || !lease.fenceToken || lease.generation === undefined) throw new Error('claim failed');
+      engine.transitionAttempt({
+        attemptId: admitted.attemptId, expectedStateVersion: 1, generation: lease.generation,
+        fenceToken: lease.fenceToken, to: 'running', eventIdempotencyKey: 'attempt-running', producer: 'test',
+      });
+      engine.transitionJob({
+        jobId: admitted.jobId, attemptId: admitted.attemptId, generation: lease.generation,
+        fenceToken: lease.fenceToken, expectedStateVersion: 0, to: 'running',
+        eventIdempotencyKey: 'job-running', producer: 'test',
+      });
+      engine.transitionAttempt({
+        attemptId: admitted.attemptId, expectedStateVersion: 2, generation: lease.generation,
+        fenceToken: lease.fenceToken, to: 'succeeded', eventIdempotencyKey: 'attempt-succeeded', producer: 'test',
+      });
+      engine.finalizeJob({
+        jobId: admitted.jobId, attemptId: admitted.attemptId, generation: lease.generation,
+        fenceToken: lease.fenceToken, expectedStateVersion: 1, status: 'completed', outcome: 'verified',
+        finishReason: 'stop', evidence: { artifact: 'verified.md' },
+        eventIdempotencyKey: 'job-completed', producer: 'test',
+      });
+      sessions.close();
+      db.close();
+
+      sessions = new SessionStore(sessionsPath);
+      db = new Database(jobsPath);
+      const reopened = createSessionLister(sessions, 40, createJobEngine({ db })).listSessions();
+      expect(reopened).toContainEqual(expect.objectContaining({
+        id: session.id,
+        jobId: admitted.jobId,
+        attemptId: admitted.attemptId,
+        runId: admitted.runId,
+        status: 'completed',
+      }));
+    } finally {
+      try { sessions.close(); } catch { /* already closed */ }
+      try { db.close(); } catch { /* already closed */ }
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

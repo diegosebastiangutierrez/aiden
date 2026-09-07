@@ -54,6 +54,7 @@ import type { WorkbenchLearningPort } from './learningPort';
 import type { WorkbenchSkillIntelligencePort } from './skillIntelligencePort';
 import type { WorkbenchExternalProtocolsPort } from './externalProtocolsPort';
 import type { CapabilityRequirement, SkillDraftStep } from '../skillIntelligence/types';
+import type { WorkbenchModelBinding, WorkbenchRetryModelOverride } from './jobCommands';
 
 /**
  * Strip bracketed-paste markers at the workbench INGEST boundary. A pasted
@@ -134,10 +135,19 @@ export interface RetryResult {
   runId: number;
   generation?: number;
   triggerEventId?: number;
+  modelBinding?: WorkbenchModelBinding | null;
 }
 
 export interface TaskRetrier {
-  retry(runId: number, idempotencyKey?: string): RetryResult;
+  retry(
+    runId: number,
+    idempotencyKey?: string,
+    modelOverride?: WorkbenchRetryModelOverride,
+  ): RetryResult | Promise<RetryResult>;
+  describe?(runId: number): {
+    jobBinding: WorkbenchModelBinding | null;
+    selectedBinding: WorkbenchModelBinding | null;
+  };
 }
 
 export interface TaskInputReceiver {
@@ -306,9 +316,13 @@ export interface WorkbenchBridgeOptions {
   externalProtocols?: WorkbenchExternalProtocolsPort;
   /** Per-launch local write token. REQUIRED for any write to execute — POST
    *  /api/tasks must present it (x-workbench-token / Bearer). Absent → all
-   *  writes are refused. Injected into the served page so only the local
-   *  dashboard has it. Read-only GET endpoints ignore it. */
+   *  mutations and identity-bearing projections are refused. Injected into
+   *  the served page so only the local dashboard has it. */
   token?:      string;
+  /** Current local workspace used to scope authorized durable projections.
+   * Legacy Jobs without a workspace binding remain readable to the local
+   * token holder; a Job bound to another workspace is never projected. */
+  workspacePath?: string;
   /** Authoritative runtime metadata for the Workbench header/settings. */
   runtime?: () => {
     provider?: string | null;
@@ -681,9 +695,9 @@ export function startWorkbenchBridge(opts: WorkbenchBridgeOptions): Promise<Work
     if (req.method === 'PUT' && automationEditMatch) {
       handleAutomationEdit(req, res, automationEditMatch[1]); return;
     }
-    const automationActionMatch = url.pathname.match(/^\/api\/automations\/([^/]+)\/(run|enable|disable)$/);
+    const automationActionMatch = url.pathname.match(/^\/api\/automations\/([^/]+)\/(run|enable|disable|remove)$/);
     if (req.method === 'POST' && automationActionMatch) {
-      handleAutomationAction(req, res, automationActionMatch[1], automationActionMatch[2] as 'run' | 'enable' | 'disable'); return;
+      handleAutomationAction(req, res, automationActionMatch[1], automationActionMatch[2] as 'run' | 'enable' | 'disable' | 'remove'); return;
     }
     const automationReplayMatch = url.pathname.match(/^\/api\/automation-occurrences\/([^/]+)\/replay$/);
     if (req.method === 'POST' && automationReplayMatch) {
@@ -1020,7 +1034,19 @@ export function startWorkbenchBridge(opts: WorkbenchBridgeOptions): Promise<Work
     }
     const jobProjectionMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)\/projection$/);
     if (jobProjectionMatch) {
+      if (!passesTokenGate(req, res)) return;
       if (!opts.jobs) { sendJson(res, 503, { error: 'durable Job query unavailable' }); return; }
+      const jobId = decodeURIComponent(jobProjectionMatch[1]);
+      const job = opts.jobs.getJob(jobId);
+      if (job?.workspaceId && opts.workspacePath) {
+        const normalizeWorkspace = (value: string): string => {
+          const resolved = path.resolve(value);
+          return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+        };
+        if (normalizeWorkspace(job.workspaceId) !== normalizeWorkspace(opts.workspacePath)) {
+          sendJson(res, 404, { error: 'durable projection not found' }); return;
+        }
+      }
       const runRaw = url.searchParams.get('runId');
       const runId = runRaw === null ? undefined : Number(runRaw);
       if (runRaw !== null && !Number.isSafeInteger(runId)) {
@@ -1028,10 +1054,18 @@ export function startWorkbenchBridge(opts: WorkbenchBridgeOptions): Promise<Work
       }
       const attemptId = url.searchParams.get('attemptId') ?? undefined;
       const projection = projectWorkbenchJob(opts.jobs, {
-        jobId: decodeURIComponent(jobProjectionMatch[1]), attemptId, runId,
+        jobId, attemptId, runId,
       });
+      const retryModels = projection && opts.retry?.describe
+        ? opts.retry.describe(projection.identity.runId)
+        : null;
       sendJson(res, projection ? 200 : 404, projection
-        ? { ...projection, assistantOutput: projectAssistantOutput(opts.reader, projection.identity.runId) }
+        ? {
+            ...projection,
+            modelBinding: retryModels?.jobBinding ?? null,
+            selectedModelBinding: retryModels?.selectedBinding ?? null,
+            assistantOutput: projectAssistantOutput(opts.reader, projection.identity.runId),
+          }
         : { error: 'durable projection not found' });
       return;
     }
@@ -1218,7 +1252,7 @@ export function startWorkbenchBridge(opts: WorkbenchBridgeOptions): Promise<Work
 
     sendJson(res, 404, {
       error: 'not found',
-    endpoints: ['GET /', 'GET /plain', 'GET /api/health', 'GET /api/workbench/bootstrap', 'GET /api/workbench/capabilities', 'GET /api/workbench/readiness', 'GET /api/providers', 'GET /api/apps', 'GET /api/automations', 'GET /api/presence', 'GET /api/learning', 'GET /api/learning/export', 'GET /api/learning/:id', 'GET /api/skill-intelligence', 'GET /api/skill-intelligence/candidates/:id', 'GET /api/presence/proposals', 'GET /api/presence/preferences', 'GET /api/presence/briefing', 'GET /api/presence/:id/explain', 'GET /api/browser/setup', 'GET /api/sessions', 'GET /api/events', 'GET /api/runs/:runId/events', 'GET /api/sessions/:sessionId/events', 'GET /api/jobs/:jobId/projection', 'GET /api/jobs/:jobId/live-execution', 'GET /api/jobs/:jobId/coding', 'GET /api/coding/promotions/:promotionId/review', 'GET /api/jobs/:jobId/continuity', 'GET /api/artifacts', 'GET /api/artifacts/:artifactId/content', 'GET /api/workspaces/:workspaceId/continuity', 'GET /api/checkpoints/:checkpointId', 'POST /api/tasks', 'POST /api/attachments', 'POST /api/tasks/:runId/cancel', 'POST /api/tasks/:runId/retry', 'POST /api/tasks/:runId/input', 'POST /api/tasks/:runId/pause', 'POST /api/tasks/:runId/resume', 'POST /api/approvals/:approvalId/decision', 'POST /api/coding/configure', 'POST /api/coding/promotions/:promotionId/apply', 'POST /api/coding/promotions/:promotionId/discard', 'POST /api/coding/sessions/:codingSessionId/discard', 'POST /api/checkpoints/:checkpointId/continue', 'POST /api/providers/:id/connect', 'POST /api/providers/:id/test', 'POST /api/providers/model/session', 'POST /api/providers/model/default', 'POST /api/apps/providers/:id/configure', 'POST /api/apps/connect', 'POST /api/automations', 'PUT /api/automations/:id', 'POST /api/automations/preview', 'POST /api/automations/:id/run', 'POST /api/automations/:id/enable', 'POST /api/automations/:id/disable', 'POST /api/automation-occurrences/:id/replay', 'POST /api/presence/preferences', 'POST /api/presence/:id/snooze', 'POST /api/presence/:id/dismiss', 'POST /api/presence/:id/feedback', 'POST /api/presence/:id/proposals', 'POST /api/presence/proposals/:id/accept', 'POST /api/learning/remember', 'POST /api/learning/:id/edit', 'POST /api/learning/:id/rollback', 'POST /api/learning/:id/demote', 'POST /api/learning/:id/archive', 'POST /api/learning/:id/delete', 'POST /api/learning/rebuild', 'POST /api/skill-intelligence/candidates/:id/dismiss', 'POST /api/skill-intelligence/drafts', 'POST /api/skill-intelligence/drafts/:id/edit', 'POST /api/skill-intelligence/drafts/:id/evaluate', 'POST /api/skill-intelligence/drafts/:id/approval', 'POST /api/skill-intelligence/approvals/:id/decision', 'POST /api/skill-intelligence/approvals/:id/activate', 'POST /api/skill-intelligence/skills/:id/disable', 'POST /api/skill-intelligence/skills/:id/rollback'],
+    endpoints: ['GET /', 'GET /plain', 'GET /api/health', 'GET /api/workbench/bootstrap', 'GET /api/workbench/capabilities', 'GET /api/workbench/readiness', 'GET /api/providers', 'GET /api/apps', 'GET /api/automations', 'GET /api/presence', 'GET /api/learning', 'GET /api/learning/export', 'GET /api/learning/:id', 'GET /api/skill-intelligence', 'GET /api/skill-intelligence/candidates/:id', 'GET /api/presence/proposals', 'GET /api/presence/preferences', 'GET /api/presence/briefing', 'GET /api/presence/:id/explain', 'GET /api/browser/setup', 'GET /api/sessions', 'GET /api/events', 'GET /api/runs/:runId/events', 'GET /api/sessions/:sessionId/events', 'GET /api/jobs/:jobId/projection', 'GET /api/jobs/:jobId/live-execution', 'GET /api/jobs/:jobId/coding', 'GET /api/coding/promotions/:promotionId/review', 'GET /api/jobs/:jobId/continuity', 'GET /api/artifacts', 'GET /api/artifacts/:artifactId/content', 'GET /api/workspaces/:workspaceId/continuity', 'GET /api/checkpoints/:checkpointId', 'POST /api/tasks', 'POST /api/attachments', 'POST /api/tasks/:runId/cancel', 'POST /api/tasks/:runId/retry', 'POST /api/tasks/:runId/input', 'POST /api/tasks/:runId/pause', 'POST /api/tasks/:runId/resume', 'POST /api/approvals/:approvalId/decision', 'POST /api/coding/configure', 'POST /api/coding/promotions/:promotionId/apply', 'POST /api/coding/promotions/:promotionId/discard', 'POST /api/coding/sessions/:codingSessionId/discard', 'POST /api/checkpoints/:checkpointId/continue', 'POST /api/providers/:id/connect', 'POST /api/providers/:id/test', 'POST /api/providers/model/session', 'POST /api/providers/model/default', 'POST /api/apps/providers/:id/configure', 'POST /api/apps/connect', 'POST /api/automations', 'PUT /api/automations/:id', 'POST /api/automations/preview', 'POST /api/automations/:id/run', 'POST /api/automations/:id/enable', 'POST /api/automations/:id/disable', 'POST /api/automations/:id/remove', 'POST /api/automation-occurrences/:id/replay', 'POST /api/presence/preferences', 'POST /api/presence/:id/snooze', 'POST /api/presence/:id/dismiss', 'POST /api/presence/:id/feedback', 'POST /api/presence/:id/proposals', 'POST /api/presence/proposals/:id/accept', 'POST /api/learning/remember', 'POST /api/learning/:id/edit', 'POST /api/learning/:id/rollback', 'POST /api/learning/:id/demote', 'POST /api/learning/:id/archive', 'POST /api/learning/:id/delete', 'POST /api/learning/rebuild', 'POST /api/skill-intelligence/candidates/:id/dismiss', 'POST /api/skill-intelligence/drafts', 'POST /api/skill-intelligence/drafts/:id/edit', 'POST /api/skill-intelligence/drafts/:id/evaluate', 'POST /api/skill-intelligence/drafts/:id/approval', 'POST /api/skill-intelligence/approvals/:id/decision', 'POST /api/skill-intelligence/approvals/:id/activate', 'POST /api/skill-intelligence/skills/:id/disable', 'POST /api/skill-intelligence/skills/:id/rollback'],
     });
   });
 
@@ -1734,7 +1768,7 @@ export function startWorkbenchBridge(opts: WorkbenchBridgeOptions): Promise<Work
     }).catch(() => sendJson(res, 400, { error: 'invalid JSON body' }));
   }
 
-  function handleAutomationAction(req: http.IncomingMessage, res: http.ServerResponse, rawId: string, action: 'run' | 'enable' | 'disable'): void {
+  function handleAutomationAction(req: http.IncomingMessage, res: http.ServerResponse, rawId: string, action: 'run' | 'enable' | 'disable' | 'remove'): void {
     if (!passesWriteGate(req, res)) return;
     if (!opts.automations) { sendJson(res, 503, { error: 'Automations are unavailable' }); return; }
     req.resume();
@@ -1742,7 +1776,9 @@ export function startWorkbenchBridge(opts: WorkbenchBridgeOptions): Promise<Work
       const automationId = decodeURIComponent(rawId);
       const result = action === 'run'
         ? opts.automations.runNow(automationId)
-        : opts.automations.setEnabled(automationId, action === 'enable');
+        : action === 'remove'
+          ? opts.automations.remove(automationId, 'workbench')
+          : opts.automations.setEnabled(automationId, action === 'enable');
       sendJson(res, action === 'run' ? 202 : 200, result);
     } catch (error) { sendJson(res, 400, { error: managementError(error) }); }
   }
@@ -1964,10 +2000,23 @@ export function startWorkbenchBridge(opts: WorkbenchBridgeOptions): Promise<Work
       return;
     }
     if (!opts.retry) { sendJson(res, 503, { error: 'retry unavailable (daemon not wired)' }); return; }
-    readJsonBody(req, 16 * 1024).then((body) => {
-      const key = typeof body.idempotencyKey === 'string' ? body.idempotencyKey.trim() || undefined : undefined;
+    readJsonBody(req, 16 * 1024).then(async (body) => {
       try {
-        const result = opts.retry!.retry(runId, key);
+        const key = typeof body.idempotencyKey === 'string' ? body.idempotencyKey.trim() || undefined : undefined;
+        let modelOverride: WorkbenchRetryModelOverride | undefined;
+        if (body.modelOverride !== undefined) {
+          if (!body.modelOverride || typeof body.modelOverride !== 'object' || Array.isArray(body.modelOverride)) {
+            throw new Error('modelOverride must contain an explicit provider and model.');
+          }
+          const candidate = body.modelOverride as Record<string, unknown>;
+          const provider = typeof candidate.provider === 'string' ? candidate.provider.trim() : '';
+          const model = typeof candidate.model === 'string' ? candidate.model.trim() : '';
+          if (!provider || !model || provider.length > 200 || model.length > 300) {
+            throw new Error('modelOverride must contain an explicit provider and model.');
+          }
+          modelOverride = { provider, model };
+        }
+        const result = await opts.retry!.retry(runId, key, modelOverride);
         sendJson(res, result.accepted ? 202 : 409, {
           accepted: result.accepted,
           duplicate: result.duplicate ?? false,
@@ -1977,6 +2026,7 @@ export function startWorkbenchBridge(opts: WorkbenchBridgeOptions): Promise<Work
           run_id: result.runId,
           generation: result.generation,
           trigger_event_id: result.triggerEventId,
+          model_binding: result.modelBinding,
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Retry is not available for this work.';

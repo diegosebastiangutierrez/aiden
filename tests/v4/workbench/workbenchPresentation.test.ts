@@ -14,10 +14,22 @@ import {
   presentRuntimeStatus,
   projectAttentionItems,
   presentAutomationOccurrence,
+  groupDurableHistory,
   projectSemanticProgress,
 } from '../../../dashboard-next/lib/workbenchPresentation';
 
 describe('Workbench product presentation', () => {
+  it('separates durable completed work from recent nonterminal conversations without title-based linking', () => {
+    const items = [
+      { id: 'session-a', title: 'Same title', status: 'completed' },
+      { id: 'session-b', title: 'Same title', status: 'running' },
+      { id: 'session-c', title: 'Verified result', status: 'verified' },
+    ];
+    const grouped = groupDurableHistory(items);
+    expect(grouped.completed.map((item) => item.id)).toEqual(['session-a', 'session-c']);
+    expect(grouped.recent.map((item) => item.id)).toEqual(['session-b']);
+  });
+
   it('translates runtime states into calm operator language without exposing enum syntax', () => {
     expect(presentRuntimeStatus('approval_required')).toMatchObject({
       label: 'Needs approval',

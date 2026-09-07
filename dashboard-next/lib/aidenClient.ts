@@ -170,19 +170,58 @@ export interface WorkbenchResultReceipt {
   verdict?: { verdict: string } | null;
 }
 
+export interface WorkbenchModelBinding {
+  provider: string;
+  model: string;
+  source: 'session' | 'default';
+}
+
+export interface WorkbenchChildExecution {
+  childJobId: string;
+  parentJobId: string;
+  required: boolean;
+  title: string;
+  status: string;
+  sessionId: string;
+  attemptId: string | null;
+  runId: number | null;
+  generation: number | null;
+  verification: string;
+  evidenceCount: number;
+  startedAt: number | null;
+  endedAt: number | null;
+  cleanupState: 'active' | 'settled' | 'needs_reconciliation';
+}
+
+export interface WorkbenchChildContractEvidence {
+  parentJobId: string;
+  required: boolean;
+  verification: string;
+  handles: Array<{
+    tool: string | null;
+    kind: string;
+    value: string;
+    verified: boolean | null;
+    code: string | null;
+  }>;
+}
+
 export interface WorkbenchRunProjection {
   identity: { jobId: string; attemptId: string; runId: number; generation?: number; sessionId?: string | null };
   job?: { id?: string; status?: string; goal?: string; terminalOutcome?: string | null; finishReason?: string | null; retryOfJobId?: string | null };
   receipt: WorkbenchResultReceipt;
+  modelBinding?: WorkbenchModelBinding | null;
+  selectedModelBinding?: WorkbenchModelBinding | null;
   attempts?: Array<{ rowId?: number; id: string; generation: number; status: string }>;
   timeline?: Array<{ eventId: number; jobSequence: number; type: string; createdAt: number }>;
-  workers?: unknown[];
+  workers?: WorkbenchChildExecution[];
   approvals?: Array<{
     approval_id?: unknown; job_id?: unknown; attempt_id?: unknown; generation?: unknown;
     tool_call_id?: unknown; effect_id?: unknown; tool_name?: unknown; risk_tier?: unknown;
     normalized_execution_plan?: unknown; state?: unknown; requested_at?: unknown;
   }>;
   evidence?: unknown[];
+  childContractEvidence?: WorkbenchChildContractEvidence | null;
   verification?: unknown;
   assistantOutput?: Array<{ eventId: number; sequence: number; text: string }>;
 }
@@ -505,6 +544,19 @@ export interface WorkbenchAutomationOccurrence {
     reason?: string;
     delivery?: { state: 'completed' | 'failed' | 'unknown'; detail?: string; updatedAt?: number };
   };
+  execution: {
+    title: string;
+    status: string;
+    verification: string;
+    evidenceCount: number;
+    parentJobId: string | null;
+    required: boolean;
+    sessionId: string;
+    runId: number | null;
+    startedAt: number | null;
+    endedAt: number | null;
+    cleanupState: 'active' | 'settled' | 'needs_reconciliation';
+  } | null;
 }
 
 export interface WorkbenchAppConnection {
@@ -838,17 +890,37 @@ export interface RetryTaskResult {
   runId: number;
   generation: number;
   triggerEventId: number;
+  modelBinding?: WorkbenchModelBinding;
 }
 
-export async function retryTask(runId: number, idempotencyKey?: string): Promise<RetryTaskResult> {
+export function createRetryIdempotencyKey(
+  jobId: string,
+  choice: 'original' | 'selected',
+  modelOverride?: { provider: string; model: string },
+): string {
+  const scope = choice === 'selected' && modelOverride
+    ? `selected:${modelOverride.provider}:${modelOverride.model}`
+    : 'original';
+  return `retry:${jobId}:${scope}:${crypto.randomUUID()}`;
+}
+
+export async function retryTask(
+  runId: number,
+  idempotencyKey?: string,
+  modelOverride?: { provider: string; model: string },
+): Promise<RetryTaskResult> {
   const response = await fetch(`/api/tasks/${encodeURIComponent(String(runId))}/retry`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-workbench-token': token() },
-    body: JSON.stringify({ ...(idempotencyKey ? { idempotencyKey } : {}) }),
+    body: JSON.stringify({
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+      ...(modelOverride ? { modelOverride } : {}),
+    }),
   });
   const body = await response.json() as {
     accepted?: unknown; duplicate?: unknown; original_job_id?: unknown; job_id?: unknown;
-    attempt_id?: unknown; run_id?: unknown; generation?: unknown; trigger_event_id?: unknown; error?: unknown;
+    attempt_id?: unknown; run_id?: unknown; generation?: unknown; trigger_event_id?: unknown;
+    model_binding?: unknown; error?: unknown;
   };
   if (!response.ok || body.accepted !== true) {
     throw new Error(typeof body.error === 'string' ? body.error : 'Retry could not be started safely.');
@@ -858,6 +930,16 @@ export async function retryTask(runId: number, idempotencyKey?: string): Promise
     || typeof body.attempt_id !== 'string' || !Number.isSafeInteger(body.run_id)
     || !Number.isSafeInteger(body.generation) || !Number.isSafeInteger(body.trigger_event_id)
   ) throw new Error('Retry returned an invalid durable identity.');
+  const binding = body.model_binding && typeof body.model_binding === 'object'
+    ? body.model_binding as Record<string, unknown>
+    : null;
+  const returnedBinding = typeof binding?.provider === 'string' && typeof binding.model === 'string'
+    ? {
+        provider: binding.provider,
+        model: binding.model,
+        source: binding.source === 'session' ? 'session' as const : 'default' as const,
+      }
+    : null;
   return {
     accepted: true,
     duplicate: body.duplicate === true,
@@ -867,6 +949,7 @@ export async function retryTask(runId: number, idempotencyKey?: string): Promise
     runId: Number(body.run_id),
     generation: Number(body.generation),
     triggerEventId: Number(body.trigger_event_id),
+    ...(returnedBinding ? { modelBinding: returnedBinding } : {}),
   };
 }
 
@@ -1572,6 +1655,14 @@ export function setAutomationEnabled(automationId: string, enabled: boolean): Pr
   return appsRequest(`/api/automations/${encodeURIComponent(automationId)}/${enabled ? 'enable' : 'disable'}`, { method: 'POST' });
 }
 
+export function removeAutomation(automationId: string): Promise<{
+  automationId: string;
+  removedAt: number;
+  removedBy: string;
+}> {
+  return appsRequest(`/api/automations/${encodeURIComponent(automationId)}/remove`, { method: 'POST' });
+}
+
 export function replayAutomationOccurrence(occurrenceId: string): Promise<{ triggerEventId: number }> {
   return appsRequest(`/api/automation-occurrences/${encodeURIComponent(occurrenceId)}/replay`, { method: 'POST' });
 }
@@ -1720,7 +1811,7 @@ export async function loadRunProjection(jobId: string, attemptId?: string, runId
   if (runId !== undefined) query.set('runId', String(runId));
   const response = await fetch(
     `/api/jobs/${encodeURIComponent(jobId)}/projection?${query.toString()}`,
-    { cache: 'no-store' },
+    { cache: 'no-store', headers: { 'x-workbench-token': token() } },
   );
   if (response.status === 404) return null;
   if (!response.ok) throw new Error(`durable run projection unavailable (HTTP ${response.status})`);
@@ -2000,7 +2091,10 @@ async function readProjection(handle: WorkbenchRunHandle): Promise<{
   const response = await fetch(
     `/api/jobs/${encodeURIComponent(handle.admission.jobId)}/projection`
     + `?attemptId=${encodeURIComponent(handle.admission.attemptId)}&runId=${handle.admission.runId}`,
-    { cache: 'no-store' },
+    {
+      cache: 'no-store',
+      headers: { 'x-workbench-token': token() },
+    },
   );
   if (!response.ok) throw new Error(`durable run projection unavailable (HTTP ${response.status})`);
   const projection = await response.json() as WorkbenchRunProjection;

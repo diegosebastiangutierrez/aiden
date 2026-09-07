@@ -60,6 +60,9 @@ const REGISTRY_HANDLERS: ToolHandler[] = [
   handler('skills_list', 'skills'),
   handler('lookup_tool_schema', 'meta'),
   handler('session_search', 'sessions'),
+  handler('shell_exec', 'terminal'),
+  handler('process_spawn', 'process'),
+  handler('process_wait', 'process'),
 ];
 
 const ALL_SCHEMAS = REGISTRY_HANDLERS.map((h) => h.schema);
@@ -222,6 +225,24 @@ describe('AidenAgent — PlannerGuard opt-in toggle (v4.6 Phase 2M)', () => {
     expect(toolsSeen).toContain('file_write');
     expect(toolsSeen).toContain('web_search');
     expect(toolsSeen).toContain('memory_add');
+  });
+
+  it('always narrows supervised lifecycle intent to the structured process path', async () => {
+    initRuntimeToggles({ env: process.env });
+    const provider = new MockProviderAdapter([MockProviderAdapter.stop('ready')]);
+    const guard = new PlannerGuard(registry, 'rule_based');
+    const agent = new AidenAgent({
+      provider,
+      toolExecutor: okExecutor,
+      tools: ALL_SCHEMAS,
+      plannerGuard: guard,
+    });
+
+    await agent.runConversation([userMsg('Run a harmless local task for 90 seconds and wait for it.')]);
+    const toolsSeen = provider.capturedInputs[0].tools.map((tool) => tool.name);
+    expect(toolsSeen).toEqual(expect.arrayContaining(['process_spawn', 'process_wait', 'file_read']));
+    expect(toolsSeen).not.toContain('shell_exec');
+    expect(toolsSeen).not.toContain('web_search');
   });
 
   it('B. AIDEN_PLANNER_GUARD=1 in env: narrowing engages', async () => {

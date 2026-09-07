@@ -41,6 +41,7 @@ import {
 } from '../lib/workbenchController'
 import {
   groupActiveWork,
+  groupDurableHistory,
   presentAssistantContent,
   presentApproval,
   presentAutomationOccurrence,
@@ -125,6 +126,7 @@ interface Conversation {
   jobId?: string
   attemptId?: string
   runId?: number
+  status?: string
 }
 
 interface ActivityLog {
@@ -158,6 +160,8 @@ function ActivityView({ logs, jobId, attemptId, runId, onContinued, onRetried }:
   const [continueResult, setContinueResult] = useState<{ pending: boolean; accepted?: boolean; reason?: string }>({ pending: false })
   const [retryResult, setRetryResult] = useState<{ pending: boolean; accepted?: boolean; reason?: string }>({ pending: false })
   const continueKeys = useRef<Record<string, string>>({})
+  const retryInFlightRef = useRef(false)
+  const retryRequestRef = useRef<{ scope: string; key: string } | null>(null)
   const [projectionRevision, setProjectionRevision] = useState(0)
   const [presenceReasons, setPresenceReasons] = useState<Record<string, string>>({})
   const [presenceProposals, setPresenceProposals] = useState<Record<string, aiden.WorkbenchProposedJob>>({})
@@ -189,14 +193,66 @@ function ActivityView({ logs, jobId, attemptId, runId, onContinued, onRetried }:
     ['Ready for review', presence?.enabled ? workGroups.readyForReview.filter((job) => !presenceJobIds.has(job.jobId)) : workGroups.readyForReview],
     ['Recently completed', presence?.enabled ? workGroups.recentlyCompleted.filter((job) => !presenceJobIds.has(job.jobId)) : workGroups.recentlyCompleted],
   ] as const).filter(([, jobs], index) => jobs.length > 0 || index === 1)
+  const projectedEvidenceCount = (projection?.evidence?.length ?? 0)
+    || (projection?.childContractEvidence?.handles.length ?? 0)
   const result = projection?.receipt.terminal ? presentResult({
     status: projection.receipt.status,
     summary: projection.receipt.summary,
     verdict: projection.receipt.verdict?.verdict,
-    evidenceCount: projection.evidence?.length ?? 0,
+    evidenceCount: projectedEvidenceCount,
   }) : null
   const retryEligible = projection?.receipt.terminal === true
     && ['cancelled', 'failed', 'dead_letter', 'verification_failed'].includes(projection.receipt.status)
+  const originalRetryBinding = projection?.modelBinding ?? null
+  const selectedRetryBinding = projection?.selectedModelBinding ?? null
+  const selectedModelDiffers = Boolean(
+    originalRetryBinding && selectedRetryBinding
+    && (
+      originalRetryBinding.provider !== selectedRetryBinding.provider
+      || originalRetryBinding.model !== selectedRetryBinding.model
+    ),
+  )
+  const startRetry = (choice: 'original' | 'selected') => {
+    if (!projection || retryInFlightRef.current) return
+    const modelOverride = choice === 'selected' && selectedModelDiffers && selectedRetryBinding
+      ? { provider: selectedRetryBinding.provider, model: selectedRetryBinding.model }
+      : undefined
+    const scope = choice === 'selected' && modelOverride
+      ? `retry:${projection.identity.jobId}:selected:${modelOverride.provider}:${modelOverride.model}`
+      : `retry:${projection.identity.jobId}:original`
+    const key = retryRequestRef.current?.scope === scope
+      ? retryRequestRef.current.key
+      : aiden.createRetryIdempotencyKey(projection.identity.jobId, choice, modelOverride)
+    retryRequestRef.current = { scope, key }
+    retryInFlightRef.current = true
+    setRetryResult({ pending: true })
+    void aiden.retryTask(projection.identity.runId, key, modelOverride)
+      .then((next) => {
+        retryInFlightRef.current = false
+        retryRequestRef.current = null
+        setRetryResult({ pending: false, accepted: true })
+        aiden.persistRunHandle({
+          admission: {
+            accepted: true,
+            duplicate: next.duplicate,
+            jobId: next.jobId,
+            attemptId: next.attemptId,
+            runId: next.runId,
+          },
+          lastEventId: 0,
+        })
+        onRetried?.(next.jobId, next.attemptId, next.runId, projection.identity.sessionId ?? null)
+        setProjectionRevision((value) => value + 1)
+      })
+      .catch((error) => {
+        retryInFlightRef.current = false
+        setRetryResult({
+          pending: false,
+          accepted: false,
+          reason: error instanceof Error ? error.message : String(error),
+        })
+      })
+  }
   useEffect(() => {
     let current = true
     if (!jobId || !attemptId || runId === null) { setProjection(null); setContinuity(null); return () => { current = false } }
@@ -335,35 +391,16 @@ function ActivityView({ logs, jobId, attemptId, runId, onContinued, onRetried }:
           <p>{result.summary}</p>
           {retryEligible && projection && (
             <div className="result-actions">
-              <button
-                type="button"
-                disabled={retryResult.pending}
-                onClick={() => {
-                  const key = `retry:${projection.identity.jobId}`
-                  setRetryResult({ pending: true })
-                  void aiden.retryTask(projection.identity.runId, key)
-                    .then((next) => {
-                      setRetryResult({ pending: false, accepted: true })
-                      aiden.persistRunHandle({
-                        admission: {
-                          accepted: true,
-                          duplicate: next.duplicate,
-                          jobId: next.jobId,
-                          attemptId: next.attemptId,
-                          runId: next.runId,
-                        },
-                        lastEventId: 0,
-                      })
-                      onRetried?.(next.jobId, next.attemptId, next.runId, projection.identity.sessionId ?? null)
-                      setProjectionRevision((value) => value + 1)
-                    })
-                    .catch((error) => setRetryResult({
-                      pending: false,
-                      accepted: false,
-                      reason: error instanceof Error ? error.message : String(error),
-                    }))
-                }}
-              >{retryResult.pending ? 'Retrying as new work…' : 'Retry'}</button>
+              <button type="button" disabled={retryResult.pending} onClick={() => startRetry('original')}>
+                <span>{retryResult.pending ? 'Retrying as new work…' : selectedModelDiffers ? 'Retry with original model' : 'Retry'}</span>
+                {originalRetryBinding && <small>{originalRetryBinding.provider} / {originalRetryBinding.model}</small>}
+              </button>
+              {selectedModelDiffers && selectedRetryBinding && (
+                <button type="button" disabled={retryResult.pending} onClick={() => startRetry('selected')}>
+                  <span>{retryResult.pending ? 'Retrying as new work…' : 'Retry with selected model'}</span>
+                  <small>{selectedRetryBinding.provider} / {selectedRetryBinding.model}</small>
+                </button>
+              )}
               {retryResult.reason && <span role="alert">{retryResult.reason}</span>}
             </div>
           )}
@@ -382,19 +419,83 @@ function ActivityView({ logs, jobId, attemptId, runId, onContinued, onRetried }:
             {projection.identity.jobId} · {projection.identity.attemptId} · generation {projection.identity.generation ?? 0} · run {projection.identity.runId}
           </div>
           <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 10, color: 'var(--muted3)', fontSize: 12 }}>
+            {projection.modelBinding && <span>Model: {projection.modelBinding.provider} / {projection.modelBinding.model}</span>}
             <span>Timeline: {projection.timeline?.length ?? 0}</span>
             <span>Worker Tree: {projection.workers?.length ?? 0}</span>
             <span>Pending Approvals: {pendingApprovals.length}</span>
-            <span>Evidence: {projection.evidence?.length ?? 0}</span>
+            <span>Evidence: {projectedEvidenceCount}</span>
           </div>
+          {projection.childContractEvidence && (
+            <section className="required-child-runs" aria-label="Child Evidence">
+              <strong>{projection.childContractEvidence.required ? 'Required child Evidence' : 'Child Evidence'}</strong>
+              <article className="required-child-run">
+                <div>
+                  <span>Parent relationship: {projection.childContractEvidence.required ? 'required' : 'optional'}</span>
+                  <small>
+                    Verification: {projection.childContractEvidence.verification === 'verified'
+                      ? 'Verified'
+                      : projection.childContractEvidence.verification.replaceAll('_', ' ')}
+                    {' · '}Parent: {projection.childContractEvidence.parentJobId}
+                  </small>
+                </div>
+                {projection.childContractEvidence.handles.map((handle, index) => (
+                  <div key={`${handle.kind}:${handle.value}:${index}`}>
+                    <span>{handle.tool ? `${handle.tool} · ` : ''}{handle.value}</span>
+                    <small>
+                      {handle.kind}
+                      {handle.code ? ` · ${handle.code}` : ''}
+                      {handle.verified === true ? ' · verified' : handle.verified === false ? ' · not verified' : ''}
+                    </small>
+                  </div>
+                ))}
+              </article>
+            </section>
+          )}
+          {(projection.workers?.length ?? 0) > 0 && (
+            <section className="required-child-runs" aria-label="Required child runs">
+              <strong>Required child runs</strong>
+              {projection.workers!.map((child) => (
+                <article key={child.childJobId} className="required-child-run">
+                  <div>
+                    <span>{child.title}</span>
+                    <small>
+                      {presentRuntimeStatus(child.status).label}
+                      {' · '}{child.verification === 'verified' ? 'Verified' : child.verification.replaceAll('_', ' ')}
+                      {' · '}{child.evidenceCount} {child.evidenceCount === 1 ? 'Evidence item' : 'Evidence items'}
+                      {' · '}{child.cleanupState.replaceAll('_', ' ')}
+                    </small>
+                  </div>
+                  {child.attemptId && child.runId !== null && (
+                    <button type="button" onClick={() => selectActiveJob({
+                      sessionId: child.sessionId,
+                      jobId: child.childJobId,
+                      attemptId: child.attemptId,
+                      runId: child.runId,
+                      status: child.endedAt === null ? normalizeActiveJobStatus(child.status) : 'terminal',
+                      updatedAt: child.endedAt ?? child.startedAt ?? 0,
+                      title: child.title,
+                      statusDetail: `${child.verification} · parent ${child.parentJobId}`,
+                    })}>Open details</button>
+                  )}
+                  <details>
+                    <summary>Relationship and evidence</summary>
+                    <span>Parent relationship: {child.required ? 'required' : 'optional'} · {child.parentJobId}</span>
+                    <span>Verification: {child.verification} · Evidence: {child.evidenceCount} · Cleanup: {child.cleanupState}</span>
+                  </details>
+                </article>
+              ))}
+            </section>
+          )}
           {pendingApprovals.map((approval) => (
             <div key={approval.approvalId} style={{ marginTop: 8, color: 'var(--orange)', fontSize: 11, fontFamily: 'var(--mono)' }}>
               Approval pending · {approval.toolName} · {approval.approvalId}
             </div>
           ))}
           <div style={{ marginTop: 8, color: 'var(--muted3)', fontSize: 12 }}>
-            <strong style={{ color: 'var(--text2)' }}>Verification / Proof</strong>
-            {' · '}{projection.receipt.verdict?.verdict ?? 'not yet verified'}
+            <strong style={{ color: 'var(--text2)' }}>
+              {projection.receipt.verdict ? 'Verification / Proof' : projection.childContractEvidence ? 'Child Verification' : 'Verification / Proof'}
+            </strong>
+            {' · '}{projection.receipt.verdict?.verdict ?? projection.childContractEvidence?.verification ?? 'not yet verified'}
           </div>
           {projection.receipt.terminal && (
             <div style={{ marginTop: 8, color: 'var(--text2)', fontSize: 12 }}>
@@ -2134,13 +2235,7 @@ function HistorySidebar() {
     setSettingsOpen, setSettingsTab,
   } = useDevOS()
 
-  const grouped = useMemo(() => {
-    const now       = Date.now()
-    const today     = conversations.filter(c => now - c.timestamp < 86400000)
-    const yesterday = conversations.filter(c => now - c.timestamp >= 86400000 && now - c.timestamp < 172800000)
-    const earlier   = conversations.filter(c => now - c.timestamp >= 172800000)
-    return { today, yesterday, earlier }
-  }, [conversations])
+  const grouped = useMemo(() => groupDurableHistory(conversations), [conversations])
 
   const openSettings = (tab: string) => {
     setSettingsTab(tab)
@@ -2218,7 +2313,7 @@ function HistorySidebar() {
               color: 'var(--muted)', textTransform: 'uppercase',
               letterSpacing: '0.1em', fontFamily: 'var(--mono)',
             }}>
-              {group === 'today' ? 'Today' : group === 'yesterday' ? 'Yesterday' : 'Earlier'}
+              {group === 'completed' ? 'Completed' : 'Recent'}
             </div>
             {convs.map(conv => (
               <button key={conv.id} onClick={() => loadConversation(conv.id)} style={{
@@ -2235,6 +2330,7 @@ function HistorySidebar() {
                 <span style={{ overflow: 'hidden', minWidth: 0, flex: 1 }}>
                   <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{conv.title.slice(0, 32)}{conv.title.length > 32 ? '...' : ''}</span>
                   <small style={{ display: 'block', marginTop: 2, color: 'var(--muted)' }}>{new Date(conv.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small>
+                  {conv.status && <small style={{ display: 'block', marginTop: 2, color: 'var(--muted)' }}>{presentRuntimeStatus(conv.status).label}</small>}
                 </span>
                 {conv.channels && conv.channels.length > 1 && (
                   <span className="cross-channel-badge" title={`Started on ${conv.channels[0]}`}>
@@ -2849,11 +2945,13 @@ function describeAutomationSchedule(expression: string): string {
 }
 
 function AutomationsView() {
+  const { selectActiveJob, setMainView } = useDevOS()
   const [snapshot, setSnapshot] = useState<aiden.WorkbenchAutomationSnapshot | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [preview, setPreview] = useState<string[]>([])
   const [editing, setEditing] = useState<aiden.WorkbenchAutomationSummary | null>(null)
+  const [confirmingRemoval, setConfirmingRemoval] = useState<string | null>(null)
   const automationFormRef = useRef<HTMLFormElement>(null)
   const customerLocale = useMemo(() => detectWorkbenchLocale(), [])
 
@@ -2898,12 +2996,14 @@ function AutomationsView() {
     finally { setBusy(null) }
   }
 
-  const action = async (automation: aiden.WorkbenchAutomationSummary, kind: 'run' | 'toggle' | 'replay') => {
+  const action = async (automation: aiden.WorkbenchAutomationSummary, kind: 'run' | 'toggle' | 'replay' | 'remove') => {
     setBusy(`${kind}:${automation.automationId}`); setError(null)
     try {
       if (kind === 'run') await aiden.runAutomationNow(automation.automationId)
       else if (kind === 'replay' && automation.lastOccurrence) await aiden.replayAutomationOccurrence(automation.lastOccurrence.occurrenceId)
+      else if (kind === 'remove') await aiden.removeAutomation(automation.automationId)
       else await aiden.setAutomationEnabled(automation.automationId, !automation.enabled)
+      if (kind === 'remove') setConfirmingRemoval(null)
       await reload()
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Automation action failed') }
     finally { setBusy(null) }
@@ -2992,6 +3092,12 @@ function AutomationsView() {
                   {automation.action.kind === 'prompt' && automation.trigger.kind === 'schedule' && <button type="button" className="nav-btn" disabled={busy !== null} onClick={() => editAutomation(automation)}>Edit</button>}
                   <button type="button" className="nav-btn" disabled={busy !== null} onClick={() => { void action(automation, 'toggle') }}>{automation.enabled ? 'Pause' : 'Resume'}</button>
                   {automation.lastOccurrence && automation.lastOccurrence.state !== 'unknown' && <button type="button" className="nav-btn" disabled={busy !== null} onClick={() => { void action(automation, 'replay') }}>Replay</button>}
+                  {!automation.enabled && confirmingRemoval !== automation.automationId && <button type="button" className="nav-btn" disabled={busy !== null} onClick={() => setConfirmingRemoval(automation.automationId)}>Remove</button>}
+                  {!automation.enabled && confirmingRemoval === automation.automationId && <>
+                    <span className="automation-meta">Its durable history will remain available.</span>
+                    <button type="button" className="nav-btn" disabled={busy !== null} onClick={() => { void action(automation, 'remove') }}>Confirm removal</button>
+                    <button type="button" className="nav-btn" disabled={busy !== null} onClick={() => setConfirmingRemoval(null)}>Cancel</button>
+                  </>}
                 </div>
               </article>
             ))}
@@ -3005,6 +3111,35 @@ function AutomationsView() {
                     <strong>{occurrence.state.replaceAll('_', ' ')}</strong>
                     <span>{new Date(occurrence.triggeredAt).toLocaleString(customerLocale.locale)}</span>
                     <span>{presentAutomationOccurrence({ state: occurrence.state, delivery: occurrence.detail.delivery ?? null }).label}</span>
+                    {occurrence.execution && (
+                      <div className="automation-child-execution">
+                        <strong>{occurrence.execution.title}</strong>
+                        <span>
+                          {presentRuntimeStatus(occurrence.execution.status).label}
+                          {' · '}{occurrence.execution.verification === 'verified' ? 'Verified' : occurrence.execution.verification.replaceAll('_', ' ')}
+                          {' · '}{occurrence.execution.evidenceCount} Evidence
+                          {' · '}{occurrence.execution.cleanupState.replaceAll('_', ' ')}
+                        </span>
+                        <small>{occurrence.execution.required ? 'Required child execution' : 'Execution'}{occurrence.execution.parentJobId ? ' · linked to parent work' : ''}</small>
+                        {occurrence.jobId && occurrence.attemptId && occurrence.execution.runId !== null && (
+                          <button type="button" className="nav-btn" onClick={() => {
+                            selectActiveJob({
+                              sessionId: occurrence.execution!.sessionId,
+                              jobId: occurrence.jobId!,
+                              attemptId: occurrence.attemptId,
+                              runId: occurrence.execution!.runId,
+                              status: occurrence.execution!.endedAt === null
+                                ? normalizeActiveJobStatus(occurrence.execution!.status)
+                                : 'terminal',
+                              updatedAt: occurrence.execution!.endedAt ?? occurrence.execution!.startedAt ?? occurrence.updatedAt,
+                              title: occurrence.execution!.title,
+                              statusDetail: occurrence.execution!.verification,
+                            })
+                            setMainView('activity')
+                          }}>Open child evidence</button>
+                        )}
+                      </div>
+                    )}
                     <details className="automation-advanced"><summary>Advanced details</summary><div><code>Occurrence ID {occurrence.occurrenceId}</code>{occurrence.jobId && <code>Job {occurrence.jobId}</code>}{occurrence.replayOfOccurrenceId && <code>Replay of {occurrence.replayOfOccurrenceId}</code>}<code>Trigger {occurrence.triggerKind}</code></div></details>
                   </article>
                 ))}
@@ -7389,6 +7524,7 @@ export default function Home() {
               jobId: session.jobId,
               attemptId: session.attemptId,
               runId: session.runId,
+              status: session.status,
             })
           }
           const next = Array.from(byId.values()).sort((a, b) => b.timestamp - a.timestamp)

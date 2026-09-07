@@ -53,16 +53,36 @@ export const processSpawnTool: ToolHandler = {
   toolset: 'process',
   riskTier: 'dangerous',   // v4.4 Phase 1
   validateArguments(args, ctx) {
-    if (!ctx) return 'Structured process admission requires an execution context.';
+    if (!ctx) return {
+      code: 'unavailable_by_environment',
+      message: 'Structured process admission requires an execution context.',
+    };
     const allowedKeys = new Set(['runtime', 'executable', 'script', 'args', 'cwd']);
     if (Object.keys(args).some((key) => !allowedKeys.has(key))) {
-      return 'Only runtime, executable, script, args, and cwd are accepted; opaque commands are unavailable by policy.';
+      return {
+        code: 'denied_by_policy',
+        message: 'Only runtime, executable, script, args, and cwd are accepted; opaque commands are unavailable by policy.',
+        availableAlternative: {
+          tool: 'process_spawn',
+          reason: 'Use structured supervised local execution with a workspace-contained Node script.',
+        },
+      };
     }
     const admission = evaluateStructuredProcessAdmission(requestFrom(args), {
       workspaceRoot: ctx.cwd,
       runtimeExecutable: process.execPath,
     });
-    return admission.state === 'APPROVAL_REQUIRED' ? null : `${admission.code}: ${admission.reason}`;
+    if (admission.state === 'APPROVAL_REQUIRED') return null;
+    return {
+      code: admission.state === 'UNAVAILABLE_BY_POLICY' ? 'denied_by_policy' : 'unavailable',
+      message: `${admission.code}: ${admission.reason}`,
+      ...(admission.state === 'UNAVAILABLE_BY_POLICY' ? {
+        availableAlternative: {
+          tool: 'process_spawn',
+          reason: 'Use structured supervised local execution with an eligible workspace-contained Node script.',
+        },
+      } : {}),
+    };
   },
   buildPreview(args, ctx) {
     const admission = evaluateStructuredProcessAdmission(requestFrom(args), {

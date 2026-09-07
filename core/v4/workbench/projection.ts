@@ -5,6 +5,7 @@
 
 import type {
   AttemptRecord,
+  ChildJobContractRecord,
   JobEventRecord,
   JobRecord,
 } from '../daemon/jobEngine';
@@ -25,8 +26,8 @@ export interface WorkbenchJobProjectionReader {
   getAttempt(attemptId: string): AttemptRecord | null;
   listAttempts(jobId: string): AttemptRecord[];
   listEvents(jobId: string, afterSequence?: number): JobEventRecord[];
-  getChildContract?(childJobId: string): unknown | null;
-  listChildContracts?(parentJobId: string): unknown[];
+  getChildContract?(childJobId: string): ChildJobContractRecord | null;
+  listChildContracts?(parentJobId: string): ChildJobContractRecord[];
   listEffectsRequiringReconciliation?(jobId: string): unknown[];
   proof?: {
     listClaims(jobId: string): ClaimRecord[];
@@ -55,6 +56,38 @@ export interface WorkbenchResultReceipt {
   summary: string;
 }
 
+export interface WorkbenchChildExecutionProjection {
+  childJobId: string;
+  parentJobId: string;
+  required: boolean;
+  title: string;
+  status: string;
+  sessionId: string;
+  attemptId: string | null;
+  runId: number | null;
+  generation: number | null;
+  verification: string;
+  evidenceCount: number;
+  startedAt: number | null;
+  endedAt: number | null;
+  cleanupState: 'active' | 'settled' | 'needs_reconciliation';
+}
+
+export interface WorkbenchChildContractEvidenceHandle {
+  tool: string | null;
+  kind: string;
+  value: string;
+  verified: boolean | null;
+  code: string | null;
+}
+
+export interface WorkbenchChildContractEvidenceProjection {
+  parentJobId: string;
+  required: boolean;
+  verification: string;
+  handles: WorkbenchChildContractEvidenceHandle[];
+}
+
 export interface WorkbenchJobProjection {
   schemaVersion: 1;
   identity: WorkbenchIdentityProjection;
@@ -62,11 +95,12 @@ export interface WorkbenchJobProjection {
   activeAttempt: AttemptRecord;
   attempts: AttemptRecord[];
   timeline: JobEventRecord[];
-  workers: unknown[];
+  workers: WorkbenchChildExecutionProjection[];
   approvals: unknown[];
   effects: unknown[];
   claims: ClaimRecord[];
   evidence: EvidenceRecord[];
+  childContractEvidence: WorkbenchChildContractEvidenceProjection | null;
   verification: JobVerdictRecord | null;
   receipt: WorkbenchResultReceipt;
   eventCursor: number;
@@ -103,6 +137,133 @@ export function projectWorkbenchStatus(
 
 function array(value: unknown): unknown[] { return Array.isArray(value) ? value : []; }
 
+function record(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function isVerifiedEvidenceHandle(value: unknown): boolean {
+  const handle = record(value);
+  const code = typeof handle.code === 'string' ? handle.code.toLowerCase() : null;
+  const result = typeof handle.verificationResult === 'string'
+    ? handle.verificationResult.toLowerCase()
+    : null;
+  return handle.verified === true && (code === 'ok' || result === 'verified');
+}
+
+export function projectChildExecutionVerification(
+  contract: ChildJobContractRecord,
+  verdict: JobVerdictRecord | null,
+  childStatus: string,
+): string {
+  if (verdict) return verdict.verdict;
+  if (childStatus === 'verification_failed' || contract.resultStatus === 'verification_failed') return 'failed';
+
+  const contractEvidence = record(contract.evidence);
+  const evidenceVerdict = typeof contractEvidence.verdict === 'string'
+    ? contractEvidence.verdict
+    : null;
+  const failures = array(contractEvidence.failures);
+  const handles = contract.evidenceHandles.length > 0
+    ? contract.evidenceHandles
+    : array(contractEvidence.handles);
+  if (
+    (evidenceVerdict === 'completed' || evidenceVerdict === 'verified')
+    && failures.length === 0
+    && handles.length > 0
+    && handles.every(isVerifiedEvidenceHandle)
+  ) return 'verified';
+
+  return 'not_recorded';
+}
+
+function projectChildEvidenceHandle(value: unknown): WorkbenchChildContractEvidenceHandle | null {
+  if (typeof value === 'string' && value.length > 0) {
+    return { tool: null, kind: 'evidence', value, verified: null, code: null };
+  }
+  const handle = record(value);
+  const target = typeof handle.value === 'string' ? handle.value : null;
+  const kind = typeof handle.kind === 'string' ? handle.kind : null;
+  if (!target || !kind) return null;
+  return {
+    tool: typeof handle.tool === 'string' ? handle.tool : null,
+    kind,
+    value: target,
+    verified: typeof handle.verified === 'boolean' ? handle.verified : null,
+    code: typeof handle.code === 'string' ? handle.code : null,
+  };
+}
+
+function projectChildContractEvidence(
+  contract: ChildJobContractRecord | null,
+  verdict: JobVerdictRecord | null,
+  childStatus: string,
+): WorkbenchChildContractEvidenceProjection | null {
+  if (!contract) return null;
+  const contractEvidence = record(contract.evidence);
+  const handles = (contract.evidenceHandles.length > 0
+    ? contract.evidenceHandles
+    : array(contractEvidence.handles))
+    .map(projectChildEvidenceHandle)
+    .filter((handle): handle is WorkbenchChildContractEvidenceHandle => handle !== null);
+  return {
+    parentJobId: contract.parentJobId,
+    required: contract.required,
+    verification: projectChildExecutionVerification(contract, verdict, childStatus),
+    handles,
+  };
+}
+
+function latestAttempt(attempts: readonly AttemptRecord[]): AttemptRecord | null {
+  return attempts.reduce<AttemptRecord | null>((latest, candidate) => {
+    if (!latest) return candidate;
+    if (candidate.attemptNumber !== latest.attemptNumber) {
+      return candidate.attemptNumber > latest.attemptNumber ? candidate : latest;
+    }
+    return candidate.rowId > latest.rowId ? candidate : latest;
+  }, null);
+}
+
+function projectChildExecutions(
+  reader: WorkbenchJobProjectionReader,
+  parentJobId: string,
+): WorkbenchChildExecutionProjection[] {
+  return (reader.listChildContracts?.(parentJobId) ?? []).flatMap((contract) => {
+    const child = reader.getJob(contract.childJobId);
+    if (!child || child.parentJobId !== parentJobId) return [];
+    const attempts = reader.listAttempts(child.id);
+    const attempt = contract.resultAttemptId
+      ? reader.getAttempt(contract.resultAttemptId)
+      : child.activeAttemptId
+        ? reader.getAttempt(child.activeAttemptId)
+        : latestAttempt(attempts);
+    const validAttempt = attempt?.jobId === child.id ? attempt : null;
+    const timeline = reader.listEvents(child.id, 0).sort((left, right) => left.jobSequence - right.jobSequence);
+    const verdict = reader.proof?.getVerdict(child.id) ?? null;
+    const evidence = reader.proof?.listEvidence(child.id) ?? [];
+    const unresolved = reader.listEffectsRequiringReconciliation?.(child.id) ?? [];
+    return [{
+      childJobId: child.id,
+      parentJobId,
+      required: contract.required,
+      title: child.goal,
+      status: contract.resultStatus ?? child.status,
+      sessionId: child.sessionId,
+      attemptId: validAttempt?.id ?? null,
+      runId: validAttempt?.rowId ?? null,
+      generation: validAttempt?.generation ?? contract.resultGeneration,
+      verification: projectChildExecutionVerification(contract, verdict, child.status),
+      evidenceCount: evidence.length || contract.evidenceHandles.length,
+      startedAt: timeline[0]?.createdAt ?? null,
+      endedAt: child.terminalAt,
+      cleanupState: unresolved.length > 0
+        ? 'needs_reconciliation'
+        : child.terminalAt === null ? 'active' : 'settled',
+    }];
+  });
+}
+
 function failureSummary(
   status: WorkbenchProjectionStatus,
   job: JobRecord,
@@ -128,14 +289,8 @@ export function projectWorkbenchJob(
   const job = reader.getJob(request.jobId);
   if (!job) return null;
   const attempts = reader.listAttempts(job.id);
-  const latestAttempt = attempts.reduce<AttemptRecord | null>((latest, candidate) => {
-    if (!latest) return candidate;
-    if (candidate.attemptNumber !== latest.attemptNumber) {
-      return candidate.attemptNumber > latest.attemptNumber ? candidate : latest;
-    }
-    return candidate.rowId > latest.rowId ? candidate : latest;
-  }, null);
-  const attemptId = request.attemptId ?? job.activeAttemptId ?? latestAttempt?.id ?? null;
+  const newestAttempt = latestAttempt(attempts);
+  const attemptId = request.attemptId ?? job.activeAttemptId ?? newestAttempt?.id ?? null;
   if (!attemptId) return null;
   const attempt = reader.getAttempt(attemptId);
   if (!attempt || attempt.jobId !== job.id) return null;
@@ -145,6 +300,7 @@ export function projectWorkbenchJob(
   const claims = proof?.listClaims(job.id) ?? [];
   const evidence = proof?.listEvidence(job.id) ?? [];
   const verdict = proof?.getVerdict(job.id) ?? null;
+  const childContract = reader.getChildContract?.(job.id) ?? null;
   const exported = proof ? proof.exportJson(job.id) : {};
   const status = projectWorkbenchStatus(job, verdict, claims.some((claim) => claim.required));
   const terminal = TERMINAL_JOBS.has(job.status);
@@ -163,11 +319,12 @@ export function projectWorkbenchJob(
     activeAttempt: attempt,
     attempts,
     timeline,
-    workers: reader.listChildContracts?.(job.id) ?? [],
+    workers: projectChildExecutions(reader, job.id),
     approvals: array(exported.approvals),
     effects: array(exported.effects),
     claims,
     evidence,
+    childContractEvidence: projectChildContractEvidence(childContract, verdict, job.status),
     verification: verdict,
     receipt: {
       terminal,

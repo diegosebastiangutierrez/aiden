@@ -24,6 +24,37 @@ export function summarizeWorkbenchGoal(message: string, maxLength = 120): string
   return compact.length <= maxLength ? compact : `${compact.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
 }
 
+export interface WorkbenchModelBinding {
+  provider: string;
+  model: string;
+  source: 'session' | 'default';
+}
+
+export interface WorkbenchRetryModelOverride {
+  provider: string;
+  model: string;
+}
+
+function normalizeModelBinding(value: unknown): WorkbenchModelBinding | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as Record<string, unknown>;
+  const provider = typeof candidate.provider === 'string' ? candidate.provider.trim() : '';
+  const model = typeof candidate.model === 'string' ? candidate.model.trim() : '';
+  if (!provider || !model) return null;
+  return {
+    provider,
+    model,
+    source: candidate.source === 'session' ? 'session' : 'default',
+  };
+}
+
+function sameModel(
+  left: Pick<WorkbenchModelBinding, 'provider' | 'model'> | null,
+  right: Pick<WorkbenchModelBinding, 'provider' | 'model'> | null,
+): boolean {
+  return left?.provider === right?.provider && left?.model === right?.model;
+}
+
 export function createWorkbenchJobCommands(options: {
   db: Db;
   triggerBus: TriggerBus;
@@ -40,6 +71,9 @@ export function createWorkbenchJobCommands(options: {
    * is copied into the immutable trigger event so later settings changes
    * cannot drift an already-admitted Job. */
   resolveModelBinding?: (sessionId?: string) => { provider: string; model: string; source?: 'session' | 'default' } | null;
+  /** Confirm that an explicitly selected Retry binding is currently supported
+   * and configured. Rejection happens before any trigger or Job is admitted. */
+  validateModelBinding?: (binding: WorkbenchRetryModelOverride, sessionId: string) => void | Promise<void>;
   idFactory?: () => string;
 }) {
   const controlAuthority = options.controlAuthority ?? createJobControlAuthority({ db: options.db, jobEngine: options.jobEngine });
@@ -52,7 +86,7 @@ export function createWorkbenchJobCommands(options: {
     message: string;
     sessionId?: string;
     idempotencyKey?: string;
-    modelBinding?: { provider: string; model: string; source: 'session' | 'default' } | null;
+    modelBinding?: WorkbenchModelBinding | null;
   }) => {
     const idempotencyKey = task.idempotencyKey?.trim() || nextId();
     const sessionId = task.sessionId?.trim() || `workbench:${idempotencyKey}`;
@@ -94,7 +128,7 @@ export function createWorkbenchJobCommands(options: {
     sessionId: string;
     idempotencyKey: string;
     conversationAnchorTriggerEventId: number;
-    modelBinding?: { provider: string; model: string; source: 'session' | 'default' } | null;
+    modelBinding?: WorkbenchModelBinding | null;
   }) => {
     const actionKey = `retry:${task.originalJobId}:${task.idempotencyKey}`;
     const trigger = options.triggerBus.insert({
@@ -109,6 +143,12 @@ export function createWorkbenchJobCommands(options: {
         ...(task.modelBinding ? { model_binding: task.modelBinding } : {}),
       },
     });
+    if (!trigger.inserted) {
+      const existingBinding = normalizeModelBinding(options.triggerBus.get(trigger.id)?.payload.model_binding);
+      if (!sameModel(existingBinding, task.modelBinding ?? null)) {
+        throw new Error('This Retry request identity was already used with a different provider/model selection.');
+      }
+    }
     const admission = options.jobEngine.retryJob({
       originalJobId: task.originalJobId,
       instanceId: options.instanceId,
@@ -133,6 +173,13 @@ export function createWorkbenchJobCommands(options: {
   }).immediate;
 
   const finalRun = new Set(['completed', 'succeeded', 'failed', 'cancelled', 'interrupted']);
+  const selectedModelBinding = (sessionId?: string): WorkbenchModelBinding | null =>
+    normalizeModelBinding(options.resolveModelBinding?.(sessionId) ?? null);
+  const modelBindingForRun = (runId: number): WorkbenchModelBinding | null => {
+    const run = options.runStore.get(runId);
+    if (!run?.triggerEventId) return null;
+    return normalizeModelBinding(options.triggerBus.get(run.triggerEventId)?.payload.model_binding);
+  };
   const conversationAnchorForRetry = (job: JobRecord, prompt: string): number => {
     const visited = new Set<string>();
     let root = job;
@@ -218,10 +265,7 @@ export function createWorkbenchJobCommands(options: {
   return {
     enqueue: {
       enqueue(task: { message: string; sessionId?: string; idempotencyKey?: string }) {
-        const resolved = options.resolveModelBinding?.(task.sessionId) ?? null;
-        const modelBinding = resolved?.provider?.trim() && resolved.model?.trim()
-          ? { provider: resolved.provider.trim(), model: resolved.model.trim(), source: resolved.source ?? 'default' as const }
-          : null;
+        const modelBinding = selectedModelBinding(task.sessionId);
         const accepted = enqueueTx({ ...task, modelBinding });
         if (accepted.trigger.inserted && options.sessionStore) {
           try {
@@ -299,7 +343,15 @@ export function createWorkbenchJobCommands(options: {
       },
     },
     retry: {
-      retry(runId: number, idempotencyKey?: string) {
+      describe(runId: number) {
+        const run = options.runStore.get(runId);
+        const job = run?.taskId ? options.jobEngine.getJob(run.taskId) : null;
+        return {
+          jobBinding: modelBindingForRun(runId),
+          selectedBinding: selectedModelBinding(job?.sessionId),
+        };
+      },
+      async retry(runId: number, idempotencyKey?: string, modelOverride?: WorkbenchRetryModelOverride) {
         const run = options.runStore.get(runId);
         if (!run?.taskId) return { accepted: false as const, runId };
         const originalJob = options.jobEngine.getJob(run.taskId);
@@ -311,17 +363,24 @@ export function createWorkbenchJobCommands(options: {
           : null;
         const prompt = typeof body?.prompt === 'string' ? body.prompt : '';
         if (!prompt.trim()) throw new Error('The exact original Workbench request is unavailable and cannot be retried safely.');
-        const rawBinding = payload.model_binding && typeof payload.model_binding === 'object'
-          ? payload.model_binding as Record<string, unknown>
-          : null;
-        const modelBinding = typeof rawBinding?.provider === 'string' && rawBinding.provider.trim()
-          && typeof rawBinding?.model === 'string' && rawBinding.model.trim()
-          ? {
-              provider: rawBinding.provider.trim(),
-              model: rawBinding.model.trim(),
-              source: rawBinding.source === 'session' ? 'session' as const : 'default' as const,
-            }
-          : null;
+        const originalBinding = normalizeModelBinding(payload.model_binding);
+        let modelBinding = originalBinding;
+        if (modelOverride !== undefined) {
+          const provider = typeof modelOverride.provider === 'string' ? modelOverride.provider.trim() : '';
+          const model = typeof modelOverride.model === 'string' ? modelOverride.model.trim() : '';
+          if (!provider || !model) {
+            throw new Error('An explicit Retry requires both a provider and model.');
+          }
+          const selected = selectedModelBinding(originalJob.sessionId);
+          if (!sameModel(selected, { provider, model })) {
+            throw new Error('The requested Retry provider/model is not the current explicit Workbench selection.');
+          }
+          if (!options.validateModelBinding) {
+            throw new Error('Explicit Retry model validation is unavailable.');
+          }
+          await options.validateModelBinding({ provider, model }, originalJob.sessionId);
+          modelBinding = { provider, model, source: selected!.source };
+        }
         const conversationAnchorTriggerEventId = conversationAnchorForRetry(originalJob, prompt);
         const stableKey = idempotencyKey?.trim() || originalJob.id;
         const retried = retryTx({
@@ -348,6 +407,7 @@ export function createWorkbenchJobCommands(options: {
           runId: retried.admission.runId,
           generation: retried.admission.generation,
           triggerEventId: retried.trigger.id,
+          modelBinding,
         };
       },
     },

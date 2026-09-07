@@ -429,7 +429,10 @@ describe('Workbench exact task admission and run following', () => {
     expect(done).toHaveBeenCalledOnce();
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining('/projection?attemptId=attempt_exact&runId=41'),
-      { cache: 'no-store' },
+      {
+        cache: 'no-store',
+        headers: { 'x-workbench-token': 'token_exact' },
+      },
     );
   });
 

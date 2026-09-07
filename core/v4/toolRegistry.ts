@@ -312,6 +312,15 @@ export function isExclusiveToolInteraction(
   return interaction?.mode === 'exclusive_modal';
 }
 
+export interface ToolArgumentDenial {
+  code: string;
+  message: string;
+  availableAlternative?: {
+    tool: string;
+    reason: string;
+  };
+}
+
 export interface ToolHandler {
   schema: ToolSchema;
   execute(args: Record<string, unknown>, context: ToolContext): Promise<unknown>;
@@ -319,7 +328,10 @@ export interface ToolHandler {
   /** True for any tool that mutates state (disk, processes, network writes). */
   mutates: boolean;
   /** Fail-closed validation that runs before hooks, approval, persistence or execution. */
-  validateArguments?: (args: Readonly<Record<string, unknown>>, context?: ToolContext) => string | null;
+  validateArguments?: (
+    args: Readonly<Record<string, unknown>>,
+    context?: ToolContext,
+  ) => string | ToolArgumentDenial | null;
   /** Group label — `web`, `files`, `browser`, `sessions`, `skills`, etc. */
   toolset?: string;
   /**
@@ -701,11 +713,21 @@ export class ToolRegistry {
       }
       const handlerArgumentError = handler.validateArguments?.(args, context) ?? null;
       if (handlerArgumentError) {
+        const denial = typeof handlerArgumentError === 'string'
+          ? null
+          : handlerArgumentError;
+        const message = typeof handlerArgumentError === 'string'
+          ? handlerArgumentError
+          : handlerArgumentError.message;
         return finish({
           id: call.id,
           name: call.name,
-          result: null,
-          error: `Invalid arguments for ${call.name}: ${handlerArgumentError}`,
+          result: denial ? {
+            reason: denial.code,
+            message: denial.message,
+            ...(denial.availableAlternative ? { availableAlternative: denial.availableAlternative } : {}),
+          } : null,
+          error: `Invalid arguments for ${call.name}: ${message}`,
         }, 'blocked');
       }
 

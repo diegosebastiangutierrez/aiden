@@ -158,6 +158,24 @@ export function groupActiveWork(jobs: readonly ActiveJobView[]): ActiveWorkGroup
   return groups;
 }
 
+const COMPLETED_HISTORY_STATES = new Set([
+  'completed', 'verified', 'partially_verified', 'completed_unverified',
+]);
+
+/** Group durable conversation identities without using titles or browser cache. */
+export function groupDurableHistory<T extends { status?: string }>(items: readonly T[]): {
+  completed: T[];
+  recent: T[];
+} {
+  const completed: T[] = [];
+  const recent: T[] = [];
+  for (const item of items) {
+    if (COMPLETED_HISTORY_STATES.has((item.status ?? '').toLowerCase())) completed.push(item);
+    else recent.push(item);
+  }
+  return { completed, recent };
+}
+
 export function projectTerminalActiveJob(projection: {
   identity: {
     sessionId?: string | null;
