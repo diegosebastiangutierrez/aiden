@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 const root = path.resolve(__dirname, '../../..');
 const manifest = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
 const lock = JSON.parse(readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
-const affectedRoots = ['@modelcontextprotocol/sdk', '@slack/bolt', 'epub2', 'express', 'imap-simple', 'twilio'];
+const affectedRoots = ['@modelcontextprotocol/sdk', '@slack/bolt', 'express', 'imap-simple', 'twilio'];
 
 describe('runtime package dependency resolution', () => {
   it('ships the patched dependency chains without relying on consumer overrides', () => {
@@ -18,19 +18,19 @@ describe('runtime package dependency resolution', () => {
     expect(manifest.bundleDependencies).not.toContain('node-pty');
   });
 
-  it('keeps patched ZIP, mail encoding and HTTP parsing resolutions in their actual callers', () => {
+  it('keeps patched mail encoding and HTTP parsing resolutions in their actual callers', () => {
     const require = createRequire(import.meta.url);
     const from = (name: string) => createRequire(require.resolve(`${name}/package.json`));
-    const epub = from('epub2');
     const mail = createRequire(from('imap-simple').resolve('imap/package.json'));
     const utf7 = createRequire(mail.resolve('utf7/package.json'));
-    expect(epub('adm-zip/package.json').version).toBe(lock.packages['node_modules/adm-zip'].version);
-    expect(utf7('semver/package.json').version).toBe(lock.packages['node_modules/semver'].version);
-    expect(from('express')('qs/package.json').version).toBe(lock.packages['node_modules/qs'].version);
-    const Zip = epub('adm-zip');
-    const archive = new Zip();
-    archive.addFile('chapter.txt', Buffer.from('chapter content'));
-    expect(new Zip(archive.toBuffer()).readAsText('chapter.txt')).toBe('chapter content');
+    const assertLocked = (caller: NodeRequire, name: string) => {
+      const resolved = caller.resolve(`${name}/package.json`);
+      const location = path.relative(root, path.dirname(resolved)).split(path.sep).join('/');
+      expect(caller(`${name}/package.json`).version).toBe(lock.packages[location]?.version);
+    };
+    assertLocked(utf7, 'semver');
+    assertLocked(from('express'), 'qs');
+    expect(utf7('semver').gte(utf7('semver/package.json').version, '7.5.2')).toBe(true);
     const encoding = mail('utf7');
     expect(encoding.decode(encoding.encode('Inbox ✓'))).toBe('Inbox ✓');
     expect(encoding.imap.decode(encoding.imap.encode('Inbox ✓'))).toBe('Inbox ✓');

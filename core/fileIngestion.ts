@@ -9,10 +9,11 @@
 //
 // Dependencies (bundled with DevOS):
 //   pdf-parse  — pure-JS PDF text extraction
-//   epub2      — EPUB chapter extraction
+//   yauzl/sax  — bounded, read-only EPUB chapter extraction
 
 import fs   from 'fs'
 import path from 'path'
+import { readEpubText } from './epubReader'
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -52,40 +53,9 @@ export async function extractPDF(filePath: string): Promise<ExtractionResult> {
 // Reads all spine chapters and concatenates their text content
 
 export async function extractEPUB(filePath: string): Promise<ExtractionResult> {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const EPub = require('epub2').EPub as new (p: string) => any
-
-  const fileSizeMB = parseFloat((fs.statSync(filePath).size / 1024 / 1024).toFixed(2))
-
-  const epub = new EPub(filePath)
-
-  await new Promise<void>((resolve, reject) => {
-    epub.on('end',   resolve)
-    epub.on('error', reject)
-    epub.parse()
-  })
-
-  const chapterIds: string[] = epub.spine.contents.map((c: any) => c.id)
-
-  const textParts: string[] = []
-
-  for (const id of chapterIds) {
-    try {
-      const chapter = await new Promise<string>((resolve, reject) => {
-        epub.getChapter(id, (err: any, data: string) => {
-          if (err) reject(err)
-          else resolve(data || '')
-        })
-      })
-      // Strip HTML tags from chapter HTML
-      const stripped = chapter.replace(/<[^>]+>/g, ' ')
-      textParts.push(stripped)
-    } catch {
-      // skip unreadable chapters
-    }
-  }
-
-  const text      = cleanText(textParts.join('\n'))
+  const extracted = await readEpubText(filePath)
+  const fileSizeMB = parseFloat((extracted.bytes / 1024 / 1024).toFixed(2))
+  const text      = cleanText(extracted.text)
   const wordCount = countWords(text)
 
   return { text, wordCount, pageCount: 0, format: 'epub', fileSizeMB }

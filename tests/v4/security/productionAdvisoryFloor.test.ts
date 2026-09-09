@@ -35,7 +35,6 @@ function installedVersions(name: string, includeDevelopment = false): string[] {
 describe('production dependency security floors', () => {
   const floors: Record<string, string> = {
     '@hono/node-server': '1.19.15',
-    'adm-zip': '0.6.0',
     'axios': '1.18.0',
     'body-parser': '1.20.6',
     'brace-expansion': '2.1.4',
@@ -48,7 +47,9 @@ describe('production dependency security floors', () => {
     'ip-address': '10.4.0',
     'js-yaml': '4.3.1',
     'linkify-it': '5.0.2',
-    'mailparser': '3.9.16',
+    'mailparser': '3.9.20',
+    'multer': '2.3.0',
+    'nodemailer': '9.1.1',
     'protobufjs': '8.6.6',
     'undici': '6.28.0',
   };
@@ -65,6 +66,10 @@ describe('production dependency security floors', () => {
 });
 
 describe('development and packaging dependency security floors', () => {
+  it('removes the obsolete EPUB archive chain from every installed scope', () => {
+    expect(installedVersions('epub2', true)).toEqual([]);
+    expect(installedVersions('adm-zip', true)).toEqual([]);
+  });
   const floors: Record<string, string> = {
     '@electron-internal/extract-zip': '1.0.1',
     'app-builder-lib': '26.15.0',
