@@ -188,6 +188,31 @@ export function succeededTargets(trace: HonestyTraceEntry[]): Set<string> {
   return out;
 }
 
+/** Resolve only a rejected observation lookup followed by the exact verified action. */
+export function recoveredBrowserObservationFailure(entry: HonestyTraceEntry, trace: HonestyTraceEntry[]): boolean {
+  const action = (item: HonestyTraceEntry): Record<string, unknown> | null => {
+    if (!item.name.startsWith('browser_') || !item.result || typeof item.result !== 'object') return null;
+    const value = (item.result as Record<string, unknown>).browserAction;
+    return value && typeof value === 'object' ? value as Record<string, unknown> : null;
+  };
+  const before = action(entry);
+  if (!before || before.state !== 'failed' || before.commandOk !== false
+      || before.errorCode !== 'FRESH_OBSERVATION_REQUIRED' || before.actionType !== entry.name) return false;
+  const identity = ['jobId', 'attemptId', 'browserSessionId', 'tabId', 'actionType', 'actionSignature', 'preStateDigest'];
+  if (identity.some(key => typeof before[key] !== 'string' || !before[key])
+      || !Number.isSafeInteger(before.generation) || !Number.isSafeInteger(before.actionSequence)
+      || typeof before.actionId !== 'string' || !before.actionId) return false;
+  return trace.slice(trace.indexOf(entry) + 1).some(candidate => {
+    const after = action(candidate);
+    return isVerifiedOk(candidate) && candidate.name === entry.name && after !== null
+      && after.state === 'verified' && after.commandOk === true && after.semanticOk === true
+      && typeof after.actionId === 'string' && after.actionId.length > 0 && after.actionId !== before.actionId
+      && Number.isSafeInteger(after.actionSequence) && Number(after.actionSequence) > Number(before.actionSequence)
+      && after.generation === before.generation && identity.every(key => after[key] === before[key])
+      && Array.isArray(after.evidenceIds) && after.evidenceIds.some(id => typeof id === 'string' && id.length > 0);
+  });
+}
+
 /**
  * Memory tools whose results carry the `verified` flag set by
  * MemoryGuard. The list is closed — adding a new memory_* tool
@@ -388,6 +413,7 @@ export class HonestyEnforcement {
   recordOutcomes(trace: HonestyTraceEntry[], uiClaims: UiClaim[] = []): HonestyEvent[] {
     const events: HonestyEvent[] = [];
     for (const t of trace) {
+      if (recoveredBrowserObservationFailure(t, trace)) continue;
       if (t.error && t.handlerMutates === true) {
         events.push({
           kind:   'mutation_errored',

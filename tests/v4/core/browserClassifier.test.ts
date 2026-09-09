@@ -44,6 +44,20 @@ function mkOk(): VerificationResult {
   return { ok: true, confidence: 1.0, code: 'ok' };
 }
 
+describe('browser action-specific verification', () => {
+  it('preserves verified input readback when visible page text does not change', () => {
+    const result = mkResult({ name: 'browser_type', result: {
+      success: true, verified: true, value: 'demo value',
+      browserState: { needs_verifier: true, maybe_noop: true, progress_score: 0 },
+    } });
+    expect(browserInteractiveVerifier('browser_type', { text: 'demo value' }, result).ok).toBe(true);
+  });
+  it('does not accept a failed action merely because verified is present', () => {
+    const result = mkResult({ result: { success: false, verified: true, error: 'Input value did not match' } });
+    expect(browserInteractiveVerifier('browser_type', {}, result).ok).toBe(false);
+  });
+});
+
 // Helper: tool result with a browserState sidecar.
 function mkResultWithSidecar(sidecar: Record<string, unknown>): ToolCallResult {
   return mkResult({

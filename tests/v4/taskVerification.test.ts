@@ -32,6 +32,45 @@ const V_OK   = { ok: true,  confidence: 1,   code: 'ok' as const };
 const V_LOW  = { ok: true,  confidence: 0.4, code: 'low_signal' as const, reason: 'exit 0, empty stdout' };
 const V_FAIL = { ok: false, confidence: 1,   code: 'failed' as const, reason: 'file-write unconfirmed (bytesWritten: 0)' };
 
+describe('canonical browser observation recovery', () => {
+  const receipt = {
+    jobId: 'job', attemptId: 'attempt', generation: 1, browserSessionId: 'session',
+    tabId: 'tab', actionType: 'browser_click', actionSignature: 'same-action',
+    preStateDigest: 'observed-page',
+  };
+  const failed = () => entry({ name: 'browser_click', handlerMutates: true, verification: V_FAIL,
+    result: { success: false, browserAction: { ...receipt, actionId: 'before', actionSequence: 1,
+      state: 'failed', commandOk: false, semanticOk: false, errorCode: 'FRESH_OBSERVATION_REQUIRED', evidenceIds: [] } },
+  });
+  const recovered = (over: Record<string, unknown> = {}) => entry({ name: 'browser_click', handlerMutates: true, verification: V_OK,
+    result: { success: true, browserAction: { ...receipt, actionId: 'after', actionSequence: 3,
+      state: 'verified', commandOk: true, semanticOk: true, errorCode: null, evidenceIds: ['readback'], ...over } },
+  });
+  it('resolves only a pre-dispatch observation failure after exact verified recovery and retains both handles', () => {
+    const trace = [failed(), recovered()];
+    const original = JSON.stringify(trace);
+    const verdict = decideTaskVerdict(trace);
+    expect(verdict.verdict).toBe('completed');
+    expect(verdict.failures).toEqual([]);
+    expect(verdict.handles).toHaveLength(2);
+    expect(new HonestyEnforcement().recordOutcomes(trace)).toEqual([]);
+    expect(JSON.stringify(trace)).toBe(original);
+  });
+  it.each([
+    { jobId: 'other' }, { attemptId: 'other' }, { generation: 2 },
+    { browserSessionId: 'other' }, { tabId: 'other' }, { actionSignature: 'other' },
+    { actionSequence: 1 }, { semanticOk: false }, { state: 'unknown' }, { evidenceIds: [] },
+  ])('does not reconcile mismatched or unverified recovery %j', (over) => {
+    expect(decideTaskVerdict([failed(), recovered(over)]).verdict).toBe('verification_failed');
+  });
+  it('does not redeem an uncertain dispatched failure or a success earlier in the trace', () => {
+    const uncertain = failed();
+    (uncertain.result as any).browserAction.errorCode = 'STALE_ELEMENT';
+    expect(decideTaskVerdict([uncertain, recovered()]).verdict).toBe('verification_failed');
+    expect(decideTaskVerdict([recovered(), failed()]).verdict).toBe('verification_failed');
+  });
+});
+
 describe('decideTaskVerdict — policy', () => {
   it('CRON-BUG REGRESSION: mutating tool claimed success, verifier saw no evidence → verification_failed, never completed', () => {
     const d = decideTaskVerdict([

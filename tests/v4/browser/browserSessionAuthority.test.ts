@@ -403,6 +403,40 @@ describe('BrowserSession authority', () => {
     })).not.toThrow();
   });
 
+  it('allows fresh snapshot resolution after a ref expired before any browser action', () => {
+    const binding = admit('expired-snapshot');
+    engine.browser.ensureSession(binding);
+    const command = { toolCallId: null, effectId: null, tabId: null, actionType: 'browser_click', args: { ref: '@e14' }, preStateDigest: 'same-page' };
+    const first = engine.browser.beginAction(binding, command);
+    engine.browser.markActionDispatched(binding, first.actionId);
+    engine.browser.completeAction(binding, first.actionId, {
+      outcome: 'failed', commandOk: false, semanticOk: false, postStateDigest: 'same-page',
+      verification: {}, evidencePayload: null, errorCode: 'FRESH_OBSERVATION_REQUIRED',
+    });
+    const retry = engine.browser.beginAction(binding, command);
+    expect(retry.actionId).not.toBe(first.actionId);
+    expect(engine.browser.getAction(first.actionId)?.state).toBe('failed');
+    engine.browser.markActionDispatched(binding, retry.actionId);
+    engine.browser.completeAction(binding, retry.actionId, {
+      outcome: 'returned', commandOk: true, semanticOk: false, postStateDigest: 'same-page',
+      verification: {}, evidencePayload: null,
+    });
+    expect(() => engine.browser.beginAction(binding, command)).toThrowError(expect.objectContaining({ code: 'NO_PROGRESS' }));
+  });
+
+  it('does not exempt generic stale-action failures from no-progress protection', () => {
+    const binding = admit('uncertain-stale-action');
+    engine.browser.ensureSession(binding);
+    const command = { toolCallId: null, effectId: null, tabId: null, actionType: 'browser_click', args: { ref: '@e3' }, preStateDigest: 'same-page' };
+    const first = engine.browser.beginAction(binding, command);
+    engine.browser.markActionDispatched(binding, first.actionId);
+    engine.browser.completeAction(binding, first.actionId, {
+      outcome: 'failed', commandOk: false, semanticOk: false, postStateDigest: 'same-page',
+      verification: {}, evidencePayload: null, errorCode: 'STALE_ELEMENT',
+    });
+    expect(() => engine.browser.beginAction(binding, command)).toThrowError(expect.objectContaining({ code: 'NO_PROGRESS' }));
+  });
+
   it('refuses a mutation that has no fresh pre-action observation', () => {
     const binding = admit('fresh-observation');
     engine.browser.ensureSession(binding);

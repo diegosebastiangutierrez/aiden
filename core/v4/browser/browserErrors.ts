@@ -34,6 +34,10 @@ export function classifyBrowserError(error: unknown, operation = ''): BrowserTyp
   if (error instanceof BrowserAuthorityError) {
     return { code: error.code as BrowserErrorCode, message, retryable: error.code === 'NO_PROGRESS' };
   }
+  if ((operation === 'browser_click' || operation === 'browser_type')
+      && /^Element ref @e\d+ is not in the current snapshot\. Run browser_snapshot to refresh element refs, then retry\.$/.test(message)) {
+    return { code: 'FRESH_OBSERVATION_REQUIRED', message, retryable: true };
+  }
   const text = `${operation} ${message}`.toLowerCase();
   const match = (pattern: RegExp, code: BrowserErrorCode, retryable = false): BrowserTypedError | null =>
     pattern.test(text) ? { code, message, retryable } : null;

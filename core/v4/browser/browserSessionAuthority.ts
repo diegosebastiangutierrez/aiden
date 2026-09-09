@@ -836,9 +836,12 @@ export function createBrowserSessionAuthority(options: {
         preStateDigest: command.preStateDigest ?? null,
       });
       const repeated = db.prepare(
+        // An expired snapshot lookup did not reach the browser. A refreshed
+        // lease may be tried; actual no-op and uncertain actions stay fenced.
         `SELECT action_id FROM browser_action_receipts
           WHERE browser_session_id=? AND action_signature=?
             AND semantic_ok=0 AND state IN ('returned','failed','not_applied')
+            AND NOT (state='failed' AND command_ok=0 AND COALESCE(error_code,'')='FRESH_OBSERVATION_REQUIRED')
           ORDER BY created_at DESC LIMIT 1`,
       ).get(session.browserSessionId, actionSignature) as { action_id: string } | undefined;
       if (repeated) throw new BrowserAuthorityError('NO_PROGRESS', 'Repeated browser action produced no progress');

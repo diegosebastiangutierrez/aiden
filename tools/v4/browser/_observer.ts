@@ -504,6 +504,17 @@ export function withBrowserState(
         }
       }
       if (handler.mutates === true && successful) currentBrowserLeaseStore().invalidate();
+      // Only the durable authority supplies this bounded receipt projection.
+      // Keep failed attempts in history; settlement can correlate an exact later recovery.
+      const canonicalAction = scope && receipt ? scope.authority.getAction(receipt.actionId) : null;
+      if (canonicalAction && result && typeof result === 'object' && !Array.isArray(result)) {
+        const { actionId, actionSequence, jobId, attemptId, generation, browserSessionId,
+          tabId, actionType, actionSignature, preStateDigest, state, commandOk, semanticOk,
+          errorCode, evidenceIds } = canonicalAction;
+        result = { ...result, browserAction: { actionId, actionSequence, jobId, attemptId, generation,
+          browserSessionId, tabId, actionType, actionSignature, preStateDigest, state,
+          commandOk, semanticOk, errorCode, evidenceIds } };
+      }
       if (scope && blocker) {
         scope.authority.requireUserControl(
           scope.binding,

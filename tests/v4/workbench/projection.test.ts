@@ -17,6 +17,10 @@ function fixture(overrides: Record<string, unknown> = {}): WorkbenchJobProjectio
   };
   return {
     getJob: (id) => id === 'job_1' ? job : null,
+    getVerificationFailure: () => {
+      const failures = (overrides.evidence as { failures?: Array<{ reason?: string }> } | undefined)?.failures;
+      return failures?.[0]?.reason ?? null;
+    },
     getAttempt: (id) => id === 'attempt_1' ? attempt : null,
     listAttempts: () => [attempt],
     listEvents: () => [
@@ -34,6 +38,30 @@ function fixture(overrides: Record<string, unknown> = {}): WorkbenchJobProjectio
 }
 
 describe('canonical Workbench projection', () => {
+  it('reports retained verification failure instead of the provider stop reason', () => {
+    const reader = fixture({
+      status: 'failed', terminalAt: 20, terminalOutcome: 'verification_failed', finishReason: 'stop',
+      evidence: { failures: [{ tool: 'open_url', reason: 'External launching is unavailable inside a durable Job. Use browser_navigate.' }] },
+    });
+    expect(projectWorkbenchJob(reader, { jobId: 'job_1' })?.receipt).toMatchObject({
+      status: 'failed', terminal: true, outcome: 'verification_failed',
+      summary: 'External launching is unavailable inside a durable Job. Use browser_navigate.',
+    });
+  });
+
+  it('keeps failed verification explicit when its detailed reason is absent', () => {
+    const reader = fixture({ status: 'failed', terminalAt: 20, terminalOutcome: 'verification_failed', finishReason: 'stop' });
+    expect(projectWorkbenchJob(reader, { jobId: 'job_1' })?.receipt.summary)
+      .toBe('Verification failed. Review the retained result and Evidence before retrying.');
+  });
+
+  it('redacts credential-like values in retained verification failure details', () => {
+    const reader = fixture({ status: 'failed', terminalAt: 20, terminalOutcome: 'verification_failed', finishReason: 'stop',
+      evidence: { failures: [{ reason: 'Request rejected: token=private-test-value' }] },
+    });
+    expect(projectWorkbenchJob(reader, { jobId: 'job_1' })?.receipt.summary)
+      .toBe('Request rejected: token: [redacted]');
+  });
   it('B1 binds exact Job, Attempt, run, generation, session, and workspace identity', () => {
     expect(projectWorkbenchJob(fixture(), { jobId: 'job_1', attemptId: 'attempt_1', runId: 9 })?.identity)
       .toEqual({ jobId: 'job_1', rootJobId: 'job_1', attemptId: 'attempt_1', runId: 9, generation: 1, sessionId: 'session_1', workspaceId: 'workspace_1' });

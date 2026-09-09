@@ -245,9 +245,9 @@ export const youtubeSearchTool: ToolHandler = {
     name: 'youtube_search',
     description:
       'Search YouTube and return real /watch?v= URLs (with title + channel ' +
-      'when extractable). Use this BEFORE open_url for any media-playback ' +
-      'request — open_url MUST receive a URL string that appeared in this ' +
-      'tool’s result, never a URL composed by the model.',
+      'when extractable). Use this before browser_navigate for media requests in durable Jobs. ' +
+      'Navigate only to a URL returned by this tool, never a URL composed by the model. ' +
+      'Navigation alone does not prove playback; inspect the player, use the permitted play control if needed, and verify playback before claiming it.',
     inputSchema: {
       type: 'object',
       properties: {

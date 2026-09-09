@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 
 import { runMigrations } from '../../../core/v4/daemon/db/migrations';
+import { projectWorkbenchJob } from '../../../core/v4/workbench/projection';
 import {
   IdempotencyConflictError,
   createJobEngine,
@@ -75,6 +76,18 @@ afterEach(() => {
 });
 
 describe('Job admission', () => {
+  it('projects the stored verification failure for the exact Job without exposing its envelope', () => {
+    const admitted = submit();
+    const other = submit({ idempotencyKey: 'other', requestFingerprint: 'other' });
+    db.prepare('UPDATE tasks SET status = ?, terminal_outcome = ?, finish_reason = ?, terminal_at = ?, evidence = ? WHERE id = ?')
+      .run('failed', 'verification_failed', 'stop', Date.now(), JSON.stringify({ failures: [{ reason: 'Browser action rejected: token=private-test-value' }], privateDetail: 'not-for-projection' }), admitted.jobId);
+    const projection = projectWorkbenchJob(engine, { jobId: admitted.jobId });
+    expect(projection?.receipt.summary).toBe('Browser action rejected: token: [redacted]');
+    expect(projection?.receipt.status).toBe('failed');
+    expect(JSON.stringify(projection)).not.toContain('not-for-projection');
+    expect(JSON.stringify(projection)).not.toContain('private-test-value');
+    expect(projectWorkbenchJob(engine, { jobId: other.jobId })?.receipt.summary).toBe('queued');
+  });
   it('durably creates exactly one Job and Attempt before returning', () => {
     const admitted = submit();
 

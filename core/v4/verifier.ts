@@ -469,6 +469,9 @@ export const browserInteractiveVerifier: VerifierFn = (toolName, args, result) =
   // that case the verifier falls back to the default-passing result.
   const inner = result.result;
   if (!inner || typeof inner !== 'object') return base;
+  // Exact action readback (for example an input value) is stronger than a
+  // page-text hash, which need not change when a form field changes.
+  if ((inner as { verified?: unknown }).verified === true) return base;
   const bs = (inner as { browserState?: BrowserStateSidecarForVerifier }).browserState;
   if (!bs) return base;
   if (!bs.needs_verifier) return base;

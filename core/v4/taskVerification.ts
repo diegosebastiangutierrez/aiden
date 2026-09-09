@@ -43,7 +43,7 @@
  * reshape.
  */
 
-import { sideEffectTargetKey, type HonestyTraceEntry } from '../../moat/honestyEnforcement';
+import { recoveredBrowserObservationFailure, sideEffectTargetKey, type HonestyTraceEntry } from '../../moat/honestyEnforcement';
 
 // ── Evidence shapes (persisted on tasks.evidence as JSON) ──────────────
 
@@ -310,6 +310,7 @@ export function decideTaskVerdict(
   // Collect only the UNRESOLVED failures — no longer a blind push-on-any-failure.
   for (const m of mutating) {
     if (!isFail(m)) continue;
+    if (recoveredBrowserObservationFailure(m, trace)) continue;
     const k = sideEffectTargetKey(m);
     if (k != null && landed.has(k)) continue;   // redeemed by a later success at the same target
     const reason = (claimedOk(m) && pathMissing(m))

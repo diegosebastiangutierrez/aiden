@@ -299,6 +299,7 @@ export interface JobEngine {
     now?: number;
   }): RetryAdmissionResult;
   getJob(jobId: string): JobRecord | null;
+  getVerificationFailure(jobId: string): string | null;
   listJobs(filters?: {
     sessionId?: string;
     status?: string;
@@ -3289,6 +3290,15 @@ export function createJobEngine(opts: CreateJobEngineOptions): JobEngine {
     getJob(jobId) {
       const row = getJobRow(jobId);
       return row ? mapJob(row) : null;
+    },
+    getVerificationFailure(jobId) {
+      const row = db.prepare('SELECT evidence FROM tasks WHERE id = ?').get(jobId) as { evidence: string | null } | undefined;
+      const failures = parseRecord(row?.evidence).failures;
+      if (!Array.isArray(failures)) return null;
+      for (const failure of failures) {
+        if (failure && typeof failure === 'object' && typeof failure.reason === 'string' && failure.reason.trim()) return failure.reason;
+      }
+      return null;
     },
     listJobs(filters = {}) {
       const clauses: string[] = [];

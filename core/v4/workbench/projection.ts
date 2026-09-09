@@ -23,6 +23,7 @@ export type WorkbenchProjectionStatus =
 
 export interface WorkbenchJobProjectionReader {
   getJob(jobId: string): JobRecord | null;
+  getVerificationFailure?(jobId: string): string | null;
   getAttempt(attemptId: string): AttemptRecord | null;
   listAttempts(jobId: string): AttemptRecord[];
   listEvents(jobId: string, afterSequence?: number): JobEventRecord[];
@@ -275,6 +276,7 @@ function failureSummary(
   job: JobRecord,
   verdict: JobVerdictRecord | null,
   timeline: JobEventRecord[],
+  reader: WorkbenchJobProjectionReader,
 ): string {
   if (isReconciledDenial(job)) {
     return 'Required action was denied before execution. Historical Evidence was not recorded.';
@@ -287,7 +289,13 @@ function failureSummary(
     const raw = payload.error ?? payload.invocationError ?? payload.reason ?? payload.lastError;
     if (typeof raw === 'string' && raw.trim()) return operatorStatusMessage(raw, status);
   }
-  return operatorStatusMessage(job.finishReason, verdict?.verdict ?? status);
+  const retainedFailure = reader.getVerificationFailure?.(job.id);
+  if (retainedFailure?.trim()) return operatorStatusMessage(retainedFailure, status);
+  if (job.terminalOutcome === 'verification_failed') {
+    return 'Verification failed. Review the retained result and Evidence before retrying.';
+  }
+  // A provider's normal end-of-response marker is not an execution failure reason.
+  return operatorStatusMessage(job.finishReason === 'stop' ? null : job.finishReason, verdict?.verdict ?? status);
 }
 
 /** Build a read-only projection from existing durable authorities. */
@@ -341,7 +349,7 @@ export function projectWorkbenchJob(
       outcome: job.terminalOutcome,
       finishReason: job.finishReason,
       verdict,
-        summary: failureSummary(status, job, verdict, timeline),
+        summary: failureSummary(status, job, verdict, timeline, reader),
     },
     eventCursor: timeline.length > 0 ? timeline[timeline.length - 1].jobSequence : 0,
   };

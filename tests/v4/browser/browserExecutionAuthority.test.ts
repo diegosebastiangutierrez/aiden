@@ -11,6 +11,8 @@ import { currentBrowserLeaseStore } from '../../../core/v4/browser/browserLeaseS
 import type { LeaseStore } from '../../../core/v4/browserState';
 import { currentBrowserExecutionScope } from '../../../core/v4/browser/browserExecutionScope';
 import { resolveAidenPaths } from '../../../core/v4/paths';
+import { browserInteractiveVerifier } from '../../../core/v4/verifier';
+import { decideTaskVerdict } from '../../../core/v4/taskVerification';
 
 const safeFetcher = () => Promise.resolve({ ok: true as const, text: '' });
 
@@ -77,12 +79,17 @@ describe('durable browser execution boundary', () => {
       { url: 'https://fixture.test/start', hash: 'before' },
       { url: 'https://fixture.test/done', hash: 'after' },
     ]), safeFetcher);
-    await runWithJobExecutionContext(context('verified'), () => wrapped.execute({}, toolContext));
+    const result = await runWithJobExecutionContext(context('verified'), () => wrapped.execute({}, toolContext));
     const receipt = db.prepare(
       'SELECT state,command_ok,semantic_ok,evidence_ids_json FROM browser_action_receipts',
     ).get() as { state: string; command_ok: number; semantic_ok: number; evidence_ids_json: string };
     expect(receipt).toMatchObject({ state: 'verified', command_ok: 1, semantic_ok: 1 });
     expect(JSON.parse(receipt.evidence_ids_json)).toHaveLength(1);
+    expect(result).toMatchObject({ browserAction: {
+      state: 'verified', commandOk: true, semanticOk: true,
+      actionType: 'browser_click', actionId: expect.any(String),
+      actionSignature: expect.any(String), evidenceIds: JSON.parse(receipt.evidence_ids_json),
+    } });
     expect(db.prepare('SELECT source FROM job_evidence').get()).toEqual({ source: 'browser.browser_click' });
   });
 
@@ -99,6 +106,41 @@ describe('durable browser execution boundary', () => {
     await runWithJobExecutionContext(context('noop'), () => wrapped.execute({}, toolContext));
     expect(db.prepare('SELECT state,command_ok,semantic_ok FROM browser_action_receipts').get())
       .toEqual({ state: 'returned', command_ok: 1, semantic_ok: 0 });
+  });
+
+  it('settles a verified observation recovery without rewriting the rejected receipt or repeating the effect', async () => {
+    let attempts = 0;
+    let effects = 0;
+    const handler: ToolHandler = {
+      schema: { name: 'browser_click', description: 'test', inputSchema: { type: 'object', properties: {} } },
+      category: 'browser', mutates: true, toolset: 'browser',
+      async execute() {
+        if (++attempts === 1) return { success: false, error: 'Element ref @e2 is not in the current snapshot. Run browser_snapshot to refresh element refs, then retry.' };
+        effects++;
+        return { success: true, verified: true };
+      },
+    };
+    const wrapped = withBrowserState(handler, state([
+      { url: 'https://fixture.test/start', hash: 'before' },
+      { url: 'https://fixture.test/start', hash: 'before' },
+      { url: 'https://fixture.test/start', hash: 'before' },
+      { url: 'https://fixture.test/done', hash: 'after' },
+    ]), safeFetcher);
+    const ctx = context('observation-recovery');
+    engine.browser.ensureSession(ctx);
+    engine.browser.bindTab(ctx, { tabId: 'form-tab', createdBy: 'aiden', controlled: true,
+      openerTabId: null, url: 'https://fixture.test/start', title: 'Fixture' });
+    const args = { ref: '@e2' };
+    const first = await runWithJobExecutionContext(ctx, () => wrapped.execute(args, toolContext));
+    const second = await runWithJobExecutionContext(ctx, () => wrapped.execute(args, toolContext));
+    const trace = [first, second].map((result, index) => ({
+      name: 'browser_click', result, handlerMutates: true,
+      verification: browserInteractiveVerifier('browser_click', args, { id: String(index), name: 'browser_click', result }),
+    }));
+    expect(decideTaskVerdict(trace).verdict).toBe('completed');
+    expect(effects).toBe(1);
+    expect(db.prepare('SELECT state,command_ok,semantic_ok FROM browser_action_receipts ORDER BY action_sequence').all())
+      .toEqual([{ state: 'failed', command_ok: 0, semantic_ok: 0 }, { state: 'verified', command_ok: 1, semantic_ok: 1 }]);
   });
 
   it('rejects an already observed navigation before durable Effect admission', async () => {

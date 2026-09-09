@@ -13,6 +13,18 @@ import {
   openUrlTool,
 } from '../../../tools/v4/web/openUrl';
 import { runWithJobExecutionContext } from '../../../core/v4/daemon/jobExecutionContext';
+import { youtubeSearchTool } from '../../../tools/v4/web/youtubeSearch';
+
+describe('browser tool selection guidance', () => {
+  it('declares external launching unavailable in durable Jobs before selection', () => {
+    expect(openUrlTool.schema.description).toMatch(/unavailable (?:inside|in) (?:a )?durable Jobs?/i);
+    expect(openUrlTool.schema.description).toContain('browser_navigate');
+  });
+  it('directs media navigation to the authoritative browser and separates playback verification', () => {
+    expect(youtubeSearchTool.schema.description).toContain('browser_navigate');
+    expect(youtubeSearchTool.schema.description).toMatch(/navigation.*does not prove playback/i);
+  });
+});
 
 describe('open_url — platform launcher resolution', () => {
   it('uses cmd.exe /c start "" <url> on Windows', () => {

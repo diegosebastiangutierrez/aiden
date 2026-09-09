@@ -63,7 +63,7 @@ export const openUrlTool: ToolHandler = {
     name: 'open_url',
     description:
       "Open a URL in the user's default browser via the OS shell (start/open/xdg-open). " +
-      'Uses the real user profile — no CAPTCHA, no Playwright detection. ' +
+      'Unavailable inside durable Jobs; use browser_navigate for owned Browser Session, action receipt, and verification. ' +
       'Returns immediately after launching; does NOT wait for the page to load and ' +
       'does NOT support extraction or interaction. Use browser_navigate for those.',
     inputSchema: {
