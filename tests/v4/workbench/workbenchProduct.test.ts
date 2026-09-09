@@ -10,11 +10,34 @@ import {
   normalizeAppearance,
   normalizeDensity,
   presentReadinessSummary,
+  setupActivationInstruction,
   projectStarterActions,
   projectWorkbenchSkill,
 } from '../../../dashboard-next/lib/workbenchProduct';
 
 describe('Workbench v2 product contracts', () => {
+  const setup = {
+    defaultSelection: { providerId: 'configured-provider', modelId: 'selected-model' },
+    providers: [{ id: 'configured-provider', configured: true, healthy: true }],
+  };
+  it('guides verified saved setup through the owned launcher without claiming live activation', () => {
+    const message = setupActivationInstruction(true, setup);
+    expect(message).toContain('Setup complete. Restart Aiden to enable tasks.');
+    expect(message).toContain('Check Active Work');
+    expect(message).toContain('Stop Aiden');
+    expect(message).toContain('Open Aiden Web');
+    expect(message).toContain('same Windows user');
+  });
+  it('does not request another restart when the backend is writable', () => {
+    expect(setupActivationInstruction(false, setup)).toBeNull();
+  });
+  it('does not call missing, unverified or unrelated configuration complete', () => {
+    expect(setupActivationInstruction(true, null)).toBeNull();
+    expect(setupActivationInstruction(true, { ...setup, defaultSelection: null })).toBeNull();
+    expect(setupActivationInstruction(true, { ...setup, providers: [{ ...setup.providers[0]!, healthy: false }] })).toBeNull();
+    expect(setupActivationInstruction(true, { ...setup, providers: [{ ...setup.providers[0]!, configured: false }] })).toBeNull();
+    expect(setupActivationInstruction(true, { ...setup, defaultSelection: { providerId: 'other', modelId: 'other' } })).toBeNull();
+  });
   it('supports complete token-driven appearance choices and safe persistence fallbacks', () => {
     expect(APPEARANCE_OPTIONS.map((option) => option.id)).toEqual([
       'system', 'light', 'dark', 'midnight', 'warm',

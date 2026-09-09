@@ -3,6 +3,18 @@ import type { SystemReadinessItem, SystemReadinessProjection, WorkbenchArtifact 
 export type WorkbenchAppearance = 'system' | 'light' | 'dark' | 'midnight' | 'warm';
 export type WorkbenchDensity = 'comfortable' | 'compact';
 
+/** Explain saved setup without overriding the live backend's execution authority. */
+export function setupActivationInstruction(readOnly: boolean, snapshot: {
+  defaultSelection: { providerId: string; modelId: string } | null;
+  providers: Array<{ id: string; configured: boolean; healthy: boolean }>;
+} | null): string | null {
+  const selection = snapshot?.defaultSelection;
+  if (!readOnly || !selection?.modelId) return null;
+  const provider = snapshot.providers.find((item) => item.id === selection.providerId);
+  if (!provider?.configured || !provider.healthy) return null;
+  return 'Setup complete. Restart Aiden to enable tasks. Check Active Work and let running Jobs finish first. In the Aiden launcher, choose Stop Aiden, wait for it to stop, then Open Aiden Web. Stay with the same Windows user and Aiden home; your saved configuration and history are retained. Provider usage limits are separate from sign-in and execution readiness.';
+}
+
 export const APPEARANCE_OPTIONS: ReadonlyArray<{
   id: WorkbenchAppearance;
   label: string;

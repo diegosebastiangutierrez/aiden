@@ -74,6 +74,7 @@ import {
   normalizeAppearance,
   normalizeDensity,
   presentReadinessSummary,
+  setupActivationInstruction,
   projectStarterActions,
   projectWorkbenchSkill,
   type WorkbenchAppearance,
@@ -6188,7 +6189,7 @@ function ReadinessSettings({ sessionId, onOpenModels, onOpenApps }: {
   )
 }
 
-function AIModelsSettings({ sessionId }: { sessionId: string }) {
+function AIModelsSettings({ sessionId, readOnly }: { sessionId: string; readOnly: boolean }) {
   const [snapshot, setSnapshot] = useState<aiden.WorkbenchProviderSnapshot | null>(null)
   const [providerId, setProviderId] = useState('')
   const [modelId, setModelId] = useState('')
@@ -6240,12 +6241,14 @@ function AIModelsSettings({ sessionId }: { sessionId: string }) {
     form.reset()
   }
   if (!snapshot) return <p style={settingsTextStyle}>{error || 'Loading provider authority…'}</p>
+  const activationInstruction = setupActivationInstruction(readOnly, snapshot)
   const selectionLabel = (selection: { providerId: string; modelId: string } | null) => selection
     ? `${snapshot.providers.find((item) => item.id === selection.providerId)?.displayName ?? selection.providerId} · ${selection.modelId}`
     : 'Not configured'
   return (
     <div style={{ display: 'grid', gap: 12 }}>
       <p style={settingsTextStyle}>Credentials are handled by the local backend and protected by <strong style={{ color: 'var(--text)' }}>{snapshot.secretStorage.backend}</strong>. They are never stored in browser state.</p>
+      {activationInstruction && <p role="status" style={{ ...settingsTextStyle, padding: 10, border: '1px solid var(--border)', borderRadius: 8 }}>{activationInstruction}</p>}
       <div style={{ display: 'grid', gap: 4, padding: 10, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg2)' }}>
         <span style={settingsTextStyle}>Current chat: <strong style={{ color: 'var(--text)' }}>{snapshot.sessionSelection ? selectionLabel(snapshot.sessionSelection) : 'Uses the future default'}</strong></span>
         <span style={settingsTextStyle}>Future default: <strong style={{ color: 'var(--text)' }}>{selectionLabel(snapshot.defaultSelection)}</strong></span>
@@ -6463,7 +6466,7 @@ function SettingsDrawer() {
 
           {settingsTab === 'model' && (
             <SettingsSection title="AI & Models">
-              <AIModelsSettings sessionId={modelSessionId} />
+              <AIModelsSettings sessionId={modelSessionId} readOnly={workbenchReadOnly} />
             </SettingsSection>
           )}
 

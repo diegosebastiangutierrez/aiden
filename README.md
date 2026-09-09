@@ -184,6 +184,7 @@ Research this topic, compare the strongest findings, and save a structured Markd
 > **Release channels**
 >
 > - **Stable:** `v4.21.0` through npm `latest`
+> - **Local release candidate:** `v4.21.1` — release preparation only; not published. See [candidate notes](RELEASE-NOTES-v4.21.1.md).
 > - **Archived RC:** [`v4.19.0-rc.1`](https://github.com/taracodlabs/aiden/releases/tag/v4.19.0-rc.1)
 
 ### Stable — v4.21.0
