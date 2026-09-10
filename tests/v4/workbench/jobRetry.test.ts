@@ -56,6 +56,22 @@ describe('Workbench terminal Job retry adapter', () => {
     };
   }
 
+  it('preserves approved browser scope on a new Retry Job without reusing prior evidence', async () => {
+    const value = fixture();
+    const browserCheck = { version: 1, customerId: 'sample', specDigest: 'a'.repeat(64),
+      origin: 'http://127.0.0.1:8523', allowLoopback: true, mutationPaths: ['/save'],
+      observations: [{ id: 'saved', flowId: 'form', selector: '#result', kind: 'text', expected: 'Saved' }] };
+    const original = value.enqueue.enqueue({ message: 'Check approved form', browserCheck, idempotencyKey: 'check-original' });
+    value.cancel.cancel(original.runId);
+    const retried = await value.retry.retry(original.runId, 'check-retry');
+    expect(value.jobEngine.listEvents(retried.jobId).filter(event => event.type === 'browser.check.bound'))
+      .toEqual([expect.objectContaining({ payload: browserCheck })]);
+    expect(value.jobEngine.proof.listClaims(retried.jobId)).toEqual([expect.objectContaining({
+      attemptId: retried.attemptId, required: true, state: 'unverified' })]);
+    expect(value.jobEngine.proof.listEvidence(retried.jobId)).toHaveLength(0);
+    expect(value.jobEngine.getJob(original.jobId)?.status).toBe('cancelled');
+  });
+
   it('retries exact Workbench intent as a new Job and preserves provider, workspace, and history truth', async () => {
     const value = fixture();
     const prompt = 'Run a harmless long operation, then report the verified result.';

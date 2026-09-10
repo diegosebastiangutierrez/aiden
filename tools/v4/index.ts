@@ -46,6 +46,7 @@ import { browserSnapshotTool } from './browser/browserSnapshot';
 import { browserSeeTool } from './browser/browserSee';
 import { browserExtractTool } from './browser/browserExtract';
 import { browserGetUrlTool } from './browser/browserGetUrl';
+import { browserCheckObserveTool } from './browser/browserCheckObserve';
 import { browserNavigateTool } from './browser/browserNavigate';
 import { browserClickTool } from './browser/browserClick';
 import { browserTypeTool } from './browser/browserType';
@@ -152,6 +153,7 @@ export function registerReadOnlyTools(registry: ToolRegistry): void {
   register(browserSeeTool);
   register(browserExtractTool);
   register(browserGetUrlTool);
+  register(browserCheckObserveTool);
   register(browserTabsTool);
 
   register(sessionSearchTool);

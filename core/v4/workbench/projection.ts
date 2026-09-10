@@ -101,6 +101,7 @@ export interface WorkbenchJobProjection {
   effects: unknown[];
   claims: ClaimRecord[];
   evidence: EvidenceRecord[];
+  claimEvidence?: Array<{ claimId: string; evidenceId: string }>;
   childContractEvidence: WorkbenchChildContractEvidenceProjection | null;
   verification: JobVerdictRecord | null;
   receipt: WorkbenchResultReceipt;
@@ -341,6 +342,10 @@ export function projectWorkbenchJob(
     effects: array(exported.effects),
     claims,
     evidence,
+    claimEvidence: array(exported.claimEvidence).filter((entry): entry is { claimId: string; evidenceId: string } =>
+      Boolean(entry && typeof entry === 'object' && typeof (entry as any).claimId === 'string'
+        && typeof (entry as any).evidenceId === 'string'))
+      .map(({ claimId, evidenceId }) => ({ claimId, evidenceId })),
     childContractEvidence: projectChildContractEvidence(childContract, verdict, job.status),
     verification: verdict,
     receipt: {

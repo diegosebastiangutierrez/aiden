@@ -62,6 +62,7 @@ import type { MemoryGuard } from '../../moat/memoryGuard';
 import { analyzeCommandIntent, isReadOnlyCommand } from '../../moat/dangerousPatterns';
 import { classifyBrowserAction } from './browserState';
 import { currentBrowserLeaseStore } from './browser/browserLeaseScope';
+import { currentBrowserCheckContract, browserCheckToolAllowed } from './browser/browserCheckContract';
 import { pwBrowserStatus, pwDialogPendingTier } from '../playwrightBridge';
 import type { SkillLoader } from './skillLoader';
 import type { BundledManifest } from './skillBundledManifest';
@@ -653,6 +654,15 @@ export class ToolRegistry {
 
       let args = call.arguments ?? {};
       const durableJobContext = currentJobExecutionContext();
+      try {
+        if (currentBrowserCheckContract() && !browserCheckToolAllowed(call.name)) {
+          return finish({ id: call.id, name: call.name, result: null,
+            error: 'Tool is outside the approved browser check contract' }, 'blocked');
+        }
+      } catch {
+        return finish({ id: call.id, name: call.name, result: null,
+          error: 'Browser check authority could not be established' }, 'blocked');
+      }
       let context = baseContext;
       let repositoryChangeAutoBound = false;
       let needsRepositoryBinding =

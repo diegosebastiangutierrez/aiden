@@ -51,6 +51,20 @@ describe('Workbench durable Job commands', () => {
     expect(summarizeWorkbenchGoal('x'.repeat(200))).toHaveLength(120);
   });
 
+  it('binds an immutable browser check before acknowledging the canonical Job', () => {
+    const { enqueue, jobEngine } = commands();
+    const browserCheck = { version: 1, customerId: 'sample', specDigest: 'a'.repeat(64),
+      origin: 'http://127.0.0.1:4521', allowLoopback: true, mutationPaths: ['/records'],
+      observations: [{ id: 'saved', flowId: 'form', selector: '#saved', kind: 'text', expected: 'Saved' }] };
+    const input = { message: 'Check the approved form', idempotencyKey: 'browser-check-one', browserCheck };
+    const first = enqueue.enqueue(input);
+    expect(jobEngine.listEvents(first.jobId).filter(event => event.type === 'browser.check.bound'))
+      .toEqual([expect.objectContaining({ producer: 'workbench', payload: browserCheck })]);
+    expect(enqueue.enqueue(input).jobId).toBe(first.jobId);
+    expect(() => enqueue.enqueue({ ...input, browserCheck: { ...browserCheck, mutationPaths: ['/other'] } })).toThrow();
+    expect(jobEngine.listEvents(first.jobId).filter(event => event.type === 'browser.check.bound')).toHaveLength(1);
+  });
+
   it('returns authoritative Job and Attempt identities before acknowledging enqueue', () => {
     const { enqueue, jobEngine } = commands();
     const result = enqueue.enqueue({ message: 'read the project notes', sessionId: 'workbench-session' });

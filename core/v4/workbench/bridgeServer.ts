@@ -106,7 +106,7 @@ export interface EnqueueResult {
  *  which routes it through the same approval/safe-mode-gated dispatcher a CLI
  *  turn uses. When absent, POST /api/tasks returns 503. */
 export interface TaskEnqueuer {
-  enqueue(task: { message: string; sessionId?: string; idempotencyKey?: string }): EnqueueResult;
+  enqueue(task: { message: string; sessionId?: string; idempotencyKey?: string; browserCheck?: unknown }): EnqueueResult;
 }
 
 /** Result of a stop/cancel request against a run. */
@@ -838,7 +838,8 @@ export function startWorkbenchBridge(opts: WorkbenchBridgeOptions): Promise<Work
     if (url.pathname === '/api/health') {
       // readOnly unless BOTH a write token and an enqueuer are wired.
       const writeEnabled = Boolean(opts.token && opts.enqueue);
-      sendJson(res, 200, { ok: true, service: 'aiden-workbench-bridge', version: VERSION, readOnly: !writeEnabled });
+      sendJson(res, 200, { ok: true, service: 'aiden-workbench-bridge', version: VERSION, readOnly: !writeEnabled,
+        browserCheckContracts: 1 });
       return;
     }
 
@@ -1957,7 +1958,9 @@ export function startWorkbenchBridge(opts: WorkbenchBridgeOptions): Promise<Work
         const durableMessage = attachments.length > 0
           ? `${message}\n\nWorkbench attachments (runtime-mediated local references):\n${attachments.map((item) => `- ${item.name}: ${item.path}`).join('\n')}`
           : message;
-        const result = opts.enqueue.enqueue({ message: durableMessage, sessionId });
+        const idempotencyKey = typeof body.idempotencyKey === 'string' ? body.idempotencyKey : undefined;
+        const result = opts.enqueue.enqueue({ message: durableMessage, sessionId, idempotencyKey,
+          ...(body.browserCheck !== undefined ? { browserCheck: body.browserCheck } : {}) });
         sendJson(res, 202, {
           accepted: result.accepted,
           triggerEventId: result.triggerEventId,

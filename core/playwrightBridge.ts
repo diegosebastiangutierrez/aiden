@@ -24,6 +24,9 @@ import {
   type BrowserExecutionScope,
 } from './v4/browser/browserExecutionScope'
 import type { BrowserTabRecord } from './v4/browser/browserSessionAuthority'
+import { currentBrowserCheckContract, browserCheckRequestAllowed } from './v4/browser/browserCheckContract'
+import { BrowserCheckSessions } from './v4/browser/browserCheckSession'
+import { redactBrowserContent } from '../tools/v4/browser/redactContent'
 
 // ── Lazy-import Playwright so the server boots even if playwright
 //    is not installed (tools will return a clear error message).
@@ -58,6 +61,11 @@ let _preserveDurableTabsDuringHostClose = false
 const IDLE_MS         = 5 * 60 * 1000                                  // 5 min
 const NAV_TIMEOUT     = parseInt(process.env.AIDEN_BROWSER_TIMEOUT ?? '15000', 10)
 const HEADLESS        = process.env.AIDEN_BROWSER_HEADLESS === 'true'
+const _checkSessions = new BrowserCheckSessions(async () => {
+  const executablePath = findSystemBrowserExecutable()
+  if (!executablePath) throw new Error(NO_SYSTEM_BROWSER_ERROR)
+  return (await getChromium()).launch({ headless: HEADLESS, executablePath })
+})
 
 // ── Phase v4.1-subagent — Browser mutex ──────────────────────
 // One global browser context lives in this module. Subagent fanout
@@ -192,6 +200,12 @@ function resetIdleTimer(): void {
 }
 
 async function ensureContext(): Promise<any> {
+  const check = currentBrowserCheckContract()
+  if (check) {
+    const scope = currentBrowserExecutionScope()
+    if (!scope) throw new Error('Approved browser check requires a durable browser session')
+    return _checkSessions.context(scope.session.browserSessionId, check)
+  }
   if (_mode === 'attached') {
     if (!_browserContext) {
       throw new Error('Attached browser context is gone — re-attach with /browser attach.')
@@ -1607,6 +1621,7 @@ export async function pwClose(options: { announce?: boolean } = {}): Promise<voi
     }
     _sessionPages.delete(scope.session.browserSessionId)
     getDialogSupervisor(scope.session.browserSessionId).clear()
+    await _checkSessions.close(scope.session.browserSessionId)
     // Chromium's persistent context can become unusable after its last page is
     // closed while still retaining the profile lock. When no other durable
     // session owns a physical tab, release that empty host completely so the
@@ -1625,6 +1640,7 @@ export async function pwClose(options: { announce?: boolean } = {}): Promise<voi
     }
     return
   }
+  await _checkSessions.closeAll()
   if (_idleTimer) { clearTimeout(_idleTimer); _idleTimer = null }
   if (_mode === 'attached') {
     // ★ Never close the user's Chrome — detach (disconnect) instead.
@@ -1651,6 +1667,7 @@ export async function pwClose(options: { announce?: boolean } = {}): Promise<voi
  * User-created tabs and tabs owned by any other session are never closed.
  */
 export async function pwCloseBrowserSessionResources(browserSessionId: string): Promise<void> {
+  await _checkSessions.close(browserSessionId)
   const registry = getTabRegistry()
   const ownedTabs = registry.list(browserSessionId).filter((tab) => tab.createdBy === 'aiden')
   const ownedPages = new Set(ownedTabs
@@ -1692,3 +1709,28 @@ export async function pwCloseBrowserSessionResources(browserSessionId: string): 
 
 /** Expose active page for legacy callers that still need it. */
 export function getActiveBrowserPage(): any { return _activePage }
+
+/** Read only an immutable, pre-approved assertion target from the owned page. */
+export async function pwObserveBrowserCheck(observationId: string): Promise<{ value: string | number; observedAt: number; url: string }> {
+  return withPwLock('browser-check-observation', async () => {
+    const contract = currentBrowserCheckContract()
+    const observation = contract?.observations.find(item => item.id === observationId)
+    if (!contract || !observation) throw new Error('Observation is not in the approved browser check')
+    const page = await ensurePage()
+    assertControlledTab(page)
+    if (!browserCheckRequestAllowed(contract, page.url(), 'GET')) throw new Error('Observation is outside the approved origin')
+    const target = page.locator(observation.selector)
+    const count = await target.count()
+    let value: string | number = count
+    if (observation.kind === 'text') {
+      if (count !== 1 || !await target.isVisible()) throw new Error('Observation target is missing, ambiguous or hidden')
+      const sensitive = await target.evaluate((element: any) => element.matches('input,textarea,[contenteditable="true"]')
+        || Boolean(element.querySelector('input,textarea,[contenteditable="true"]')))
+      if (sensitive) throw new Error('Editable or sensitive content cannot be collected as assertion evidence')
+      const raw = await target.innerText()
+      if (raw.length > 2000 || redactBrowserContent(raw) !== raw) throw new Error('Observation contains unapproved or sensitive content')
+      value = raw.trim()
+    }
+    return { value, observedAt: Date.now(), url: page.url() }
+  })
+}

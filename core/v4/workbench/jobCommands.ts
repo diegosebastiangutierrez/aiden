@@ -17,6 +17,7 @@ import { createTaskStore } from '../daemon/taskStore';
 import { continueFromCheckpoint } from '../safeContinue';
 import { fingerprintContinuityEnvironment } from '../continuityCheckpoint';
 import type { SessionStore } from '../sessionStore';
+import { parseBrowserCheckContract, bindBrowserCheckContract, readBrowserCheckContract, type BrowserCheckContract } from '../browser/browserCheckContract';
 
 export function summarizeWorkbenchGoal(message: string, maxLength = 120): string {
   const compact = message.replace(/\s+/g, ' ').trim();
@@ -87,10 +88,12 @@ export function createWorkbenchJobCommands(options: {
     sessionId?: string;
     idempotencyKey?: string;
     modelBinding?: WorkbenchModelBinding | null;
+    browserCheck?: BrowserCheckContract;
   }) => {
     const idempotencyKey = task.idempotencyKey?.trim() || nextId();
     const sessionId = task.sessionId?.trim() || `workbench:${idempotencyKey}`;
-    const fingerprint = createHash('sha256').update(task.message).digest('hex');
+    const fingerprint = createHash('sha256').update(task.browserCheck
+      ? JSON.stringify({ message: task.message, browserCheck: task.browserCheck }) : task.message).digest('hex');
     const trigger = options.triggerBus.insert({
       source: 'manual', sourceKey: 'workbench-web', idempotencyKey,
       payload: {
@@ -109,6 +112,9 @@ export function createWorkbenchJobCommands(options: {
       workspaceId: options.workspacePath ?? null,
       triggerEventId: trigger.id,
     });
+    if (task.browserCheck) {
+      bindBrowserCheckContract(options.jobEngine, admission.jobId, admission.attemptId, task.browserCheck);
+    }
     options.db.prepare('UPDATE trigger_events SET payload_json = ? WHERE id = ?').run(JSON.stringify({
       body: { prompt: task.message, source: 'workbench-web' },
       sessionId,
@@ -157,6 +163,8 @@ export function createWorkbenchJobCommands(options: {
       triggerEventId: trigger.id,
       producer: 'workbench',
     });
+    const browserCheck = readBrowserCheckContract(options.jobEngine, task.originalJobId);
+    if (browserCheck) bindBrowserCheckContract(options.jobEngine, admission.jobId, admission.attemptId, browserCheck);
     options.db.prepare('UPDATE trigger_events SET payload_json = ? WHERE id = ?').run(JSON.stringify({
       body: { prompt: task.prompt, source: 'workbench-retry' },
       sessionId: task.sessionId,
@@ -264,9 +272,11 @@ export function createWorkbenchJobCommands(options: {
   };
   return {
     enqueue: {
-      enqueue(task: { message: string; sessionId?: string; idempotencyKey?: string }) {
+      enqueue(task: { message: string; sessionId?: string; idempotencyKey?: string; browserCheck?: unknown }) {
         const modelBinding = selectedModelBinding(task.sessionId);
-        const accepted = enqueueTx({ ...task, modelBinding });
+        const browserCheck = task.browserCheck === undefined ? undefined : parseBrowserCheckContract(task.browserCheck);
+        if (browserCheck && !task.idempotencyKey?.trim()) throw new Error('Browser check requires an explicit request identity');
+        const accepted = enqueueTx({ ...task, browserCheck, modelBinding });
         if (accepted.trigger.inserted && options.sessionStore) {
           try {
             const { sessionId } = accepted;
