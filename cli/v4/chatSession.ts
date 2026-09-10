@@ -4466,7 +4466,7 @@ function createDefaultPromptApi(opts: DefaultPromptOpts = {}): ChatPromptApi {
           // Compatibility hint for the non-fixed prompt path. The fixed path
           // communicates readiness through its labeled composer surface.
           // Skipped on the "… " multi-line continuation.
-          hint:     prompt.includes('▲') ? 'Type your message · /help · /mode' : undefined,
+          hint:     prompt === opts.display?.promptPrefix() ? 'Type your message · /help · /mode' : undefined,
           fixedComposer: fixedBottomRegion
             ? {
                 update: (draft, hint, cursorIndex) => {
@@ -4480,7 +4480,7 @@ function createDefaultPromptApi(opts: DefaultPromptOpts = {}): ChatPromptApi {
               }
             : undefined,
         }, { output: promptOutput });
-        if (fixedBottomRegion && prompt.includes('▲')) {
+        if (fixedBottomRegion && prompt === opts.display?.promptPrefix()) {
           opts.display.submitIdleComposer(
             value ?? '',
             'Type your message · /help · /mode',

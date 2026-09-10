@@ -127,6 +127,8 @@ describe.skipIf(process.platform !== 'win32')('built CLI P2A/P2C acceptance', ()
       cwd, cols: columns, rows,
       env: {
         ...process.env,
+        // The owned ConPTY supports cursor editing and Unicode chrome.
+        TERM: 'xterm-256color',
         AIDEN_HOME: aidenHome,
         AIDEN_TEST_REPO_ROOT: repoRoot,
         AIDEN_TEST_PROVIDER_BASE_URL: provider.baseUrl,
@@ -276,7 +278,7 @@ describe.skipIf(process.platform !== 'win32')('built CLI P2A/P2C acceptance', ()
       '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', powerShellCommand,
     ], {
       cwd, cols: columns, rows,
-      env: { ...process.env, AIDEN_HOME: aidenHome, AIDEN_TEST_REPO_ROOT: repoRoot,
+      env: { ...process.env, TERM: 'xterm-256color', AIDEN_HOME: aidenHome, AIDEN_TEST_REPO_ROOT: repoRoot,
         AIDEN_TEST_PROVIDER_BASE_URL: provider.baseUrl, CUSTOM_OPENAI_API_KEY: 'pinned-queue-key',
         AIDEN_NO_UPDATE_CHECK: '1', AIDEN_TEST_COMPOSER_READY: '1', TELEGRAM_BOT_TOKEN: '',
         AIDEN_SANDBOX: '0', FORCE_COLOR: '0', NO_COLOR: '1' },
@@ -461,7 +463,7 @@ describe.skipIf(process.platform !== 'win32')('built CLI P2A/P2C acceptance', ()
       path.join(repoRoot, 'dist/cli/v4/aidenCLI.js'),
     ], {
       cwd, cols: 120, rows: 40,
-      env: { ...process.env, AIDEN_HOME: aidenHome, AIDEN_TEST_REPO_ROOT: repoRoot,
+      env: { ...process.env, TERM: 'xterm-256color', AIDEN_HOME: aidenHome, AIDEN_TEST_REPO_ROOT: repoRoot,
         AIDEN_TEST_PROVIDER_BASE_URL: provider.baseUrl, CUSTOM_OPENAI_API_KEY: 'busy-queue-key',
         AIDEN_NO_UPDATE_CHECK: '1', AIDEN_TEST_COMPOSER_READY: '1', TELEGRAM_BOT_TOKEN: '',
         FORCE_COLOR: '0', NO_COLOR: '1' },
@@ -549,7 +551,7 @@ describe.skipIf(process.platform !== 'win32')('built CLI P2A/P2C acceptance', ()
       path.join(repoRoot, 'dist/cli/v4/aidenCLI.js'),
     ], {
       cwd, cols: 100, rows: 40,
-      env: { ...process.env, AIDEN_HOME: aidenHome, AIDEN_TEST_REPO_ROOT: repoRoot,
+      env: { ...process.env, TERM: 'xterm-256color', AIDEN_HOME: aidenHome, AIDEN_TEST_REPO_ROOT: repoRoot,
         AIDEN_TEST_PROVIDER_BASE_URL: provider.baseUrl, CUSTOM_OPENAI_API_KEY: 'approval-cancel-key',
         AIDEN_NO_UPDATE_CHECK: '1', AIDEN_TEST_COMPOSER_READY: '1', TELEGRAM_BOT_TOKEN: '',
         FORCE_COLOR: '0', NO_COLOR: '1' },
@@ -629,7 +631,7 @@ describe.skipIf(process.platform !== 'win32')('built CLI P2A/P2C acceptance', ()
       path.join(repoRoot, 'dist/cli/v4/aidenCLI.js'),
     ], {
       cwd, cols: 120, rows: 40,
-      env: { ...process.env, AIDEN_HOME: aidenHome, AIDEN_TEST_REPO_ROOT: repoRoot,
+      env: { ...process.env, TERM: 'xterm-256color', AIDEN_HOME: aidenHome, AIDEN_TEST_REPO_ROOT: repoRoot,
         AIDEN_TEST_PROVIDER_BASE_URL: provider.baseUrl, CUSTOM_OPENAI_API_KEY: 'resize-key',
         AIDEN_NO_UPDATE_CHECK: '1', AIDEN_TEST_COMPOSER_READY: '1', TELEGRAM_BOT_TOKEN: '',
         FORCE_COLOR: '0', NO_COLOR: '1' },
@@ -761,6 +763,7 @@ describe.skipIf(process.platform !== 'win32')('built CLI P2A/P2C acceptance', ()
       rows: 40,
       env: {
         ...process.env,
+        TERM: 'xterm-256color',
         AIDEN_HOME: aidenHome,
         AIDEN_TEST_REPO_ROOT: repoRoot,
         AIDEN_TEST_PROVIDER_BASE_URL: provider.baseUrl,

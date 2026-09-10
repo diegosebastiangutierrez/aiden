@@ -94,6 +94,13 @@ physical('physical durable Browser Operator fixture', () => {
        VALUES ('browser-physical',1,'localhost',?,?, '4.19.1')`,
     ).run(now, now);
     engine = createJobEngine({ db });
+    const retained = { ...admit('retained-physical-owner'), workspaceId: root,
+      mode: 'owned' as const, profileIdentity: 'aiden-default' };
+    engine.browser.ensureSession(retained);
+    engine.browser.bindTab(retained, {
+      tabId: 'tab-2', createdBy: 'aiden', controlled: true, openerTabId: null,
+      url: 'https://fixture.test/retained', title: 'Retained history',
+    });
     jobContext = admit();
     server = http.createServer((request, response) => {
       const url = new URL(request.url ?? '/', 'http://127.0.0.1');

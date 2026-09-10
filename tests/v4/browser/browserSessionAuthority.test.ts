@@ -5,6 +5,7 @@ import { runMigrations } from '../../../core/v4/daemon/db/migrations';
 import { createJobEngine, type JobEngine } from '../../../core/v4/daemon/jobEngine';
 import { BrowserAuthorityError } from '../../../core/v4/browser/browserSessionAuthority';
 import { reconcileBrowserEffect } from '../../../core/v4/browser/browserEffectResolver';
+import { getTabRegistry } from '../../../core/v4/browser/tabRegistry';
 
 describe('BrowserSession authority', () => {
   let db: Database.Database;
@@ -120,6 +121,47 @@ describe('BrowserSession authority', () => {
       expect.objectContaining({ code: 'TAB_NOT_OWNED' }),
     );
     expect(engine.browser!.listTabs(sessionA.browserSessionId)).toHaveLength(1);
+  });
+
+  it('does not alias a new physical page to a retained owner after browser registry restart', () => {
+    const registry = getTabRegistry();
+    registry.clear();
+    try {
+      const prior = admit('retained-page-owner');
+      const priorSession = engine.browser.ensureSession(prior);
+      registry.track({}, 'aiden', null);
+      const oldPage = registry.track({}, 'aiden', null, priorSession.browserSessionId);
+      engine.browser.bindTab(prior, {
+        tabId: oldPage.tab_id, createdBy: 'aiden', controlled: true, openerTabId: null,
+        url: 'https://fixture.test/previous', title: 'Previous',
+      });
+
+      // The physical host is gone, but durable history is intentionally retained.
+      registry.clear();
+      const current = admit('fresh-page-owner');
+      const currentSession = engine.browser.ensureSession(current);
+      registry.track({}, 'aiden', null);
+      const page = registry.track({}, 'aiden', null, currentSession.browserSessionId);
+      expect(() => engine.browser.bindTab(current, {
+        tabId: page.tab_id, createdBy: 'aiden', controlled: true, openerTabId: null,
+        url: 'about:blank', title: '',
+      })).not.toThrow();
+      expect(page.tab_id).not.toBe(oldPage.tab_id);
+      engine.browser.recordObservation(current, {
+        tabId: page.tab_id, url: 'about:blank', title: '', stateDigest: 'fresh-page-state',
+      });
+      expect(engine.browser.listTabs(currentSession.browserSessionId)[0].lastStateDigest)
+        .toBe('fresh-page-state');
+      expect(engine.browser.listTabs(priorSession.browserSessionId)[0].tabId).toBe(oldPage.tab_id);
+      expect(() => engine.browser.assertActionable(prior, page.tab_id))
+        .toThrowError(expect.objectContaining({ code: 'TAB_NOT_OWNED' }));
+      expect(() => engine.browser.bindTab(current, {
+        tabId: oldPage.tab_id, createdBy: 'aiden', controlled: true, openerTabId: null,
+      })).toThrowError(expect.objectContaining({ code: 'TAB_NOT_OWNED' }));
+      expect(db.prepare('SELECT count(*) AS n FROM job_evidence').get()).toEqual({ n: 0 });
+    } finally {
+      registry.clear();
+    }
   });
 
   it('rejects stale generation and fence authority', () => {

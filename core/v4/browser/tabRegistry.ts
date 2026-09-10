@@ -23,6 +23,8 @@
  * events in. It never imports Playwright or the bridge (no cycle).
  */
 
+import { randomUUID } from 'node:crypto';
+
 export interface TabMeta {
   tab_id: string;
   url: string;
@@ -38,7 +40,6 @@ export interface TabMeta {
 
 class TabRegistry {
   private byPage = new Map<unknown, TabMeta>();
-  private counter = 0;
 
   /**
    * Track (or override) a page. Idempotent: a second call with createdBy
@@ -53,9 +54,10 @@ class TabRegistry {
   ): TabMeta {
     let meta = this.byPage.get(page);
     if (!meta) {
-      this.counter += 1;
       meta = {
-        tab_id: `tab-${this.counter}`,
+        // Physical identities must not collide with durable rows from a prior host.
+        // Only explicit trackDurable reconciliation may restore an existing ID.
+        tab_id: `tab-${randomUUID()}`,
         url: '', title: '', origin: '',
         opener_id: openerId,
         createdBy,
@@ -129,15 +131,13 @@ class TabRegistry {
       browserSessionId: durable.browserSessionId,
     };
     this.byPage.set(page, meta);
-    const numeric = /^tab-(\d+)$/.exec(tabId);
-    if (numeric) this.counter = Math.max(this.counter, Number(numeric[1]));
     return meta;
   }
 
   get(page: unknown): TabMeta | undefined { return this.byPage.get(page); }
   has(page: unknown): boolean { return this.byPage.has(page); }
   remove(page: unknown): void { this.byPage.delete(page); }
-  clear(): void { this.byPage.clear(); this.counter = 0; }
+  clear(): void { this.byPage.clear(); }
 
   pageById(tabId: string): unknown | undefined {
     for (const [pg, m] of this.byPage) if (m.tab_id === tabId) return pg;

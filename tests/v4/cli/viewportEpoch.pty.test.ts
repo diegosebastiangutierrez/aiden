@@ -98,6 +98,7 @@ describe.skipIf(process.platform !== 'win32')('built CLI physical viewport epoch
       cwd, cols: columns, rows: 35,
       env: {
         ...process.env,
+        TERM: 'xterm-256color',
         AIDEN_HOME: aidenHome,
         AIDEN_TEST_REPO_ROOT: repoRoot,
         AIDEN_TEST_PROVIDER_BASE_URL: provider.baseUrl,

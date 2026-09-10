@@ -56,7 +56,7 @@ afterEach(async () => {
 });
 
 describe.skipIf(process.platform !== 'win32')('built CLI compact hybrid transcript', () => {
-  it.each([100, 44])('keeps prompt and provider activity adjacent at %i columns across live height changes', async (columns) => {
+  it.each([100, 44])('keeps ASCII prompt and provider activity adjacent at %i columns across live height changes', async (columns) => {
     const repoRoot = path.resolve(__dirname, '../../..');
     const aidenHome = await fs.mkdtemp(path.join(os.tmpdir(), 'aiden-compact-transcript-home-'));
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'aiden-compact-transcript-cwd-'));
@@ -81,6 +81,7 @@ describe.skipIf(process.platform !== 'win32')('built CLI compact hybrid transcri
       cwd, cols: columns, rows: 60,
       env: {
         ...process.env,
+        TERM: 'dumb',
         AIDEN_HOME: aidenHome,
         AIDEN_TEST_REPO_ROOT: repoRoot,
         AIDEN_TEST_PROVIDER_BASE_URL: provider.baseUrl,
@@ -189,6 +190,8 @@ describe.skipIf(process.platform !== 'win32')('built CLI compact hybrid transcri
 
     expect([...frames.keys()]).toEqual(heights);
     for (const [rows, frame] of frames) {
+      expect(frame.split('\n').filter((line) => line.includes('COMPACT HEIGHT REQUEST')),
+        `submitted prompt must remain visible exactly once at ${rows} rows\n${frame}`).toHaveLength(1);
       expect(semanticGap(frame, 'COMPACT HEIGHT REQUEST', 'Aiden is thinking'), `${rows} rows\n${frame}`)
         .toBeLessThanOrEqual(1);
     }
