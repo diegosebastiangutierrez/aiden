@@ -91,6 +91,7 @@ import type { ContextCompressor, CompressionResult } from './contextCompressor';
 import type { AuxiliaryClient } from './auxiliaryClient';
 import type { PromptCaching } from './promptCaching';
 import type { LearningContextProvider } from './learning/learningContext';
+import { recordLearningSelection } from './learning/learningContext';
 import type { LearningScope, LearningType } from './learning/types';
 // v4.1.6 spike — Task Completion Engine (TCE) per-turn loop detector
 // + recovery controller. Default ON as of v4.2 Phase 6 — set
@@ -1184,6 +1185,7 @@ export class AidenAgent {
           };
           const currentUserIndex = messages.map((message) => message.role).lastIndexOf('user');
           if (currentUserIndex >= 0) {
+            recordLearningSelection(learned);
             messages = [...messages];
             messages.splice(currentUserIndex, 0, learningContextMessage);
           } else {

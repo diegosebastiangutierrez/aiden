@@ -6,10 +6,13 @@ describe('Workbench Learning privacy surface source contract', () => {
   const page = readFileSync(path.resolve(__dirname, '../../../dashboard-next/app/page.tsx'), 'utf8');
   const client = readFileSync(path.resolve(__dirname, '../../../dashboard-next/lib/aidenClient.ts'), 'utf8');
 
-  it('locates What Aiden has learned under Privacy rather than primary navigation', () => {
+  it('exposes Brain while preserving existing Privacy controls and source authority', () => {
     expect(page).toContain('What Aiden has learned');
     expect(page).toContain('<LearningSettingsTab />');
-    expect(page).not.toContain("type MainView = 'learning'");
+    expect(page).toContain("openView('brain')");
+    expect(page).toContain('Preview context for a task');
+    expect(page).toContain('Confirm as my context');
+    expect(page).toContain('Context selected for this work');
   });
 
   it('shows bounded review groups and evidence-linked history controls', () => {

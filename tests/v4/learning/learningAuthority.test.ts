@@ -239,6 +239,17 @@ describe('evidence-linked Learning ledger authority', () => {
     expect(entry.eligible).toBe(false);
   });
 
+  it('reports only complete context entries that fit the retrieval budget', () => {
+    const ledger = authority();
+    ledger.capture(capture());
+    const empty = ledger.retrieve({ query: 'npm test', scopes: [scope], maxChars: 10 });
+    expect(empty.context).toBe('');
+    expect(empty.items).toEqual([]);
+    const normal = ledger.retrieve({ query: 'npm test', scopes: [scope], maxChars: 400 });
+    expect(normal.items).toHaveLength(1);
+    for (const item of normal.items) expect(normal.context).toContain(item.content);
+  });
+
   it('isolates owners and workspaces before ranking or FTS lookup', () => {
     const ledger = authority();
     ledger.capture(capture());

@@ -11,6 +11,7 @@ import type {
   LearningScope,
   LearningScopeKind,
   LearningType,
+  LearningRetrievalResult,
 } from '../learning/types';
 
 const LEARNING_TYPES: ReadonlySet<LearningType> = new Set([
@@ -21,6 +22,7 @@ const LEARNING_TYPES: ReadonlySet<LearningType> = new Set([
 
 export interface WorkbenchLearningSnapshot {
   enabled: boolean;
+  scopes?: LearningScope[];
   trusted: LearningEntry[];
   needsReview: LearningEntry[];
   archived: LearningEntry[];
@@ -29,6 +31,7 @@ export interface WorkbenchLearningSnapshot {
 }
 
 export interface WorkbenchLearningPort {
+  preview?(input: { query: string; scopeKind?: LearningScopeKind }): LearningRetrievalResult;
   snapshot(): WorkbenchLearningSnapshot;
   review(entryId: string): {
     entry: LearningEntry;
@@ -84,6 +87,11 @@ export function createWorkbenchLearningPort(options: {
   };
 
   return {
+    preview(input) {
+      if (typeof input.query !== 'string' || !input.query.trim() || input.query.length > 4000) throw new Error('Context query must be between 1 and 4000 characters');
+      const scopes = input.scopeKind ? [requestedScope(input.scopeKind)] : options.scopes;
+      return options.authority.retrieve({ query: input.query, scopes, limit: 8, maxChars: 4000 });
+    },
     snapshot() {
       const entries = options.authority.list({ scopes: options.scopes });
       const trusted = entries.filter((entry) => entry.lifecycle === 'ACTIVE' && entry.confidence === 'TRUSTED' && entry.eligible);
@@ -93,6 +101,7 @@ export function createWorkbenchLearningPort(options: {
       const conflicts = options.authority.conflicts({ scopes: options.scopes });
       return {
         enabled: options.edition.can('learning.enabled'),
+        scopes: options.scopes.map(scope => ({ ...scope })),
         trusted,
         needsReview,
         archived,

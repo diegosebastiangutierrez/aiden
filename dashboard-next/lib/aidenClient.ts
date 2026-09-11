@@ -213,7 +213,7 @@ export interface WorkbenchRunProjection {
   modelBinding?: WorkbenchModelBinding | null;
   selectedModelBinding?: WorkbenchModelBinding | null;
   attempts?: Array<{ rowId?: number; id: string; generation: number; status: string }>;
-  timeline?: Array<{ eventId: number; jobSequence: number; type: string; createdAt: number }>;
+  timeline?: Array<{ eventId: number; jobSequence: number; type: string; createdAt: number; payload?: Record<string, unknown> | null }>;
   workers?: WorkbenchChildExecution[];
   approvals?: Array<{
     approval_id?: unknown; job_id?: unknown; attempt_id?: unknown; generation?: unknown;
@@ -1531,6 +1531,7 @@ export interface WorkbenchLearningConflict {
 }
 
 export interface WorkbenchLearningSnapshot {
+  scopes?: WorkbenchLearningEntry['scope'][];
   enabled: boolean;
   trusted: WorkbenchLearningEntry[];
   needsReview: WorkbenchLearningEntry[];
@@ -1555,6 +1556,10 @@ export interface WorkbenchLearningReview {
 
 export function loadLearning(): Promise<WorkbenchLearningSnapshot> {
   return managementRequest('/api/learning');
+}
+
+export function previewLearning(query: string, scopeKind?: WorkbenchLearningScopeKind): Promise<{ items: WorkbenchLearningEntry[]; context: string }> {
+  return appsRequest('/api/learning/preview', { method: 'POST', body: JSON.stringify({ query, scopeKind }) });
 }
 
 export function loadLearningReview(entryId: string): Promise<WorkbenchLearningReview> {

@@ -4,12 +4,25 @@ import { AidenAgent, type ToolExecutor } from '../../../core/v4/aidenAgent';
 import { MockProviderAdapter } from '../../../core/v4/__mocks__/mockProvider';
 import type { LearningContextProvider } from '../../../core/v4/learning/learningContext';
 import type { Message } from '../../../providers/v4/types';
+import * as learningSelection from '../../../core/v4/learning/learningContext';
 
 const execute: ToolExecutor = async (call) => ({ id: call.id, name: call.name, result: { ok: true } });
 const user = (content: string): Message => ({ role: 'user', content });
 const scope = { kind: 'REPOSITORY' as const, key: 'repo_1', ownerId: 'owner_1', workspaceId: 'workspace_1' };
 
 describe('AidenAgent Learning context boundary', () => {
+  it('records only selected context identities through the current Job event authority', async () => {
+    const selected = vi.spyOn(learningSelection, 'recordLearningSelection');
+    const provider = new MockProviderAdapter([MockProviderAdapter.stop('done')]);
+    const learning: LearningContextProvider = { retrieveLearning: () => ({
+      context: 'Use concise summaries.', items: [{ id: 'context-summary', version: 3, scope } as any],
+    }) };
+    const agent = new AidenAgent({ provider, toolExecutor: execute, tools: [], learningContextProvider: learning });
+    await agent.runConversation([user('Summarize project')], { learningScopes: [scope] });
+    expect(selected).toHaveBeenCalledWith(expect.objectContaining({ items: [{ id: 'context-summary', version: 3, scope }] }));
+    selected.mockRestore();
+  });
+
   it('places bounded learned context before the current user as non-system context and never persists it', async () => {
     const provider = new MockProviderAdapter([MockProviderAdapter.stop('done')]);
     const learning: LearningContextProvider = {

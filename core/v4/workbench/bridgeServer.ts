@@ -738,6 +738,16 @@ export function startWorkbenchBridge(opts: WorkbenchBridgeOptions): Promise<Work
       }).catch((error) => sendJson(res, 400, { error: managementError(error) }));
       return;
     }
+    if (req.method === 'POST' && url.pathname === '/api/learning/preview') {
+      if (!passesTokenGate(req, res)) return;
+      if (!opts.learning?.preview) { sendJson(res, 503, { error: 'Context preview is unavailable' }); return; }
+      readJsonBody(req, 16 * 1024).then(body => {
+        try { sendJson(res, 200, opts.learning!.preview!({ query: body.query as string,
+          ...(body.scopeKind === undefined ? {} : { scopeKind: body.scopeKind as never }) })); }
+        catch (error) { sendJson(res, 400, { error: managementError(error) }); }
+      }).catch(() => sendJson(res, 400, { error: 'invalid JSON body' }));
+      return;
+    }
     if (req.method === 'POST' && url.pathname === '/api/learning/remember') {
       if (!passesWriteGate(req, res)) return;
       if (!opts.learning) { sendJson(res, 503, { error: 'Learning is unavailable' }); return; }

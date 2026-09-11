@@ -86,7 +86,7 @@ import { completedRunMessages, resolveWorkbenchOnboarding } from '../lib/complet
 
 type UIMode   = 'focus' | 'execution' | 'power' | 'watch'
 type ExecMode = 'auto'  | 'plan'      | 'chat'  | 'react'
-type MainView = 'chat' | 'activity' | 'artifacts' | 'apps' | 'automations' | 'sponsors'
+type MainView = 'chat' | 'activity' | 'artifacts' | 'apps' | 'automations' | 'sponsors' | 'brain'
 
 interface AutomationPattern {
   pattern:        string
@@ -427,6 +427,20 @@ function ActivityView({ logs, jobId, attemptId, runId, onContinued, onRetried }:
             <span>Pending Approvals: {pendingApprovals.length}</span>
             <span>Evidence: {projectedEvidenceCount}</span>
           </div>
+          <section aria-label="Context selected for this work">
+            <strong>Context selected for this work</strong>
+            <p>Context is a historical aid, never execution authority.</p>
+            {(projection.timeline ?? []).some(event => event.type === 'learning.context_selected')
+              ? (projection.timeline ?? []).filter(event => event.type === 'learning.context_selected').map(event => (
+                <div key={event.eventId}>{Array.isArray(event.payload?.entries) && event.payload.entries.map((value, index) => {
+                  const item = value as { entryId?: string; version?: number }
+                  return typeof item?.entryId === 'string' ? <button type="button" key={`${item.entryId}:${index}`} onClick={() => {
+                    const target = new URL(window.location.href); target.searchParams.set('view', 'brain'); target.searchParams.set('context', item.entryId!)
+                    window.history.replaceState({}, '', target); setMainView('brain')
+                  }}>{item.entryId} · version {item.version}</button> : null
+                })}</div>
+              )) : <p>No context-selection record is available for this run.</p>}
+          </section>
           {projection.childContractEvidence && (
             <section className="required-child-runs" aria-label="Child Evidence">
               <strong>{projection.childContractEvidence.required ? 'Required child Evidence' : 'Child Evidence'}</strong>
@@ -2257,6 +2271,7 @@ function HistorySidebar() {
       <button type="button" className={mainView === 'chat' ? 'rail-action is-active' : 'rail-action'} title="Home" aria-label="Home" onClick={() => openView('chat')}><ProductIcon name="home" /></button>
       <button type="button" className={mainView === 'activity' ? 'rail-action is-active' : 'rail-action'} title={`Active Work (${activeJobs.length})`} aria-label="Active Work" onClick={() => openView('activity')}><ProductIcon name="work" /></button>
       <button type="button" className={mainView === 'apps' ? 'rail-action is-active' : 'rail-action'} title="Apps" aria-label="Apps" onClick={() => openView('apps')}><ProductIcon name="apps" /></button>
+      <button type="button" className={mainView === 'brain' ? 'rail-action is-active' : 'rail-action'} title="Brain" aria-label="Brain" onClick={() => openView('brain')}><ProductIcon name="work" /></button>
       <button type="button" className={mainView === 'automations' ? 'rail-action is-active' : 'rail-action'} title="Automations" aria-label="Automations" onClick={() => openView('automations')}><ProductIcon name="automation" /></button>
       <button type="button" className={mainView === 'artifacts' ? 'rail-action is-active' : 'rail-action'} title="Artifacts" aria-label="Artifacts" onClick={() => openView('artifacts')}><ProductIcon name="artifact" /></button>
       <span className="rail-spacer" />
@@ -2284,6 +2299,7 @@ function HistorySidebar() {
         <button type="button" className={mainView === 'chat' ? 'is-active' : ''} onClick={() => openView('chat')}><span><ProductIcon name="home" size={16} /></span>Home</button>
         <button type="button" className={mainView === 'activity' ? 'is-active' : ''} onClick={() => openView('activity')}><span><ProductIcon name="work" size={16} /></span>Active Work{activeJobs.length > 0 && <small>{activeJobs.length}</small>}</button>
         <button type="button" className={mainView === 'apps' ? 'is-active' : ''} onClick={() => openView('apps')}><span><ProductIcon name="apps" size={16} /></span>Apps</button>
+        <button type="button" className={mainView === 'brain' ? 'is-active' : ''} onClick={() => openView('brain')}><span><ProductIcon name="work" size={16} /></span>Brain</button>
         <button type="button" className={mainView === 'automations' ? 'is-active' : ''} onClick={() => openView('automations')}><span><ProductIcon name="automation" size={16} /></span>Automations</button>
         <button type="button" className={mainView === 'artifacts' ? 'is-active' : ''} onClick={() => openView('artifacts')}><span><ProductIcon name="artifact" size={16} /></span>Artifacts</button>
       </nav>
@@ -6042,12 +6058,17 @@ function LearningSettingsTab() {
   const [filter, setFilter] = useState<'all' | 'preferences' | 'corrections' | 'workspace' | 'skills'>('all')
   const [draft, setDraft] = useState('')
   const [subject, setSubject] = useState('user.preference')
+  const [scopeKind, setScopeKind] = useState<aiden.WorkbenchLearningScopeKind>('REPOSITORY')
+  const [query, setQuery] = useState('')
+  const [contextPreview, setContextPreview] = useState<{ items: aiden.WorkbenchLearningEntry[]; context: string } | null>(null)
   const [edit, setEdit] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const refresh = useCallback(async () => {
     setError(null)
-    try { setSnapshot(await aiden.loadLearning()) }
+    try { const next = await aiden.loadLearning(); setSnapshot(next); setContextPreview(null)
+      if (next.scopes?.length) setScopeKind(current => next.scopes!.some(scope => scope.kind === current) ? current : next.scopes![0].kind)
+    }
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Learning is unavailable') }
   }, [])
   useEffect(() => { void refresh() }, [refresh])
@@ -6061,10 +6082,14 @@ function LearningSettingsTab() {
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Learning review is unavailable') }
     finally { setBusy(false) }
   }
+  useEffect(() => {
+    const requested = new URLSearchParams(window.location.search).get('context')
+    if (requested) void openReview(requested)
+  }, [])
   const mutate = async (operation: () => Promise<unknown>, reopen?: string) => {
     setBusy(true); setError(null)
-    try { await operation(); await refresh(); if (reopen) await openReview(reopen); else setReview(null) }
-    catch (cause) { setError(cause instanceof Error ? cause.message : 'Learning change failed') }
+    try { await operation(); await refresh(); if (reopen) await openReview(reopen); else setReview(null); return true }
+    catch (cause) { setError(cause instanceof Error ? cause.message : 'Learning change failed'); return false }
     finally { setBusy(false) }
   }
   const exportJson = async () => {
@@ -6084,7 +6109,8 @@ function LearningSettingsTab() {
     || (filter === 'skills' && entry.type === 'SKILL_RELIABILITY')
   const cards = (entries: aiden.WorkbenchLearningEntry[]) => entries.filter(accepts).map((entry) => (
     <article className="learning-card" key={entry.id}>
-      <div><strong>{entry.content ?? '[learned content deleted]'}</strong><span>{entry.confidence} · {entry.scope.kind.replace(/_/g, ' ')}</span></div>
+      <div><strong>{entry.content ?? '[learned content deleted]'}</strong><span>{entry.confidence} · {entry.lifecycle} · {entry.scope.kind.replace(/_/g, ' ')}</span>
+        <small>Updated {new Date(entry.updatedAt).toLocaleString()} · {entry.expiresAt === null ? 'No time expiry; sources can still become stale' : `Expires ${new Date(entry.expiresAt).toLocaleString()}`}</small></div>
       <button type="button" disabled={busy} onClick={() => { void openReview(entry.id) }}>Review</button>
     </article>
   ))
@@ -6092,6 +6118,11 @@ function LearningSettingsTab() {
   return (
     <SettingsSection title="What Aiden has learned">
       <p style={settingsTextStyle}>Evidence-linked context stays local and never grants permission, approval, budget, or execution authority.</p>
+      <p style={settingsTextStyle}>Trusted means supported by its recorded source, not universally correct. Explicit preferences are user-stated; model prose alone is not trusted.</p>
+      <label>Context scope<select aria-label="Context scope" value={scopeKind} disabled={busy} onChange={event => { setScopeKind(event.target.value as aiden.WorkbenchLearningScopeKind); setContextPreview(null) }}>
+        {(snapshot?.scopes ?? []).map(scope => <option key={`${scope.kind}:${scope.key}`} value={scope.kind}>{scope.kind.replaceAll('_', ' ')} · {scope.key}</option>)}
+      </select></label>
+      {scopeKind === 'USER_GLOBAL' && <p role="note">User-global context is shared across your workspaces by your explicit choice. Use repository scope for project-only facts.</p>}
       {snapshot && !snapshot.enabled && <p className="learning-notice">New capture and use are unavailable. Inspect, export, archive, and delete remain available.</p>}
       {error && <p className="learning-error">{error}</p>}
       <div className="learning-actions">
@@ -6103,13 +6134,24 @@ function LearningSettingsTab() {
         if (!draft.trim()) return
         void mutate(() => aiden.rememberLearning({
           content: draft.trim(), subjectKey: subject.trim() || 'user.preference', type: 'USER_PREFERENCE',
-          scopeKind: 'REPOSITORY', idempotencyKey: idempotencyKey(),
-        })).then(() => setDraft(''))
+          scopeKind, idempotencyKey: idempotencyKey(),
+        })).then(saved => { if (saved) setDraft('') })
       }}>
         <label>Remember this<textarea value={draft} disabled={!snapshot?.enabled || busy} onChange={(event) => setDraft(event.target.value)} placeholder="A preference or repository convention you explicitly want Aiden to remember" /></label>
         <input value={subject} disabled={!snapshot?.enabled || busy} onChange={(event) => setSubject(event.target.value)} aria-label="Learning subject" />
         <button type="submit" disabled={!snapshot?.enabled || busy || !draft.trim()}>Remember this</button>
       </form>
+      <form className="learning-remember" onSubmit={event => {
+        event.preventDefault(); setBusy(true); setError(null); setContextPreview(null)
+        void aiden.previewLearning(query, scopeKind).then(setContextPreview)
+          .catch(cause => setError(cause instanceof Error ? cause.message : 'Context preview failed')).finally(() => setBusy(false))
+      }}>
+        <label>Preview context for a task<input aria-label="Context task" value={query} maxLength={4000} onChange={event => { setQuery(event.target.value); setContextPreview(null) }} /></label>
+        <button type="submit" disabled={busy || !query.trim() || !snapshot?.enabled}>Preview matching context</button>
+      </form>
+      {contextPreview && <section aria-label="Context preview"><p>{contextPreview.items.length} matching entries. This is a preview, not proof of use in an earlier Job.</p>
+        {cards(contextPreview.items)}<details><summary>Exact bounded context</summary><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{contextPreview.context || 'No eligible matching context.'}</pre></details>
+      </section>}
       <div className="learning-filters" aria-label="Learning filters">
         {([['all', 'All'], ['preferences', 'Preferences'], ['corrections', 'Corrections'], ['workspace', 'Workspace lessons'], ['skills', 'Skill reliability']] as const).map(([id, label]) => (
           <button type="button" className={filter === id ? 'is-active' : ''} key={id} onClick={() => setFilter(id)}>{label}</button>
@@ -6139,6 +6181,9 @@ function LearningSettingsTab() {
           <dt>History</dt><dd>{review.history.map((event) => `${event.type} v${event.entryVersion}`).join(' → ')}</dd>
         </dl>
         <div className="learning-actions">
+          <button type="button" disabled={!snapshot?.enabled || busy || review.entry.lifecycle === 'DELETED' || review.entry.confidence === 'TRUSTED'} onClick={() => {
+            if (window.confirm('Confirm this as your own context? This records your statement; it does not verify external claims.')) void mutate(() => aiden.editLearning(review.entry.id, { expectedVersion: review.entry.version, content: edit, idempotencyKey: idempotencyKey() }), review.entry.id)
+          }}>Confirm as my context</button>
           <button type="button" disabled={!snapshot?.enabled || busy || edit.trim() === review.entry.content} onClick={() => { void mutate(() => aiden.editLearning(review.entry.id, { expectedVersion: review.entry.version, content: edit, idempotencyKey: idempotencyKey() }), review.entry.id) }}>Save edit</button>
           <button type="button" disabled={busy || review.entry.lifecycle === 'DELETED'} onClick={() => { void mutate(() => aiden.demoteLearning(review.entry.id, review.entry.version), review.entry.id) }}>Stop using automatically</button>
           <button type="button" disabled={busy || review.entry.lifecycle === 'DELETED'} onClick={() => { void mutate(() => aiden.archiveLearning(review.entry.id, review.entry.version), review.entry.id) }}>Archive</button>
@@ -8275,6 +8320,7 @@ export default function Home() {
             )}
             {mainView === 'artifacts' && <ArtifactsView />}
             {mainView === 'apps' && <AppsView />}
+            {mainView === 'brain' && <section className="workspace-surface" aria-label="Brain"><h2>Brain</h2><LearningSettingsTab /></section>}
             {mainView === 'automations' && <AutomationsView />}
             {mainView === 'sponsors' && <SponsorsView />}
             {!liveViewOpen && liveExecution?.surfaces.length ? (

@@ -12,6 +12,18 @@ describe('Workbench Learning privacy port', () => {
   beforeEach(() => { db = new Database(':memory:'); runMigrations(db); });
   afterEach(() => db.close());
 
+  it('previews only active scopes and cannot resurrect deleted context after rebuild', () => {
+    const authority = createLearningAuthority({ db, enabled: true });
+    const port = createWorkbenchLearningPort({ authority, edition: buildEditionAuthority('pro'), scopes: [scope], defaultScope: scope });
+    const entry = port.remember({ content: 'Use concise project release summaries.', subjectKey: 'summary', type: 'USER_PREFERENCE', scopeKind: 'WORKSPACE', idempotencyKey: 'preview_1' });
+    expect(port.snapshot().scopes).toEqual([scope]);
+    expect(port.preview!({ query: 'release summaries', scopeKind: 'WORKSPACE' }).items.map(item => item.id)).toEqual([entry.id]);
+    expect(() => port.preview!({ query: 'release', scopeKind: 'PROJECT' })).toThrow(/scope/i);
+    port.delete({ entryId: entry.id, expectedVersion: entry.version, reason: 'user removal' });
+    port.rebuild();
+    expect(port.preview!({ query: 'release' }).items).toEqual([]);
+  });
+
   it('records explicit Remember actions and projects inspectable evidence/history groups', () => {
     const authority = createLearningAuthority({ db, enabled: true, now: () => 100 });
     const port = createWorkbenchLearningPort({

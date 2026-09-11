@@ -30,6 +30,15 @@ function port(): WorkbenchLearningPort {
 }
 
 describe('Workbench Learning bridge', () => {
+  it('authorizes a bounded context preview without accepting caller-supplied scope identities', async () => {
+    const learning = { ...port(), preview: vi.fn(() => ({ items: [], context: '' })) };
+    bridge = await startWorkbenchBridge({ reader, learning, token: TOKEN, port: 0 });
+    const body = JSON.stringify({ query: 'release notes', scopeKind: 'REPOSITORY', ownerId: 'foreign', workspaceId: 'foreign' });
+    expect((await request('/api/learning/preview', { method: 'POST', body })).status).toBe(401);
+    expect((await request('/api/learning/preview', { method: 'POST', headers: { 'x-workbench-token': TOKEN }, body })).status).toBe(200);
+    expect(learning.preview).toHaveBeenCalledWith({ query: 'release notes', scopeKind: 'REPOSITORY' });
+  });
+
   it('token-gates private reads and returns the bounded current projection', async () => {
     const learning = port();
     bridge = await startWorkbenchBridge({ reader, learning, token: TOKEN, port: 0 });
