@@ -45,6 +45,7 @@ const TEST_EFFECT_CONTRACT = {
 
 function resourceAuthorityMock() {
   return {
+    listEvents: vi.fn(() => []),
     resources: {
       authorize: vi.fn(() => true),
       getBudgets: vi.fn(() => []),
@@ -54,6 +55,19 @@ function resourceAuthorityMock() {
 }
 
 describe('ToolRegistry durable execution identity', () => {
+  it('fails closed when the durable browser contract lookup is unavailable', async () => {
+    const handler = vi.fn(async () => ({ ok: true }));
+    const engine = { ...resourceAuthorityMock(), listEvents: vi.fn(() => { throw new Error('history unavailable'); }) } as unknown as JobEngine;
+    const registry = new ToolRegistry();
+    registry.register({ schema: { name: 'scoped_read', description: 'read', inputSchema: { type: 'object' } },
+      category: 'read', riskTier: 'safe', mutates: false, toolset: 'misc', execute: handler });
+    const execute = registry.buildExecutor({ cwd: process.cwd(), paths: resolveAidenPaths({ rootOverride: 'C:/tmp/aiden-job-identity' }) });
+    const result = await runWithJobExecutionContext({ engine, jobId: 'job_history', attemptId: 'attempt_history',
+      generation: 1, fenceToken: 'fence_history', producer: 'test' }, () => execute({ id: 'read', name: 'scoped_read', arguments: {} }));
+    expect(result.error).toBe('Browser check authority could not be established');
+    expect(handler).not.toHaveBeenCalled();
+  });
+
   it('permits exact mutation recovery only for a persisted resumable model call identity', () => {
     const db = new Database(':memory:');
     try {
@@ -1056,6 +1070,7 @@ describe('ToolRegistry durable execution identity', () => {
     const authorize = vi.fn((resource: { kind: string; value: string }) =>
       resource.kind !== 'path' || !resource.value.endsWith('foreign.txt'));
     const engine = {
+      listEvents: vi.fn(() => []),
       resources: {
         authorize,
         getBudgets: vi.fn(() => []),

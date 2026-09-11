@@ -1,5 +1,9 @@
+export type WorkbenchView = 'chat' | 'activity' | 'artifacts' | 'apps' | 'automations' | 'sponsors' | 'brain'
+
+const WORKBENCH_VIEWS = new Set<WorkbenchView>(['chat', 'activity', 'artifacts', 'apps', 'automations', 'sponsors', 'brain'])
+
 export type WorkbenchDestination =
-  | { view: 'apps' | 'activity' | 'brain'; settings?: never }
+  | { view: WorkbenchView; contextEntryId?: string; settings?: never }
   | { settings: WorkbenchSettingsSection; view?: never }
   | Record<string, never>
 
@@ -15,7 +19,7 @@ const SETTINGS_SECTIONS = new Set<WorkbenchSettingsSection>([
 export function parseWorkbenchDestination(search: string): WorkbenchDestination {
   const params = new URLSearchParams(search)
   const view = params.get('view')
-  if (view === 'apps' || view === 'activity' || view === 'brain') return { view }
+  if (view && WORKBENCH_VIEWS.has(view as WorkbenchView)) return { view: view as WorkbenchView }
   const settings = params.get('settings')
   if (settings && SETTINGS_SECTIONS.has(settings as WorkbenchSettingsSection)) return { settings: settings as WorkbenchSettingsSection }
   return {}
@@ -26,8 +30,10 @@ export function applyWorkbenchDestination(url: string, destination: WorkbenchDes
   const next = new URL(url, 'http://aiden.local')
   next.searchParams.delete('view')
   next.searchParams.delete('settings')
-  if ('view' in destination && destination.view) next.searchParams.set('view', destination.view)
+  next.searchParams.delete('context')
   if ('settings' in destination && destination.settings) next.searchParams.set('settings', destination.settings)
+  if ('view' in destination && destination.view) next.searchParams.set('view', destination.view)
+  if (destination.view === 'brain' && destination.contextEntryId) next.searchParams.set('context', destination.contextEntryId)
   return absolute ? next.toString() : `${next.pathname}${next.search}${next.hash}`
 }
 
@@ -44,6 +50,7 @@ export function applyWorkbenchSelection(
   const absolute = /^[a-z][a-z0-9+.-]*:\/\//i.test(url)
   const next = new URL(url, 'http://aiden.local')
   const destination = preserveDestination ? parseWorkbenchDestination(next.search) : {}
+  const previousJob = next.searchParams.get('job')
   for (const key of RUNTIME_SELECTION_KEYS) next.searchParams.delete(key)
   const selection = new URLSearchParams(selectionSearch.startsWith('?') ? selectionSearch.slice(1) : selectionSearch)
   for (const key of RUNTIME_SELECTION_KEYS) {
@@ -52,7 +59,8 @@ export function applyWorkbenchSelection(
   }
   next.searchParams.delete('view')
   next.searchParams.delete('settings')
-  if ('view' in destination && destination.view) next.searchParams.set('view', destination.view)
   if ('settings' in destination && destination.settings) next.searchParams.set('settings', destination.settings)
+  if (destination.view !== 'brain' || previousJob !== next.searchParams.get('job')) next.searchParams.delete('context')
+  if ('view' in destination && destination.view) next.searchParams.set('view', destination.view)
   return absolute ? next.toString() : `${next.pathname}${next.search}${next.hash}`
 }

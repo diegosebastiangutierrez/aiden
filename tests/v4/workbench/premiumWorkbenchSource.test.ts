@@ -199,7 +199,7 @@ describe('premium Workbench source contracts', () => {
     }
     const navigation = page.slice(page.indexOf('function NavBar()'), page.indexOf('// ── HistorySidebar'));
     expect(navigation).toContain('attentionCount > 0 ? (');
-    expect(navigation).toContain("setMainView('activity')");
+    expect(navigation).toContain("openWorkbenchDestination({ view: 'activity' })");
     expect(navigation).toContain('aria-label="Open work that needs attention"');
   });
 
@@ -227,7 +227,7 @@ describe('premium Workbench source contracts', () => {
   });
 
   it('provides one functional Apps surface with backend-owned provider credentials', () => {
-    expect(page).toContain("setMainView('apps')");
+    expect(page).toContain("openWorkbenchDestination({ view: 'apps' })");
     expect(page).toContain('function AppsView()');
     expect(page).toContain('aiden.loadApps()');
     expect(page).toContain('aiden.connectApp');

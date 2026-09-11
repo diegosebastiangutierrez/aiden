@@ -86,7 +86,7 @@ import { completedRunMessages, resolveWorkbenchOnboarding } from '../lib/complet
 
 type UIMode   = 'focus' | 'execution' | 'power' | 'watch'
 type ExecMode = 'auto'  | 'plan'      | 'chat'  | 'react'
-type MainView = 'chat' | 'activity' | 'artifacts' | 'apps' | 'automations' | 'sponsors' | 'brain'
+type MainView = import('../lib/workbenchNavigation').WorkbenchView
 
 interface AutomationPattern {
   pattern:        string
@@ -154,7 +154,7 @@ function ActivityView({ logs, jobId, attemptId, runId, onContinued, onRetried }:
 }) {
   const {
     activeJobs, selectActiveJob, presence, presenceBriefing, refreshPresence, sessionId,
-    setMainView, setSettingsOpen, setSettingsTab,
+    setMainView, setSettingsOpen, setSettingsTab, openWorkbenchDestination,
   } = useDevOS()
   const [projection, setProjection] = useState<aiden.WorkbenchRunProjection | null>(null)
   const [continuity, setContinuity] = useState<aiden.ContinuityCheckpointView | null>(null)
@@ -328,8 +328,8 @@ function ActivityView({ logs, jobId, attemptId, runId, onContinued, onRetried }:
                           )}
                           {!item.jobId && item.recommendedAction && (
                             <button type="button" onClick={() => {
-                              if (item.sourceKind === 'connected_account') setMainView('apps')
-                              else if (item.sourceKind === 'automation') setMainView('automations')
+                              if (item.sourceKind === 'connected_account') openWorkbenchDestination({ view: 'apps' })
+                              else if (item.sourceKind === 'automation') openWorkbenchDestination({ view: 'automations' })
                               else {
                                 setSettingsTab('readiness')
                                 setSettingsOpen(true)
@@ -435,8 +435,7 @@ function ActivityView({ logs, jobId, attemptId, runId, onContinued, onRetried }:
                 <div key={event.eventId}>{Array.isArray(event.payload?.entries) && event.payload.entries.map((value, index) => {
                   const item = value as { entryId?: string; version?: number }
                   return typeof item?.entryId === 'string' ? <button type="button" key={`${item.entryId}:${index}`} onClick={() => {
-                    const target = new URL(window.location.href); target.searchParams.set('view', 'brain'); target.searchParams.set('context', item.entryId!)
-                    window.history.replaceState({}, '', target); setMainView('brain')
+                    openWorkbenchDestination({ view: 'brain', contextEntryId: item.entryId })
                   }}>{item.entryId} · version {item.version}</button> : null
                 })}</div>
               )) : <p>No context-selection record is available for this run.</p>}
@@ -2162,7 +2161,7 @@ function NavBar() {
   const {
     isExecuting,
     setSettingsOpen, setSettingsTab, historyOpen, setHistoryOpen, startNewChat, clearCurrentView,
-    runtimeConnection, executionAvailable, executionQueue, activeJobs, presence, setMainView,
+    runtimeConnection, executionAvailable, executionQueue, activeJobs, presence, openWorkbenchDestination,
   } = useDevOS()
   const runningCount = foregroundExecutionCount(activeJobs)
   const runtimeReady = runtimeConnection === 'connected' && executionAvailable
@@ -2206,7 +2205,7 @@ function NavBar() {
           type="button"
           className="topbar-work-state is-actionable"
           aria-label="Open work that needs attention"
-          onClick={() => setMainView('activity')}
+          onClick={() => openWorkbenchDestination({ view: 'activity' })}
         >
           {attentionCount} {attentionCount === 1 ? 'needs' : 'need'} you
           {executionQueue.pending > 0 ? ` · ${executionQueue.pending} queued` : ''}
@@ -2217,8 +2216,8 @@ function NavBar() {
           className="topbar-work-state"
           aria-label={runtimeReady ? 'Open Active Work' : 'Open readiness settings'}
           onClick={() => {
-            if (runtimeReady) setMainView('activity')
-            else { setSettingsTab('runtime'); setSettingsOpen(true) }
+            if (runtimeReady) openWorkbenchDestination({ view: 'activity' })
+            else openWorkbenchDestination({ settings: 'runtime' })
           }}
           style={{ color: runningCount > 0 ? 'var(--blue)' : runtimeReady ? 'var(--muted3)' : 'var(--orange)' }}
         >
@@ -2247,20 +2246,18 @@ function NavBar() {
 function HistorySidebar() {
   const {
     conversations, currentConvId, startNewChat, loadConversation, selectActiveJob,
-    activeJobs, historyOpen, setHistoryOpen, mainView, setMainView,
-    setSettingsOpen, setSettingsTab,
+    activeJobs, historyOpen, setHistoryOpen, mainView, openWorkbenchDestination,
   } = useDevOS()
 
   const grouped = useMemo(() => groupDurableHistory(conversations), [conversations])
 
-  const openSettings = (tab: string) => {
-    setSettingsTab(tab)
-    setSettingsOpen(true)
+  const openSettings = (tab: import('../lib/workbenchNavigation').WorkbenchSettingsSection) => {
+    openWorkbenchDestination({ settings: tab })
     if (window.matchMedia('(max-width: 620px)').matches) setHistoryOpen(false)
   }
 
   const openView = (view: MainView) => {
-    setMainView(view)
+    openWorkbenchDestination({ view })
     if (window.matchMedia('(max-width: 620px)').matches) setHistoryOpen(false)
   }
 
@@ -2721,7 +2718,7 @@ function ArtifactsView() {
 }
 
 function AppWorkflowForm({ accounts }: { accounts: aiden.WorkbenchConnectedAccount[] }) {
-  const { setMainView } = useDevOS()
+  const { openWorkbenchDestination } = useDevOS()
   const [accountId, setAccountId] = useState('')
   const [actions, setActions] = useState<aiden.WorkbenchAppAction[]>([])
   const [actionId, setActionId] = useState('')
@@ -2812,7 +2809,7 @@ function AppWorkflowForm({ accounts }: { accounts: aiden.WorkbenchConnectedAccou
       <button className="nav-btn" type="button" disabled={busy} onClick={() => { void save() }}>Save workflow</button>
     </section>}
     {saved && <p role="status">Saved {saved}. No action has run.</p>}
-    <button type="button" className="nav-btn" onClick={() => setMainView('automations')}>Open workflow runs and history</button>
+    <button type="button" className="nav-btn" onClick={() => openWorkbenchDestination({ view: 'automations' })}>Open workflow runs and history</button>
   </article>
 }
 
@@ -6647,7 +6644,7 @@ function SettingsDrawer() {
           {settingsTab === 'sponsor' && (
             <SettingsSection title="Sponsor Aiden">
               <p style={settingsTextStyle}>Aiden is built independently. Support helps fund development, testing and infrastructure.</p>
-              <button type="button" className="sponsor-button" onClick={() => { setMainView('sponsors'); setSettingsOpen(false) }}>Open Sponsors</button>
+              <button type="button" className="sponsor-button" onClick={() => openWorkbenchDestination({ view: 'sponsors' })}>Open Sponsors</button>
               <p style={settingsTextStyle}>Support opens the reviewed external payment page. Aiden never reads or stores payment details.</p>
             </SettingsSection>
           )}
@@ -6672,11 +6669,11 @@ function SettingsDrawer() {
           )}
 
           {settingsTab === 'apps' && (
-            <SettingsSection title="Apps"><p style={settingsTextStyle}>Connect and manage the accounts Aiden can use when you ask.</p><ProductButton variant="primary" onClick={() => { setMainView('apps'); setSettingsOpen(false) }}>Open Apps</ProductButton></SettingsSection>
+            <SettingsSection title="Apps"><p style={settingsTextStyle}>Connect and manage the accounts Aiden can use when you ask.</p><ProductButton variant="primary" onClick={() => openWorkbenchDestination({ view: 'apps' })}>Open Apps</ProductButton></SettingsSection>
           )}
 
           {settingsTab === 'automations' && (
-            <SettingsSection title="Automations"><p style={settingsTextStyle}>Create and manage reliable scheduled work.</p><ProductButton variant="primary" onClick={() => { setMainView('automations'); setSettingsOpen(false) }}>Open Automations</ProductButton></SettingsSection>
+            <SettingsSection title="Automations"><p style={settingsTextStyle}>Create and manage reliable scheduled work.</p><ProductButton variant="primary" onClick={() => openWorkbenchDestination({ view: 'automations' })}>Open Automations</ProductButton></SettingsSection>
           )}
 
           {settingsTab === 'support' && (

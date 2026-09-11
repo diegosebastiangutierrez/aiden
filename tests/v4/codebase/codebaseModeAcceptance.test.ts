@@ -139,7 +139,13 @@ describe('Codebase Mode production lifecycle acceptance', () => {
       ],
     });
     expect(engine.proof.listEvidence(result.jobId)).toEqual([
-      expect.objectContaining({ source: 'repository.change.readback', verificationResult: 'verified' }),
+      expect.objectContaining({
+        jobId: result.jobId, source: 'filesystem.read', verificationResult: 'verified',
+        payload: expect.objectContaining({ path: 'source.ts', truncated: false }),
+      }),
+      expect.objectContaining({
+        jobId: result.jobId, source: 'repository.change.readback', verificationResult: 'verified',
+      }),
     ]);
     expect(engine.proof.getVerdict(result.jobId)?.verdict).toBe('verified');
     expect(engine.proof.exportJson(result.jobId)).toMatchObject({
@@ -382,9 +388,16 @@ describe('Codebase Mode production lifecycle acceptance', () => {
     expect(result.value.blocked.error).toContain('Source metadata or content changed after approval');
     await expect(readFile(path.join(root, 'source.ts'), 'utf8')).resolves.toBe('user edit\n');
     expect(engine.getJob(result.jobId)).toMatchObject({
-      status: 'unknown', terminalOutcome: 'unknown', finishReason: 'verification_incomplete',
+      status: 'unknown', terminalOutcome: 'partially_verified', finishReason: 'verification_incomplete',
     });
-    expect(engine.proof.getVerdict(result.jobId)?.verdict).toBe('unknown');
+    expect(engine.proof.getVerdict(result.jobId)?.verdict).toBe('partially_verified');
+    expect(engine.changes.listRecords(result.jobId)).toHaveLength(0);
+    expect(engine.proof.listEvidence(result.jobId).map(({ source, verificationResult }) => ({
+      source, verificationResult,
+    }))).toEqual([
+      { source: 'filesystem.read', verificationResult: 'verified' },
+      { source: 'repository.change.conflict', verificationResult: 'unknown' },
+    ]);
     expect(engine.proof.listEvidence(result.jobId)).toContainEqual(expect.objectContaining({
       source: 'repository.change.conflict',
       repositorySnapshotId: expect.stringMatching(/^repository_snapshot_/),
