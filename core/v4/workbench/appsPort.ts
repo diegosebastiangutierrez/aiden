@@ -4,6 +4,20 @@
  */
 
 import type { IntegrationRuntime } from '../integrations/runtime';
+import type { IntegrationActionDescriptor } from '../integrations/types';
+import type { ScriptStep } from '../automation/types';
+
+export interface WorkbenchAppPreviewInput {
+  accountId: string; actionId: string; schemaVersion: string; providerActionVersion: string;
+  input: Record<string, unknown>;
+}
+
+export interface WorkbenchAppPreview {
+  account: WorkbenchConnectedAccount;
+  step: Extract<ScriptStep, { kind: 'app_action' }>;
+  digest: string;
+  approvalRequired: boolean;
+}
 
 export interface WorkbenchAppProvider {
   id: string;
@@ -37,6 +51,8 @@ export interface WorkbenchAppsSnapshot {
 }
 
 export interface WorkbenchAppsPort {
+  actions?(accountId: string): Promise<IntegrationActionDescriptor[]>;
+  preview?(input: WorkbenchAppPreviewInput): Promise<WorkbenchAppPreview>;
   snapshot(): Promise<WorkbenchAppsSnapshot>;
   configureProvider(input: { providerId: string; credential: string }): Promise<WorkbenchAppProvider>;
   connect(input: { providerId: string; toolkitId: string; label?: string }): Promise<{
@@ -91,6 +107,22 @@ export function createWorkbenchAppsPort(runtime: IntegrationRuntime): WorkbenchA
   };
 
   return {
+    async actions(accountId) {
+      const account = runtime.accounts.requireInScope(accountId, scope);
+      runtime.accounts.resolve({ ...scope, providerId: account.providerId, toolkitId: account.toolkitId, accountId });
+      return (await runtime.actions.discoverActions({ ...scope, providerId: account.providerId,
+        toolkitId: account.toolkitId, limit: 100 })).actions;
+    },
+    async preview(input) {
+      const account = runtime.accounts.requireInScope(input.accountId, scope);
+      const actions = await runtime.actions.discoverActions({ ...scope, providerId: account.providerId,
+        toolkitId: account.toolkitId, limit: 100 });
+      const action = actions.actions.find(item => item.actionId === input.actionId);
+      if (!action) throw new Error('App action is unavailable');
+      const preview = await runtime.actions.preview({ ...input, ...scope, providerId: account.providerId,
+        toolkitId: account.toolkitId, operation: action.operation, requestId: 'workbench-preview' });
+      return { ...preview, account: projectAccount(account) };
+    },
     async snapshot() {
       const providers: WorkbenchAppProvider[] = [];
       const toolkits: WorkbenchAppToolkit[] = [];

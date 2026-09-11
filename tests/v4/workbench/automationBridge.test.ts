@@ -39,6 +39,30 @@ function stub(): WorkbenchAutomationPort {
 }
 
 describe('Workbench Automations bridge', () => {
+  it('requires the current exact app preview and never dispatches from preview or save', async () => {
+    const automations = stub();
+    const step = { kind: 'app_action', operation: 'mutation', providerId: 'fake', toolkitId: 'projects',
+      accountId: 'account-one', actionId: 'create_note', schemaVersion: '1', providerActionVersion: '2026-01-01', input: { projectId: 'project', text: 'Note' } };
+    const apps = { actions: vi.fn(async () => []), preview: vi.fn(async () => ({ step, digest: 'current-preview', approvalRequired: true })) } as any;
+    bridge = await startWorkbenchBridge({ reader, apps, automations, token: TOKEN, port: 0 });
+    const headers = { 'Content-Type': 'application/json', 'x-workbench-token': TOKEN };
+    for (const route of ['/api/apps/actions', '/api/apps/preview']) {
+      expect((await request(route, { method: 'POST', body: JSON.stringify(step) })).status).toBe(401);
+    }
+    expect(apps.preview).not.toHaveBeenCalled();
+    expect((await request('/api/apps/preview', { method: 'POST', headers, body: JSON.stringify(step) })).status).toBe(200);
+    const body = { name: 'Issue capture', action: { kind: 'script', script: { version: 1, maxRuntimeMs: 120000, steps: [step] } },
+      trigger: { kind: 'manual' }, policies: { misfire: { kind: 'skip' }, overlap: 'skip', retry: { maxAttempts: 1 } },
+      capabilities: ['tool:app_action'], credentialRefs: ['account-one'], approval: { mode: 'always' }, requestId: 'workflow-request' };
+    expect((await request('/api/automations', { method: 'POST', headers, body: JSON.stringify(body) })).status).toBe(400);
+    expect(automations.create).not.toHaveBeenCalled();
+    expect((await request('/api/automations', { method: 'POST', headers, body: JSON.stringify({ ...body, previewDigest: 'current-preview' }) })).status).toBe(201);
+    expect(automations.create).toHaveBeenCalledOnce();
+    expect(automations.runNow).not.toHaveBeenCalled();
+    await request('/api/automations/automation-1/run', { method: 'POST', headers, body: JSON.stringify({ requestId: 'exact-run-request' }) });
+    expect(automations.runNow).toHaveBeenCalledWith('automation-1', undefined, 'exact-run-request');
+  });
+
   it('token-gates reads and all writes', async () => {
     const automations = stub();
     bridge = await startWorkbenchBridge({ reader, automations, token: TOKEN, port: 0 });

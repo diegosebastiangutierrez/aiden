@@ -43,7 +43,7 @@ import type {
   WorkbenchArtifactContent,
 } from './fileBridge';
 import type { Artifact } from '../daemon/artifactStore';
-import type { WorkbenchAppsPort } from './appsPort';
+import type { WorkbenchAppsPort, WorkbenchAppPreviewInput } from './appsPort';
 import type { WorkbenchCodingPort } from './codingPort';
 import type { WorkbenchProviderSetupAuthority } from './providerSetupAuthority';
 import type { SystemReadinessProjection } from './systemReadiness';
@@ -615,6 +615,21 @@ export function startWorkbenchBridge(opts: WorkbenchBridgeOptions): Promise<Work
     }
     if (req.method === 'POST' && url.pathname === '/api/apps/connect') {
       handleAppsConnect(req, res); return;
+    }
+    if (req.method === 'POST' && ['/api/apps/actions', '/api/apps/preview'].includes(url.pathname)) {
+      if (!passesWriteGate(req, res)) return;
+      const apps = opts.apps;
+      if (!apps?.actions || !apps.preview) { sendJson(res, 503, { error: 'App workflows are unavailable' }); return; }
+      readJsonBody(req, 64 * 1024).then(async (body) => {
+        try {
+          if (typeof body.accountId !== 'string' || !body.accountId) throw new Error('Exact account is required');
+          const result = url.pathname === '/api/apps/actions'
+            ? await apps.actions!(body.accountId)
+            : await apps.preview!(body as unknown as WorkbenchAppPreviewInput);
+          sendJson(res, 200, result);
+        } catch (error) { sendJson(res, 400, { error: managementError(error) }); }
+      }).catch(() => sendJson(res, 400, { error: 'invalid JSON body' }));
+      return;
     }
     if (req.method === 'POST' && url.pathname === '/api/coding/configure') {
       handleCodingConfigure(req, res); return;
@@ -1708,14 +1723,28 @@ export function startWorkbenchBridge(opts: WorkbenchBridgeOptions): Promise<Work
   function handleAutomationCreate(req: http.IncomingMessage, res: http.ServerResponse): void {
     if (!passesWriteGate(req, res)) return;
     if (!opts.automations) { sendJson(res, 503, { error: 'Automations are unavailable' }); return; }
-    readJsonBody(req, 64 * 1024).then((body) => {
+    readJsonBody(req, 64 * 1024).then(async (body) => {
       const name = typeof body.name === 'string' ? body.name.trim() : '';
       if (!name || !body.action || !body.trigger || !body.policies) {
         sendJson(res, 400, { error: 'name, action, trigger and policies are required' }); return;
       }
       try {
+        const action = body.action as { kind?: string; script?: { steps?: Array<Record<string, unknown>> } };
+        const appSteps = action.kind === 'script' ? action.script?.steps?.filter(step => step.kind === 'app_action') ?? [] : [];
+        if (appSteps.length) {
+          if (appSteps.length !== 1 || action.script?.steps?.length !== 1 || !opts.apps?.preview) {
+            throw new Error('Workbench app workflows require one exact previewed action');
+          }
+          const step = appSteps[0];
+          const preview = await opts.apps.preview(step as unknown as WorkbenchAppPreviewInput);
+          if (body.previewDigest !== preview.digest || step.operation !== preview.step.operation
+            || step.providerId !== preview.step.providerId || step.toolkitId !== preview.step.toolkitId) {
+            throw new Error('App preview changed; review the exact action again');
+          }
+        }
         const result = opts.automations!.create({
           name,
+          ...(typeof body.requestId === 'string' ? { requestId: body.requestId } : {}),
           action: body.action as never,
           trigger: body.trigger as never,
           policies: body.policies as never,
@@ -1772,15 +1801,22 @@ export function startWorkbenchBridge(opts: WorkbenchBridgeOptions): Promise<Work
   function handleAutomationAction(req: http.IncomingMessage, res: http.ServerResponse, rawId: string, action: 'run' | 'enable' | 'disable' | 'remove'): void {
     if (!passesWriteGate(req, res)) return;
     if (!opts.automations) { sendJson(res, 503, { error: 'Automations are unavailable' }); return; }
+    if (action === 'run') {
+      readJsonBody(req, 2048).then(body => {
+        try {
+          sendJson(res, 202, opts.automations!.runNow(decodeURIComponent(rawId), undefined,
+            typeof body.requestId === 'string' ? body.requestId : undefined));
+        } catch (error) { sendJson(res, 400, { error: managementError(error) }); }
+      }).catch(() => sendJson(res, 400, { error: 'invalid JSON body' }));
+      return;
+    }
     req.resume();
     try {
       const automationId = decodeURIComponent(rawId);
-      const result = action === 'run'
-        ? opts.automations.runNow(automationId)
-        : action === 'remove'
+      const result = action === 'remove'
           ? opts.automations.remove(automationId, 'workbench')
           : opts.automations.setEnabled(automationId, action === 'enable');
-      sendJson(res, action === 'run' ? 202 : 200, result);
+      sendJson(res, 200, result);
     } catch (error) { sendJson(res, 400, { error: managementError(error) }); }
   }
 

@@ -550,7 +550,18 @@ export class IntegrationActionAuthority {
     if (typeof input.credential !== 'string' || !input.credential.trim() || input.credential.length > 256_000) {
       throw new IntegrationProviderError('invalid_input', 'Provider credential is invalid');
     }
-    this.providers.require(providerId);
+    const provider = this.providers.require(providerId);
+    // Validate candidate bytes before replacing the established SecretHandle.
+    // Provider diagnostics are untrusted and may echo the supplied credential.
+    try {
+      const health = normalizeProviderHealth(await provider.health({ providerCredential: input.credential }));
+      if (health.state !== 'healthy') throw new Error('Provider validation failed');
+    } catch {
+      throw new IntegrationProviderError(
+        'provider_unavailable',
+        'Provider credential could not be validated; existing configuration was preserved',
+      );
+    }
     const existing = this.db.prepare(
       'SELECT secret_handle FROM integration_provider_credentials WHERE provider_id=? AND workspace_id=? AND owner_id=?',
     ).get(providerId, workspaceId, ownerId) as { secret_handle: string } | undefined;
@@ -875,6 +886,16 @@ export class IntegrationActionAuthority {
     return page;
   }
 
+  async preview(input: IntegrationActionInput & { operation: 'read' | 'mutation' }) {
+    const resolved = await this.resolveExecution(input, input.operation, false);
+    const step = { kind: 'app_action' as const, operation: input.operation,
+      providerId: input.providerId, toolkitId: input.toolkitId, accountId: resolved.account.accountId,
+      actionId: input.actionId, schemaVersion: input.schemaVersion,
+      providerActionVersion: input.providerActionVersion, input: structuredClone(input.input) };
+    return { step, digest: digest({ ownerId: input.ownerId, workspaceId: input.workspaceId,
+      accountUpdatedAt: resolved.account.updatedAt, step }), approvalRequired: input.operation === 'mutation' };
+  }
+
   async executeRead(input: IntegrationActionInput): Promise<ProjectedIntegrationResult> {
     rejectPreDispatchCancellation(input.signal);
     const resolved = await this.resolveExecution(input, 'read');
@@ -1184,7 +1205,7 @@ export class IntegrationActionAuthority {
       .get(receiptId) as ReceiptRow | undefined) ?? null;
   }
 
-  private async resolveExecution(input: IntegrationActionInput, operation: 'read' | 'mutation') {
+  private async resolveExecution(input: IntegrationActionInput, operation: 'read' | 'mutation', bindJob = true) {
     requireBoundedIdentity(input.providerId, 'Provider identity', 64);
     requireBoundedIdentity(input.toolkitId, 'Toolkit identity');
     requireBoundedIdentity(input.actionId, 'Action identity');
@@ -1241,7 +1262,7 @@ export class IntegrationActionAuthority {
       workspaceId: input.workspaceId,
     });
     const context = currentJobExecutionContext();
-    if (context) {
+    if (context && bindJob) {
       this.accounts.bindJob({
         jobId: context.jobId,
         attemptId: context.attemptId,

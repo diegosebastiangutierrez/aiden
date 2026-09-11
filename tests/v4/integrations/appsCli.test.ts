@@ -40,9 +40,9 @@ describe('apps CLI', () => {
   it('stores a provider credential without echoing it or persisting plaintext in SQLite', async () => {
     let output = '';
     const secret = 'provider-key-private';
-    const code = await runAppsCli({ action: 'configure', providerId: 'composio' }, {
+    const code = await runAppsCli({ action: 'configure', providerId: 'fake' }, {
       rootDir: root, cwd: root, write: (text) => { output += text; },
-      readCredential: async () => secret, secretBackend: new TestBackend(),
+      readCredential: async () => secret, secretBackend: new TestBackend(), includeFake: true,
     });
     expect(code).toBe(0);
     expect(output).not.toContain(secret);

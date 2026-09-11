@@ -5,6 +5,30 @@ import { createAutomationAuthority } from '../../../core/v4/automation/automatio
 import { runMigrations } from '../../../core/v4/daemon/db/migrations';
 
 describe('typed automation ScriptSpec', () => {
+  const appStep = {
+    kind: 'app_action' as const, operation: 'mutation' as const,
+    accountId: 'account_primary', providerId: 'fake', toolkitId: 'projects',
+    actionId: 'create_note', schemaVersion: '1', providerActionVersion: '2026-01-01', input: { title: 'Reviewed note' },
+  };
+
+  it('previews exact account-bound app operations without projecting an undefined network request', () => {
+    const spec = { version: 1 as const, maxRuntimeMs: 30_000, steps: [appStep] };
+    expect(() => validateScriptSpec(spec as any)).not.toThrow();
+    expect(projectScriptSpec(spec as any)).toContain('account_primary');
+    expect(projectScriptSpec(spec as any)).toContain('create_note');
+    expect(projectScriptSpec(spec as any)).not.toContain('undefined');
+  });
+
+  it('rejects unpinned app versions, missing account, embedded secrets and unknown typed steps', () => {
+    for (const step of [
+      { ...appStep, providerActionVersion: 'latest' },
+      { ...appStep, accountId: '' },
+      { ...appStep, input: { token: 'fixture-value' } },
+      { ...appStep, operation: 'shell' },
+      { kind: 'arbitrary_command', command: 'opaque' },
+    ]) expect(() => validateScriptSpec({ version: 1, maxRuntimeMs: 1_000, steps: [step] } as any)).toThrow();
+  });
+
   it('projects bounded typed operations without an arbitrary shell field', () => {
     const spec = {
       version: 1 as const, maxRuntimeMs: 30_000,

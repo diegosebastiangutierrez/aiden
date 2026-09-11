@@ -2704,6 +2704,102 @@ function ArtifactsView() {
   )
 }
 
+function AppWorkflowForm({ accounts }: { accounts: aiden.WorkbenchConnectedAccount[] }) {
+  const { setMainView } = useDevOS()
+  const [accountId, setAccountId] = useState('')
+  const [actions, setActions] = useState<aiden.WorkbenchAppAction[]>([])
+  const [actionId, setActionId] = useState('')
+  const [preview, setPreview] = useState<aiden.WorkbenchAppPreview | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [saved, setSaved] = useState<string | null>(null)
+  const formRef = useRef<HTMLFormElement>(null)
+  const creationRequest = useRef<string | null>(null)
+  const selected = actions.find(action => action.actionId === actionId)
+  const properties = (selected?.inputSchema.properties ?? {}) as Record<string, { type?: string; description?: string; enum?: unknown[] }>
+  const required = Array.isArray(selected?.inputSchema.required) ? selected.inputSchema.required as string[] : []
+
+  useEffect(() => {
+    let current = true
+    setActions([]); setActionId(''); setPreview(null); setError(null)
+    if (!accountId) return
+    setBusy(true)
+    void aiden.loadAppActions(accountId).then(result => { if (current) setActions(result) })
+      .catch(cause => { if (current) setError(cause instanceof Error ? cause.message : 'Actions are unavailable') })
+      .finally(() => { if (current) setBusy(false) })
+    return () => { current = false }
+  }, [accountId])
+
+  const review = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!selected) return
+    const data = new FormData(event.currentTarget)
+    setBusy(true); setPreview(null); setError(null); setSaved(null)
+    try {
+      const input: Record<string, unknown> = {}
+      for (const [key, schema] of Object.entries(properties)) {
+        const raw = String(data.get(`field:${key}`) ?? '')
+        if (!raw && !required.includes(key)) continue
+        input[key] = schema.type === 'boolean' ? raw === 'true'
+          : ['integer', 'number'].includes(schema.type ?? '') ? Number(raw)
+          : ['array', 'object'].includes(schema.type ?? '') ? JSON.parse(raw) : raw
+      }
+      setPreview(await aiden.previewAppAction({ accountId, actionId, schemaVersion: selected.schemaVersion,
+        providerActionVersion: selected.providerActionVersion, input }))
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Preview failed') }
+    finally { setBusy(false) }
+  }
+  const save = async () => {
+    if (!preview || !formRef.current) return
+    const data = new FormData(formRef.current)
+    setBusy(true); setError(null)
+    try {
+      creationRequest.current ??= crypto.randomUUID()
+      const result = await aiden.createAppWorkflow({ name: String(data.get('workflowName') ?? ''), preview, requestId: creationRequest.current,
+        expression: String(data.get('workflowSchedule') ?? ''), timezone: String(data.get('workflowTimezone') ?? 'UTC') })
+      setSaved(result.name); setPreview(null)
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Workflow could not be saved') }
+    finally { setBusy(false) }
+  }
+  return <article className="surface-card" style={{ padding: 18, marginTop: 24 }} aria-labelledby="workflow-title">
+    <span className="eyebrow">Workflow Ops</span><h3 id="workflow-title">One account. One reviewed action.</h3>
+    <p>Create a reusable app action. Run it and inspect Evidence in Automations. Saving does not run it; external changes require a fresh exact-action approval.</p>
+    <form ref={formRef} onSubmit={event => { void review(event) }} onChange={() => { setPreview(null); setSaved(null); creationRequest.current = null }} style={{ display: 'grid', gap: 12 }}>
+      <fieldset disabled={busy} style={{ display: 'grid', gap: 12, border: 0, padding: 0, minWidth: 0 }}>
+        <label>Connected account<select value={accountId} onChange={event => setAccountId(event.target.value)} required>
+          <option value="">Choose account</option>{accounts.filter(account => account.status === 'active' && account.health === 'healthy').map(account => <option key={account.accountId} value={account.accountId}>{account.label} · {account.toolkitId}</option>)}
+        </select></label>
+        <label>Action<select value={actionId} onChange={event => setActionId(event.target.value)} required>
+          <option value="">Choose action</option>{actions.map(action => <option key={action.actionId} value={action.actionId}>{action.label} · {action.operation === 'read' ? 'Read only' : 'Approval required'}</option>)}
+        </select></label>
+        {selected && <div key={`${accountId}:${actionId}`} style={{ display: 'grid', gap: 10 }}>
+          <p>{selected.description}</p>
+          {Object.entries(properties).map(([key, schema]) => <label key={key}>{key}{required.includes(key) ? ' *' : ''}
+            {schema.type === 'boolean' ? <select name={`field:${key}`}><option value="false">No</option><option value="true">Yes</option></select>
+              : schema.enum ? <select name={`field:${key}`} required={required.includes(key)}><option value="">Choose</option>{schema.enum.map(value => <option key={String(value)} value={String(value)}>{String(value)}</option>)}</select>
+              : <textarea name={`field:${key}`} rows={2} maxLength={16000} required={required.includes(key)} placeholder={['object', 'array'].includes(schema.type ?? '') ? 'JSON value' : schema.description ?? key} />}
+          </label>)}
+        </div>}
+        <label>Workflow name<input name="workflowName" required maxLength={200} placeholder="Repository issue brief" /></label>
+        <label>When to run<select name="workflowSchedule" defaultValue=""><option value="">Manual only</option><option value="0 9 * * 1-5">Weekdays at 9:00</option><option value="0 9 * * *">Every day at 9:00</option></select></label>
+        <label>Schedule timezone<input name="workflowTimezone" defaultValue={Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'} required /></label>
+        <p>Missed runs are skipped. Overlapping runs are skipped. Unknown external outcomes require reconciliation, not a blind retry.</p>
+        <button className="nav-btn" type="submit" disabled={!selected}>Preview exact action</button>
+      </fieldset>
+    </form>
+    {error && <p role="alert">{error}</p>}
+    {preview && <section aria-label="Exact workflow preview" style={{ marginTop: 16 }}>
+      <p>{preview.account.label} · {preview.step.actionId} · schema {preview.step.schemaVersion} · version {preview.step.providerActionVersion}</p>
+      <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{JSON.stringify(preview.step.input, null, 2)}</pre>
+      <p>{preview.approvalRequired ? 'Each mutation pauses for approval before execution.' : 'Read-only action; external content remains untrusted.'}</p>
+      <details><summary>Preview identity</summary><code style={{ overflowWrap: 'anywhere' }}>{preview.digest}</code></details>
+      <button className="nav-btn" type="button" disabled={busy} onClick={() => { void save() }}>Save workflow</button>
+    </section>}
+    {saved && <p role="status">Saved {saved}. No action has run.</p>}
+    <button type="button" className="nav-btn" onClick={() => setMainView('automations')}>Open workflow runs and history</button>
+  </article>
+}
+
 function AppsView() {
   const [snapshot, setSnapshot] = useState<aiden.WorkbenchAppsSnapshot | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -2782,11 +2878,10 @@ function AppsView() {
     setBusy(`configure:${providerId}`); setError(null)
     try {
       await aiden.configureAppsProvider({ providerId, credential })
-      form.reset()
       await reload()
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Apps provider setup failed')
-    } finally { setBusy(null) }
+    } finally { form.reset(); setBusy(null) }
   }
 
   const healthLabel = (health: string) => ({
@@ -2807,6 +2902,7 @@ function AppsView() {
           <span className="eyebrow">Connected accounts</span>
           <h2 id="apps-title">Apps</h2>
           <p>Choose the exact account Aiden may use. External changes still require Aiden approval.</p>
+          <p>Optional: connect via Composio using your own project key. Chat works without it.</p>
         </div>
         <button type="button" className="nav-btn" onClick={() => { void reload() }} disabled={busy !== null}>Refresh</button>
       </header>
@@ -2844,6 +2940,8 @@ function AppsView() {
                 <p style={{ color: account.health === 'healthy' ? 'var(--green)' : account.health === 'revoked' ? 'var(--red)' : 'var(--orange)' }}>
                   {healthLabel(account.health)}
                 </p>
+                <p>Permissions: {account.scopes.length ? account.scopes.join(', ') : 'Not reported by provider — review the provider authorization screen.'}</p>
+                <p>Last checked: {account.lastCheckedAt ? new Date(account.lastCheckedAt).toLocaleString() : 'Not checked'}</p>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   {account.status !== 'revoked' && <button type="button" className="nav-btn" disabled={busy !== null} onClick={() => { void accountAction(account, 'refresh') }}>Check health</button>}
                   {(account.status === 'revoked' || account.health === 'expired' || account.health === 'degraded') && <button type="button" className="nav-btn" disabled={busy !== null} onClick={() => { void accountAction(account, 'reconnect') }}>Reconnect</button>}
@@ -2853,6 +2951,7 @@ function AppsView() {
             ))}
           </div>
 
+          <AppWorkflowForm accounts={snapshot.accounts} />
           <header className="workspace-surface-header" style={{ marginTop: 24 }}>
             <div><span className="eyebrow">Available apps</span><h3>Connect an app</h3></div>
           </header>
@@ -2891,9 +2990,12 @@ function AppsView() {
             <article className="surface-card app-setup-state" role="status">
               <span className="eyebrow">One-time setup</span>
               <h3>{setupTarget === 'More apps' ? 'Set up integrations' : `Set up integrations to connect ${setupTarget}`}</h3>
+              <p>Composio is an optional connection service. A project key configures the service; each app still needs its own account authorization. Review its permissions before connecting.</p>
+              <a className="nav-btn" href="https://dashboard.composio.dev/" target="_blank" rel="noopener noreferrer">Get your Composio API key</a>
+              <p>In Composio, select your project, then Settings → API Keys. Use a project key, not an organization key. <a href="https://docs.composio.dev/reference/authenticating-to-composio/project-api-key-permissions" target="_blank" rel="noopener noreferrer">Permission guide</a></p>
               <p>{snapshot.providers.length === 0
                 ? 'Add an integrations service key once. After that, connect each supported app from its card.'
-                : `Integrations service: ${snapshot.providers.some((provider) => provider.health === 'healthy') ? 'Ready' : 'Needs attention'}`}</p>
+                : `Integrations service: ${snapshot.providers.some((provider) => provider.health === 'healthy') ? 'Configured — connect an app below' : 'Needs attention'}`}</p>
               {snapshot.toolkits.filter((toolkit) => !['github', 'gmail'].includes(toolkit.toolkitId.toLowerCase())).length > 0 && setupTarget === 'More apps' && (
                 <p>{snapshot.toolkits.filter((toolkit) => !['github', 'gmail'].includes(toolkit.toolkitId.toLowerCase())).map((toolkit) => toolkit.label).join(' · ')}</p>
               )}
@@ -2955,6 +3057,7 @@ function AutomationsView() {
   const [editing, setEditing] = useState<aiden.WorkbenchAutomationSummary | null>(null)
   const [confirmingRemoval, setConfirmingRemoval] = useState<string | null>(null)
   const automationFormRef = useRef<HTMLFormElement>(null)
+  const runRequests = useRef(new Map<string, string>())
   const customerLocale = useMemo(() => detectWorkbenchLocale(), [])
 
   const reload = useCallback(async () => {
@@ -3001,7 +3104,12 @@ function AutomationsView() {
   const action = async (automation: aiden.WorkbenchAutomationSummary, kind: 'run' | 'toggle' | 'replay' | 'remove') => {
     setBusy(`${kind}:${automation.automationId}`); setError(null)
     try {
-      if (kind === 'run') await aiden.runAutomationNow(automation.automationId)
+      if (kind === 'run') {
+        const request = runRequests.current.get(automation.automationId) ?? crypto.randomUUID()
+        runRequests.current.set(automation.automationId, request)
+        await aiden.runAutomationNow(automation.automationId, request)
+        runRequests.current.delete(automation.automationId)
+      }
       else if (kind === 'replay' && automation.lastOccurrence) await aiden.replayAutomationOccurrence(automation.lastOccurrence.occurrenceId)
       else if (kind === 'remove') await aiden.removeAutomation(automation.automationId)
       else await aiden.setAutomationEnabled(automation.automationId, !automation.enabled)

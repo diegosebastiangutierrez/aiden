@@ -25,7 +25,10 @@ export type ScriptStep =
   | { kind: 'read_file'; path: string; maxBytes?: number }
   | { kind: 'write_file'; path: string; content: string }
   | { kind: 'list_directory'; path: string; maxEntries?: number }
-  | { kind: 'http_request'; method: 'GET'; url: string };
+  | { kind: 'http_request'; method: 'GET'; url: string }
+  | { kind: 'app_action'; operation: 'read' | 'mutation'; providerId: string; toolkitId: string;
+      actionId: string; schemaVersion: string; providerActionVersion: string; accountId: string;
+      input: Readonly<Record<string, unknown>> };
 
 export type AutomationOverlapPolicy = 'skip' | 'queue' | 'cancel_previous';
 export type AutomationMisfirePolicy =

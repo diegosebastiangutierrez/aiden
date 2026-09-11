@@ -8,6 +8,7 @@ import { computeOccurrenceKey } from '../../../core/v4/automation/occurrenceKey'
 import { runMigrations } from '../../../core/v4/daemon/db/migrations';
 import { createJobEngine, type JobEngine } from '../../../core/v4/daemon/jobEngine';
 import { createTriggerBus } from '../../../core/v4/daemon/triggerBus';
+import { createAutomationControlAuthority } from '../../../core/v4/automation/controlAuthority';
 
 describe('reliable automation authority', () => {
   let db: Database.Database;
@@ -68,6 +69,30 @@ describe('reliable automation authority', () => {
     expect(() => db.prepare(
       'UPDATE automation_revisions SET spec_json = ? WHERE revision_id = ?',
     ).run('{}', created.revision.id)).toThrow(/immutable/i);
+  });
+
+  it('reuses an exact client creation request after reopening and rejects changed content', () => {
+    const seed = createScheduledAutomation();
+    const input = { ...seed.revision.spec, name: 'Reusable workflow', createdBy: 'test-user', ownerId: 'owner-a',
+      workspaceId: 'workspace-a', requestId: 'workflow-request-a' };
+    const first = createAutomationAuthority({ db }).create(input);
+    const duplicate = createAutomationAuthority({ db }).create(input);
+    expect(duplicate.definition.id).toBe(first.definition.id);
+    expect(() => createAutomationAuthority({ db }).create({ ...input, name: 'Changed workflow' })).toThrow(/request.*changed/i);
+    const foreign = createAutomationAuthority({ db }).create({ ...input, workspaceId: 'workspace-b' });
+    expect(foreign.definition.id).not.toBe(first.definition.id);
+    createAutomationAuthority({ db }).remove(first.definition.id, { removedBy: 'test-user' });
+    expect(() => createAutomationAuthority({ db }).create(input)).toThrow(/removed/i);
+  });
+
+  it('keeps a manual run request idempotent across repeated transport delivery', () => {
+    const automation = createScheduledAutomation();
+    const triggerBus = createTriggerBus({ db });
+    const control = createAutomationControlAuthority({ db, triggerBus });
+    const first = control.runNow(automation.definition.id, Date.now(), undefined, 'manual-request-a');
+    const second = createAutomationControlAuthority({ db, triggerBus }).runNow(automation.definition.id, Date.now() + 1000, undefined, 'manual-request-a');
+    expect(second.triggerEventId).toBe(first.triggerEventId);
+    expect(control.runNow(automation.definition.id, Date.now(), undefined, 'manual-request-b').triggerEventId).not.toBe(first.triggerEventId);
   });
 
   it('computes the same deterministic occurrence key for the same logical instant', () => {

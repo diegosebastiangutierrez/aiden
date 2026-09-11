@@ -82,13 +82,13 @@ export interface WorkbenchAutomationRunOutcome {
 
 export interface WorkbenchAutomationPort {
   snapshot(): WorkbenchAutomationSnapshot;
-  create(input: AutomationRevisionSpec & { name: string; createdBy: string }): WorkbenchAutomationSummary;
+  create(input: AutomationRevisionSpec & { name: string; createdBy: string; requestId?: string }): WorkbenchAutomationSummary;
   revise(automationId: string, input: Omit<AutomationRevisionSpec, 'workspace'> & { createdBy: string }): WorkbenchAutomationSummary;
   setEnabled(automationId: string, enabled: boolean): WorkbenchAutomationSummary;
   remove(automationId: string, removedBy: string, now?: number): {
     automationId: string; removedAt: number; removedBy: string;
   };
-  runNow(automationId: string, parentExecution?: AutomationParentExecution): {
+  runNow(automationId: string, parentExecution?: AutomationParentExecution, requestId?: string): {
     triggerEventId: number; state: 'queued'; schedulerReady: boolean;
   };
   waitForRun(triggerEventId: number, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<WorkbenchAutomationRunOutcome>;
@@ -287,10 +287,10 @@ export function createWorkbenchAutomationPort(options: {
         removedBy: removed.removedBy!,
       };
     },
-    runNow(automationId, parentExecution) {
+    runNow(automationId, parentExecution, requestId) {
       requireCapability();
       assertAccessible(automationId);
-      const result = control.runNow(automationId, Date.now(), parentExecution);
+      const result = control.runNow(automationId, Date.now(), parentExecution, requestId);
       return {
         triggerEventId: result.triggerEventId,
         state: 'queued',

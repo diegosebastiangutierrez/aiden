@@ -25,7 +25,7 @@ export function automationParentFenceDigest(fenceToken: string): string {
 }
 
 export interface AutomationControlAuthority {
-  runNow(automationId: string, now?: number, parentExecution?: AutomationParentExecution): {
+  runNow(automationId: string, now?: number, parentExecution?: AutomationParentExecution, requestId?: string): {
     triggerEventId: number; sourceIdentity: string;
   };
   replay(occurrenceId: string, now?: number): { triggerEventId: number; sourceIdentity: string };
@@ -53,9 +53,10 @@ export function createAutomationControlAuthority(options: {
     return row;
   };
   return {
-    runNow(automationId, now = Date.now(), parentExecution) {
+    runNow(automationId, now = Date.now(), parentExecution, requestId) {
       const row = current(automationId);
-      const sourceIdentity = `manual:${new Date(now).toISOString()}:${nonce()}`;
+      if (requestId !== undefined && !/^[A-Za-z0-9_-]{8,128}$/.test(requestId)) throw new Error('Manual run request identity is invalid');
+      const sourceIdentity = requestId ? `manual:${automationId}:${requestId}` : `manual:${new Date(now).toISOString()}:${nonce()}`;
       const event = triggerBus.insert({
         source: 'manual', sourceKey: automationId, idempotencyKey: sourceIdentity,
         payload: {

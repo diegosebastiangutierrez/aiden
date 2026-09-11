@@ -31,6 +31,30 @@ afterEach(async () => {
 });
 
 describe('Workbench Apps authority port', () => {
+  it('previews the exact scoped action without dispatch and rejects changed versions, secrets and foreign accounts', async () => {
+    const runtime = createIntegrationRuntime({ db, rootDir: root, includeFake: true,
+      scope: { ownerId: 'owner-a', workspaceId: 'workspace-a' },
+      secretBackend: new MachineBoundSecretBackend(root) });
+    const port = createWorkbenchAppsPort(runtime);
+    const connection = await port.connect({ providerId: 'fake', toolkitId: 'projects' });
+    const account = await port.complete(connection.connectionId);
+    const actions = await port.actions!(account.accountId);
+    const action = actions.find(item => item.actionId === 'create_note')!;
+    const input = { accountId: account.accountId, actionId: action.actionId, schemaVersion: action.schemaVersion,
+      providerActionVersion: action.providerActionVersion, input: { projectId: 'project', text: 'Reviewed note' } };
+    const preview = await port.preview!(input);
+    expect(preview).toMatchObject({ account: { accountId: account.accountId }, step: { kind: 'app_action', operation: 'mutation' }, approvalRequired: true });
+    expect(preview.digest).toMatch(/^[a-f0-9]{64}$/);
+    expect((await port.preview!({ ...input, input: { text: 'Reviewed note', projectId: 'project' } })).digest).toBe(preview.digest);
+    expect((await port.preview!({ ...input, input: { projectId: 'project', text: 'Changed note' } })).digest).not.toBe(preview.digest);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM integration_action_receipts').get()).toEqual({ count: 0 });
+    await expect(port.preview!({ ...input, schemaVersion: 'stale' })).rejects.toThrow(/version|drift/i);
+    await expect(port.preview!({ ...input, input: { api_key: 'not-a-real-secret' } })).rejects.toThrow(/secret|credential|sensitive/i);
+    const foreign = runtime.accounts.create({ providerId: 'fake', toolkitId: 'projects', ownerId: 'owner-b', workspaceId: 'workspace-b', label: 'Foreign', providerAccountRef: 'foreign', scopes: [] });
+    await expect(port.actions!(foreign.accountId)).rejects.toThrow('Connected account is outside the requested scope');
+    await expect(port.preview!({ ...input, accountId: foreign.accountId })).rejects.toThrow('Connected account is outside the requested scope');
+  });
+
   it('configures the Apps provider through secure backend authority without projecting the credential', async () => {
     const runtime = createIntegrationRuntime({
       db,

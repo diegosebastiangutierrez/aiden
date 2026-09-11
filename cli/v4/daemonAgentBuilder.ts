@@ -48,6 +48,7 @@ import { HonestyEnforcement, type HonestyMode } from '../../moat/honestyEnforcem
 import type { AidenPaths } from '../../core/v4/paths';
 import { currentJobExecutionContext } from '../../core/v4/daemon/jobExecutionContext';
 import { createAutomationApprovalContinuationRuntime } from '../../core/v4/automation/approvalContinuation';
+import { validateScriptSpec } from '../../core/v4/automation/scriptSpec';
 import { PlannerGuard, type PlannerGuardMode } from '../../moat/plannerGuard';
 
 // ── Public types ───────────────────────────────────────────────────────────
@@ -240,6 +241,7 @@ export function buildDaemonAgentBuilder(
     endpointReference: binding.endpointReference,
   });
   builder.executeAutomationScript = async (input) => {
+    validateScriptSpec(input.spec);
     const approvalEngine = new ApprovalEngine(input.approvalMode === 'always' ? 'manual' : 'smart');
     approvalEngine['callbacks'] = input.approvalCallbacks;
     const execution = currentJobExecutionContext();
@@ -256,14 +258,19 @@ export function buildDaemonAgentBuilder(
       name: step.kind === 'read_file' ? 'file_read'
         : step.kind === 'write_file' ? 'file_write'
         : step.kind === 'list_directory' ? 'file_list'
-        : 'fetch_url',
+        : step.kind === 'app_action' ? (step.operation === 'read' ? 'app_read' : 'app_action') : 'fetch_url',
       arguments: step.kind === 'read_file'
         ? { path: step.path, ...(step.maxBytes === undefined ? {} : { maxBytes: step.maxBytes }) }
         : step.kind === 'write_file'
           ? { path: step.path, content: step.content }
           : step.kind === 'list_directory'
             ? { path: step.path, ...(step.maxEntries === undefined ? {} : { maxEntries: step.maxEntries }) }
-            : { url: step.url },
+            : step.kind === 'app_action' ? {
+                provider_id: step.providerId, toolkit_id: step.toolkitId, action_id: step.actionId,
+                schema_version: step.schemaVersion, provider_action_version: step.providerActionVersion,
+                account_id: step.accountId, input: structuredClone(step.input),
+                request_id: `automation-script:${execution.jobId}:step:${index + 1}`,
+              } : { url: step.url },
     }));
     const timeout = new AbortController();
     const timer = setTimeout(() => timeout.abort(new Error('Automation ScriptSpec runtime budget exhausted')), input.spec.maxRuntimeMs);
@@ -297,7 +304,14 @@ export function buildDaemonAgentBuilder(
             })
           : deps.toolExecutor;
         input.onToolCall(call, 'before');
-        const result = await executor(call, signal);
+        let result = await executor(call, signal);
+        if (!result.error && (call.name === 'app_read' || call.name === 'app_action')) {
+          const observation = result.result as { outcome?: string; content?: { verification?: string } } | undefined;
+          if (observation?.outcome !== 'succeeded'
+            || (call.name === 'app_action' && observation.content?.verification !== 'verified')) {
+            result = { ...result, error: 'App outcome was not verified; inspect Evidence and reconcile before retrying.' };
+          }
+        }
         continuation?.settle(result);
         input.onToolCall(call, 'after', result);
         results.push(result);

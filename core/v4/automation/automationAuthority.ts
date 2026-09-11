@@ -3,7 +3,7 @@
  * Licensed under AGPL-3.0. See LICENSE for details.
  */
 
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 
@@ -20,6 +20,13 @@ import type { AutomationDeliveryTargetSpec } from './types';
 const SENSITIVE_KEY = /(?:password|passphrase|secret|api[_-]?key|token|authorization|cookie)/i;
 const ACTION_KINDS = new Set(['prompt', 'script', 'delivery']);
 const TRIGGER_KINDS = new Set(['schedule', 'webhook', 'app_event', 'file', 'manual']);
+
+function canonicalRequest(value: unknown): string {
+  const sorted = (item: unknown): unknown => Array.isArray(item) ? item.map(sorted)
+    : item && typeof item === 'object' ? Object.fromEntries(Object.keys(item).sort()
+      .map(key => [key, sorted((item as Record<string, unknown>)[key])])) : item;
+  return JSON.stringify(sorted(value));
+}
 const OVERLAP_POLICIES = new Set(['skip', 'queue', 'cancel_previous']);
 const MISFIRE_POLICIES = new Set(['skip', 'run_once', 'catch_up']);
 
@@ -113,6 +120,16 @@ function validateSpec(spec: AutomationRevisionSpec): void {
   if (spec.action.kind === 'script') {
     validateScriptSpec(spec.action.script);
     for (const step of spec.action.script.steps) {
+      if (step.kind === 'app_action') {
+        const capability = step.operation === 'read' ? 'tool:app_read' : 'tool:app_action';
+        if (!spec.capabilities.includes(capability) || !spec.credentialRefs.includes(step.accountId)) {
+          throw new Error('App step exceeds its declared capabilities or connected account references');
+        }
+        if (step.operation === 'mutation' && spec.approval?.mode !== 'always') {
+          throw new Error('App mutation workflow requires exact-action approval');
+        }
+        continue;
+      }
       const allowed = step.kind === 'read_file' || step.kind === 'list_directory'
         ? spec.capabilities.includes('repository.read')
           || spec.capabilities.includes(`tool:${step.kind === 'read_file' ? 'file_read' : 'file_list'}`)
@@ -210,7 +227,7 @@ function revision(row: RevisionRow): AutomationRevisionRecord {
 export interface AutomationAuthority {
   create(command: AutomationRevisionSpec & {
     name: string; createdBy: string; ownerId?: string; workspaceId?: string | null;
-    commercialContext?: string; now?: number;
+    commercialContext?: string; now?: number; requestId?: string;
   }): {
     definition: AutomationDefinitionRecord; revision: AutomationRevisionRecord;
   };
@@ -287,9 +304,25 @@ export function createAutomationAuthority(options: { db: Database.Database }): A
       const workspaceId = command.workspaceId ?? null;
       validateCredentialRefs(spec.credentialRefs, ownerId, workspaceId);
       const now = command.now ?? Date.now();
-      const automationId = id('automation');
+      if (command.requestId !== undefined && !/^[A-Za-z0-9_-]{8,128}$/.test(command.requestId)) {
+        throw new Error('Automation creation request identity is invalid');
+      }
+      const automationId = command.requestId
+        ? `automation_${createHash('sha256').update(canonicalRequest([ownerId, workspaceId, command.requestId])).digest('hex')}`
+        : id('automation');
       const revisionId = id('automation_revision');
       db.transaction(() => {
+        const existing = get(automationId);
+        if (existing) {
+          if (existing.removedAt !== null) throw new Error('Automation was removed; use a new creation request');
+          const original = db.prepare('SELECT * FROM automation_revisions WHERE automation_id = ? AND revision_number = 1')
+            .get(automationId) as RevisionRow | undefined;
+          if (!original || existing.name !== command.name.trim()
+            || canonicalRequest(JSON.parse(original.spec_json)) !== canonicalRequest(spec)) {
+            throw new Error('Automation creation request changed; use a new request identity');
+          }
+          return;
+        }
         db.prepare(
           `INSERT INTO automation_definitions
              (automation_id,name,enabled,current_revision_id,owner_id,workspace_id,commercial_context,created_by,created_at,updated_at)
@@ -305,7 +338,8 @@ export function createAutomationAuthority(options: { db: Database.Database }): A
         ).run(revisionId, automationId, JSON.stringify(spec), command.createdBy, now);
         insertBinding(automationId, revisionId, spec, now);
       }).immediate();
-      return { definition: get(automationId)!, revision: getRevision(revisionId)! };
+      const saved = get(automationId)!;
+      return { definition: saved, revision: getRevision(saved.currentRevisionId)! };
     },
     revise(automationId, spec, options2) {
       validateSpec(spec);

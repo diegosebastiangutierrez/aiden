@@ -26,6 +26,7 @@ import { IntegrationResolver } from '../../../core/v4/integrations/integrationRe
 import { SecretAuthority, type SecretBackend } from '../../../core/v4/integrations/secretAuthority';
 import { registerIntegrationTools } from '../../../core/v4/integrations/tools';
 import { IntegrationProviderError } from '../../../core/v4/integrations/types';
+import { buildDaemonAgentBuilder } from '../../../cli/v4/daemonAgentBuilder';
 
 class TestBackend implements SecretBackend {
   readonly id = 'test';
@@ -106,6 +107,57 @@ function activeJob(key: string) {
 }
 
 describe('integration action schemas', () => {
+  it.each(['allow', 'deny'] as const)('runs the typed app workflow through real durable %s approval and Evidence', async (decision) => {
+    const account = await connected();
+    const job = activeJob(`typed-${decision}`);
+    const registry = new ToolRegistry();
+    registerIntegrationTools(registry, actions, { ownerId: 'owner-a', workspaceId: 'workspace-a' });
+    const paths = resolveAidenPaths({ rootOverride: root });
+    const promptUser = vi.fn(async () => decision);
+    const builder = buildDaemonAgentBuilder({ paths, toolRegistry: registry,
+      toolContext: { cwd: root, paths, actionAuthority: createActionAuthority({ db, jobEngine: engine }) },
+      log: () => undefined } as any);
+    const result = await runWithJobExecutionContext({ engine, jobId: job.jobId, attemptId: job.attemptId,
+      generation: job.generation, fenceToken: job.fenceToken, producer: 'integration-test' }, () => builder.executeAutomationScript!({
+      spec: { version: 1, maxRuntimeMs: 10000, steps: [{ kind: 'app_action', operation: 'mutation',
+        providerId: 'fake', toolkitId: 'projects', accountId: account.accountId, actionId: 'create_note',
+        schemaVersion: '1', providerActionVersion: '2026-01-01', input: { projectId: 'project-1', text: 'Reviewed workflow note' } }] },
+      approvalMode: 'always', approvalCallbacks: { promptUser }, signal: new AbortController().signal, onToolCall: vi.fn(),
+    }));
+    expect(promptUser).toHaveBeenCalledOnce();
+    if (decision === 'deny') {
+      expect(result[0].error).toMatch(/denied/i);
+      expect(provider.mutationCount()).toBe(0);
+    } else {
+      expect(result[0].error).toBeUndefined();
+      expect(provider.mutationCount()).toBe(1);
+      expect(engine.proof.listEvidence(job.jobId)).toEqual([expect.objectContaining({ verificationResult: 'verified' })]);
+      expect(actions.receiptFor('fake', account.accountId, `automation-script:${job.jobId}:step:1`)).toMatchObject({ state: 'verified' });
+    }
+  });
+
+  it('does not persist a credential until the provider validates it', async () => {
+    vi.spyOn(provider, 'health').mockResolvedValue({ state: 'unavailable', checkedAt: Date.now() });
+    await expect(actions.configureProvider({
+      providerId: 'fake', ownerId: 'owner-a', workspaceId: 'workspace-a', credential: 'rejected-fixture-value',
+    })).rejects.toMatchObject({ category: 'provider_unavailable' });
+    expect(db.prepare('SELECT COUNT(*) FROM integration_secret_handles').pluck().get()).toBe(0);
+    expect(db.prepare('SELECT COUNT(*) FROM integration_provider_credentials').pluck().get()).toBe(0);
+  });
+
+  it('keeps the previous credential when replacement validation fails and redacts provider errors', async () => {
+    const scope = { providerId: 'fake', ownerId: 'owner-a', workspaceId: 'workspace-a' };
+    await actions.configureProvider({ ...scope, credential: 'working-fixture-value' });
+    const before = db.prepare('SELECT * FROM integration_provider_credentials').all();
+    vi.spyOn(provider, 'health').mockRejectedValue(new Error('rejected-fixture-value'));
+    await expect(actions.configureProvider({ ...scope, credential: 'rejected-fixture-value' }))
+      .rejects.toThrow('Provider credential could not be validated; existing configuration was preserved');
+    expect(db.prepare('SELECT * FROM integration_provider_credentials').all()).toEqual(before);
+    const row = before[0] as { secret_handle: string };
+    const secrets = new SecretAuthority({ db, rootDir: root, backend: new TestBackend() });
+    expect(await secrets.resolve(row.secret_handle, scope)).toBe('working-fixture-value');
+  });
+
   it('rejects provider configuration outside the registered provider boundary', async () => {
     await expect(actions.configureProvider({
       providerId: 'unknown', ownerId: 'owner-a', workspaceId: 'workspace-a', credential: 'must-not-store',

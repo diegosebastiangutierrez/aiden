@@ -5,6 +5,7 @@
 
 import path from 'node:path';
 import type { ScriptSpec, ScriptStep } from './types';
+import { validateExactActionArguments } from '../integrations/tools';
 
 const MAX_CONTENT_BYTES = 256 * 1024;
 
@@ -18,6 +19,21 @@ export function validateScriptSpec(spec: ScriptSpec): void {
 }
 
 function validateStep(step: ScriptStep): void {
+  if (!step || !['read_file', 'write_file', 'list_directory', 'http_request', 'app_action'].includes(step.kind)) {
+    throw new Error('Unsupported ScriptSpec step');
+  }
+  if (step.kind === 'app_action') {
+    if (step.operation !== 'read' && step.operation !== 'mutation') throw new Error('Unsupported app operation');
+    if (!step.accountId) throw new Error('Exact app account is required');
+    const error = validateExactActionArguments({
+      provider_id: step.providerId, toolkit_id: step.toolkitId, action_id: step.actionId,
+      schema_version: step.schemaVersion, provider_action_version: step.providerActionVersion,
+      account_id: step.accountId, input: step.input, request_id: 'typed-app-validation',
+    });
+    if (error) throw new Error(error);
+    if (Buffer.byteLength(JSON.stringify(step.input), 'utf8') > 64 * 1024) throw new Error('App input exceeds 65536 bytes');
+    return;
+  }
   if ('path' in step) {
     const normalized = step.path.replace(/\\/g, '/');
     if (!normalized || normalized.includes('\0') || path.posix.isAbsolute(normalized)
@@ -46,6 +62,7 @@ export function projectScriptSpec(spec: ScriptSpec): string {
     if (step.kind === 'read_file') return `${index + 1}. Read file ${step.path} (max ${step.maxBytes ?? MAX_CONTENT_BYTES} bytes).`;
     if (step.kind === 'write_file') return `${index + 1}. Write ${Buffer.byteLength(step.content, 'utf8')} bytes to ${step.path} through normal approval and Effect authority.`;
     if (step.kind === 'list_directory') return `${index + 1}. List directory ${step.path} (max ${step.maxEntries ?? 1_000} entries).`;
+    if (step.kind === 'app_action') return `${index + 1}. ${step.operation === 'read' ? 'Read' : 'Approved action'} ${step.providerId}/${step.toolkitId}/${step.actionId} using account ${step.accountId}, schema ${step.schemaVersion}, provider version ${step.providerActionVersion}.`;
     return `${index + 1}. Perform ${step.method} request to ${step.url} through normal network and Effect authority.`;
   });
   return [

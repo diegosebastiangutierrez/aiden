@@ -1602,6 +1602,38 @@ export function loadAutomations(): Promise<WorkbenchAutomationSnapshot> {
   return appsRequest<WorkbenchAutomationSnapshot>('/api/automations');
 }
 
+export interface WorkbenchAppAction {
+  providerId: string; toolkitId: string; actionId: string; label: string; description: string;
+  schemaVersion: string; providerActionVersion: string; operation: 'read' | 'mutation';
+  risk: string; inputSchema: Record<string, unknown>;
+}
+export interface WorkbenchAppPreviewInput {
+  accountId: string; actionId: string; schemaVersion: string; providerActionVersion: string; input: Record<string, unknown>;
+}
+export interface WorkbenchAppPreview {
+  account: WorkbenchConnectedAccount;
+  step: WorkbenchAppPreviewInput & { kind: 'app_action'; operation: 'read' | 'mutation'; providerId: string; toolkitId: string };
+  digest: string; approvalRequired: boolean;
+}
+export function loadAppActions(accountId: string): Promise<WorkbenchAppAction[]> {
+  return appsRequest('/api/apps/actions', { method: 'POST', body: JSON.stringify({ accountId }) });
+}
+export function previewAppAction(input: WorkbenchAppPreviewInput): Promise<WorkbenchAppPreview> {
+  return appsRequest('/api/apps/preview', { method: 'POST', body: JSON.stringify(input) });
+}
+export function createAppWorkflow(input: { name: string; preview: WorkbenchAppPreview; expression: string; timezone: string; requestId: string }): Promise<WorkbenchAutomationSummary> {
+  const mutation = input.preview.approvalRequired;
+  return appsRequest('/api/automations', { method: 'POST', body: JSON.stringify({
+    name: input.name, previewDigest: input.preview.digest, requestId: input.requestId,
+    action: { kind: 'script', script: { version: 1, maxRuntimeMs: 120000, steps: [input.preview.step] } },
+    trigger: input.expression.trim() ? { kind: 'schedule', expression: input.expression.trim(), timezone: input.timezone } : { kind: 'manual' },
+    policies: { misfire: { kind: 'skip' }, overlap: 'skip', retry: { maxAttempts: 1 } },
+    capabilities: [mutation ? 'tool:app_action' : 'tool:app_read'], credentialRefs: [input.preview.account.accountId],
+    budget: { runtimeMs: 120000, modelCalls: 0, toolCalls: 1, effects: mutation ? 1 : 0 },
+    approval: { mode: mutation ? 'always' : 'policy' },
+  }) });
+}
+
 export function previewAutomationSchedule(input: { expression: string; timezone: string }): Promise<{ instants: string[] }> {
   return appsRequest('/api/automations/preview', { method: 'POST', body: JSON.stringify(input) });
 }
@@ -1659,8 +1691,8 @@ export function reviseAutomation(automationId: string, input: {
   });
 }
 
-export function runAutomationNow(automationId: string): Promise<{ triggerEventId: number }> {
-  return appsRequest(`/api/automations/${encodeURIComponent(automationId)}/run`, { method: 'POST' });
+export function runAutomationNow(automationId: string, requestId = crypto.randomUUID()): Promise<{ triggerEventId: number }> {
+  return appsRequest(`/api/automations/${encodeURIComponent(automationId)}/run`, { method: 'POST', body: JSON.stringify({ requestId }) });
 }
 
 export function setAutomationEnabled(automationId: string, enabled: boolean): Promise<WorkbenchAutomationSummary> {

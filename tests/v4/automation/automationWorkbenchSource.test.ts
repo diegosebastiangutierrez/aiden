@@ -8,6 +8,17 @@ const styles = readFileSync(resolve(root, 'dashboard-next/app/globals.css'), 'ut
 const client = readFileSync(resolve(root, 'dashboard-next/lib/aidenClient.ts'), 'utf8');
 
 describe('Workbench reliable automation product surface', () => {
+  it('presents exact account-bound workflows without granting mutation approval from the preview', () => {
+    const surface = page.slice(page.indexOf('function AppWorkflowForm('), page.indexOf('function AppsView()'));
+    expect(surface).toContain('previewAppAction');
+    expect(surface).toContain('Save workflow');
+    expect(surface).toContain('setPreview(null)');
+    expect(surface).toContain('No action has run');
+    expect(surface).toContain('Open workflow runs and history');
+    expect(surface).not.toContain('runAutomationNow');
+    expect(client).toContain("approval: { mode: mutation ? 'always' : 'policy' }");
+    expect(client).toContain('maxAttempts: 1');
+  });
   it('keeps cron syntax behind an advanced disclosure and previews five durable instants', () => {
     const surface = page.slice(page.indexOf('function AutomationsView()'), page.indexOf('function SponsorsView()'));
     expect(surface).toContain('name="schedulePreset"');

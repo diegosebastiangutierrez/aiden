@@ -187,6 +187,62 @@ describe('buildDaemonAgentBuilder — state isolation', () => {
 });
 
 describe('buildDaemonAgentBuilder — typed automation ScriptSpec', () => {
+  it('retains a successful read observation without inventing mutation readback verification', async () => {
+    const { deps } = stubDeps({ toolExecutor: vi.fn(async (call: ToolCallRequest) => ({
+      id: call.id, name: call.name, result: { outcome: 'succeeded', content: { untrustedExternalContent: true, data: [] } },
+    })) as any });
+    const results = await runWithJobExecutionContext({ engine: {} as any, jobId: 'job_read', attemptId: 'attempt_read',
+      generation: 1, fenceToken: 'fence_read', producer: 'test' }, () => buildDaemonAgentBuilder(deps).executeAutomationScript!({
+      spec: { version: 1, maxRuntimeMs: 1000, steps: [{ kind: 'app_action', operation: 'read',
+        providerId: 'fake', toolkitId: 'projects', accountId: 'account', actionId: 'list_projects',
+        schemaVersion: '1', providerActionVersion: '2026-01-01', input: {} }] },
+      approvalMode: 'policy', approvalCallbacks: {}, signal: new AbortController().signal, onToolCall: vi.fn(),
+    }));
+    expect(results[0].error).toBeUndefined();
+    expect(results[0].result).toMatchObject({ content: { untrustedExternalContent: true } });
+    expect((results[0].result as any).content.verification).toBeUndefined();
+  });
+
+  it.each(['unknown', 'failed'])('does not report a %s app outcome as a successful script', async (outcome) => {
+    const { deps } = stubDeps({ toolExecutor: vi.fn(async (call: ToolCallRequest) => ({
+      id: call.id, name: call.name, result: { outcome, content: { verification: outcome } },
+    })) as any });
+    const builder = buildDaemonAgentBuilder(deps);
+    const results = await runWithJobExecutionContext({ engine: {} as any, jobId: 'job_app',
+      attemptId: 'attempt_app', generation: 1, fenceToken: 'fence_app', producer: 'test' },
+    () => builder.executeAutomationScript!({ spec: { version: 1, maxRuntimeMs: 1000, steps: [{
+      kind: 'app_action', operation: 'mutation', providerId: 'fake', toolkitId: 'projects',
+      accountId: 'account', actionId: 'create_note', schemaVersion: '1', providerActionVersion: '2026-01-01',
+      input: { projectId: 'project', text: 'Note' },
+    }] }, approvalMode: 'always', approvalCallbacks: {}, signal: new AbortController().signal, onToolCall: vi.fn() }));
+    expect(results[0].error).toMatch(/not verified/i);
+    expect(results[0].result).toMatchObject({ outcome });
+  });
+
+  it('dispatches an exact app step without a model and preserves its request identity across recovery', async () => {
+    const toolExecutor = vi.fn(async (call: ToolCallRequest) => ({
+      id: call.id, name: call.name, result: { outcome: 'succeeded', content: { verification: 'verified' } },
+    }));
+    const { deps, resolver } = stubDeps({ toolExecutor: toolExecutor as any });
+    const builder = buildDaemonAgentBuilder(deps);
+    for (const generation of [1, 2]) await runWithJobExecutionContext({
+      engine: {} as any, jobId: 'job_workflow', attemptId: `attempt_${generation}`, generation,
+      fenceToken: `fence_${generation}`, producer: 'test',
+    }, () => builder.executeAutomationScript!({
+      spec: { version: 1, maxRuntimeMs: 1_000, steps: [{ kind: 'app_action', operation: 'mutation',
+        providerId: 'fake', toolkitId: 'projects', accountId: 'account_primary', actionId: 'create_note',
+        schemaVersion: '1', providerActionVersion: '2026-01-01', input: { title: 'Reviewed note' },
+      }] } as any,
+      approvalMode: 'always', approvalCallbacks: {}, signal: new AbortController().signal, onToolCall: vi.fn(),
+    }));
+    expect(resolver.resolve).not.toHaveBeenCalled();
+    expect(toolExecutor.mock.calls.map(([call]) => call.name)).toEqual(['app_action', 'app_action']);
+    const [first, second] = toolExecutor.mock.calls.map(([call]) => call);
+    expect(first.arguments).toMatchObject({ account_id: 'account_primary', action_id: 'create_note', input: { title: 'Reviewed note' } });
+    expect(first.arguments.request_id).toBe(second.arguments.request_id);
+    expect(first.id).not.toBe(second.id);
+  });
+
   it('forces an exact approval prompt for a mutating step when the immutable revision requires approval', async () => {
     const execute = vi.fn(async () => ({ written: true }));
     const promptUser = vi.fn(async () => 'deny' as const);
@@ -210,6 +266,7 @@ describe('buildDaemonAgentBuilder — typed automation ScriptSpec', () => {
     });
     const builder = buildDaemonAgentBuilder(deps);
     const engine = {
+      listEvents: vi.fn(() => []),
       prepareToolCall: vi.fn(() => ({ applied: true, effectId: 'effect_approval' })),
       resolveToolCallApproval: vi.fn(() => ({ applied: true })),
     } as any;
@@ -232,7 +289,7 @@ describe('buildDaemonAgentBuilder — typed automation ScriptSpec', () => {
       onToolCall: vi.fn(),
     }));
 
-    expect(promptUser).toHaveBeenCalledTimes(1);
+    expect(promptUser, JSON.stringify(results)).toHaveBeenCalledTimes(1);
     expect(execute).not.toHaveBeenCalled();
     expect(results).toEqual([expect.objectContaining({ error: expect.stringMatching(/denied/i) })]);
   });
