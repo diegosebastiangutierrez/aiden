@@ -15,7 +15,7 @@
  * dormancy — process_* were "registry not configured").
  */
 import { describe, it, expect, vi } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import { resolve } from 'node:path';
 import { ProcessRegistry } from '../../core/v4/processRegistry';
@@ -179,7 +179,7 @@ describe('PM.1 — tools: redaction + owner passthrough', () => {
       // the tool forwarded exact argv without a shell and retained ownership
       expect(spy).toHaveBeenCalledWith(
         process.execPath,
-        expect.objectContaining({ sessionId: 'sess-xyz', shell: false, args: expect.arrayContaining([script]) }),
+        expect.objectContaining({ sessionId: 'sess-xyz', shell: false, args: expect.arrayContaining([realpathSync.native(script)]) }),
       );
       const h = r.get(out.id)!;
       expect(h.ownerSessionId).toBe('sess-xyz');

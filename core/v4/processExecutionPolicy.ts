@@ -95,7 +95,8 @@ export function evaluateStructuredProcessAdmission(
     return unavailable('UNAVAILABLE_BY_ENVIRONMENT', 'runtime_unavailable', 'Only the current Node runtime is supported.');
   }
 
-  const workspaceRoot = realpathWithFallback(options.workspaceRoot);
+  const lexicalWorkspaceRoot = path.resolve(options.workspaceRoot);
+  const workspaceRoot = realpathWithFallback(lexicalWorkspaceRoot);
   let rootStat: fs.Stats;
   try { rootStat = fs.statSync(workspaceRoot); }
   catch { return unavailable('UNAVAILABLE_BY_ENVIRONMENT', 'workspace_unavailable', 'The authorized workspace is unavailable.'); }
@@ -159,7 +160,7 @@ export function evaluateStructuredProcessAdmission(
   // that is not textually under the canonical workspace root. Physical
   // containment is authoritative; a lexical-in-workspace path that resolves
   // outside still remains a symlink escape and is rejected below.
-  const lexicalInWorkspace = samePath(lexicalScript, workspaceRoot) || isWithin(lexicalScript, workspaceRoot);
+  const lexicalInWorkspace = samePath(lexicalScript, lexicalWorkspaceRoot) || isWithin(lexicalScript, lexicalWorkspaceRoot);
   const physicalInWorkspace = samePath(script, workspaceRoot) || isWithin(script, workspaceRoot);
   if (!physicalInWorkspace) {
     return unavailable(
