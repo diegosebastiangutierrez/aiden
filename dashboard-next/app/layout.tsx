@@ -1,6 +1,8 @@
 import type { Metadata } from 'next'
 import { DM_Mono } from 'next/font/google'
 import './globals.css'
+import '../components/spatial-workspaces.css'
+import '../components/workbench-materials.css'
 
 // Aiden uses the native system sans for product copy and DM Mono for technical data.
 const dmMono = DM_Mono({

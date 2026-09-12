@@ -405,6 +405,7 @@ export interface MainOptions {
    * NullAdapter so first-run setup remains available without pretending chat
    * execution is configured. One-shot/headless query callers still fail. */
   allowUnconfiguredRecovery?: boolean;
+  workbenchTrustLevel?: () => AutonomyLevel;
   /** Process-local truth for whether a canonical Automation dispatcher is active. */
   automationSchedulerReady?: () => boolean;
   /** Stub stdout writer (defaults to process.stdout.write). */
@@ -679,6 +680,7 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
     .option('--no-open', 'Do not auto-open the browser (just print the URL)')
     .action(async (cmdOpts: { port?: number; open?: boolean }) => {
       const { startWorkbenchBridge } = await import('../../core/v4/workbench/bridgeServer');
+      const { createWorkbenchTrustPort } = await import('../../core/v4/workbench/trustMode');
       const { openBrowser }          = await import('../../core/v4/workbench/openBrowser');
       const { createSessionLister }  = await import('../../core/v4/workbench/sessionList');
       const { createTriggerBus }     = await import('../../core/v4/daemon/triggerBus');
@@ -705,6 +707,20 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
       const { createTaskStore } = await import('../../core/v4/daemon/taskStore');
       const { randomBytes } = await import('node:crypto');
       const paths    = resolveAidenPaths();
+      const readTrustLevel = () => {
+        const manager = new ConfigManager(paths);
+        manager.loadSync();
+        return resolveConfiguredAutonomyLevel(manager);
+      };
+      const trust = createWorkbenchTrustPort({
+        read: readTrustLevel,
+        save: async (level) => {
+          const manager = new ConfigManager(paths);
+          manager.loadSync();
+          manager.set('agent.autonomy', level);
+          await manager.save();
+        },
+      });
       const dbPath   = daemonDbPath(paths.root);
       const db       = openDaemonDb(dbPath);
       const runStore = createRunStore({ db });
@@ -766,6 +782,7 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
           jobEngineOverride: jobEngine,
           actionAuthorityOverride: actionAuthority,
           allowUnconfiguredRecovery: true,
+          workbenchTrustLevel: readTrustLevel,
           automationSchedulerReady: () => executionHost?.snapshot().available === true,
         });
         if (!workbenchRuntime.exploreMode) {
@@ -989,6 +1006,7 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
         input,
         control,
         approval,
+        trust: workbenchRuntime ? trust : undefined,
         attachments: workbenchFiles,
         artifacts: workbenchFiles,
         jobs: jobEngine,
@@ -3763,6 +3781,7 @@ export async function buildAgentRuntime(
   // bootstrapDaemon().
   const { buildDaemonAgentBuilder } = await import('./daemonAgentBuilder');
   const daemonAgentBuilder = buildDaemonAgentBuilder({
+    workbenchTrustLevel: opts.workbenchTrustLevel,
     paths,
     resolver,
     fallbackAdapter: adapter,

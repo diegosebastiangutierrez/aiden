@@ -244,9 +244,12 @@ describe('premium Workbench source contracts', () => {
     expect(apps).toContain('The browser does not retain it.');
     expect(apps).not.toContain('Account label');
     expect(apps).not.toContain('accountLabels');
-    expect(apps).toContain('projectRecommendedApps(snapshot)');
-    expect(apps).toContain('Connect GitHub');
-    expect(apps).toContain('Connect Gmail');
+    expect(apps).toContain('catalogApps(snapshot.toolkits, snapshot.accounts)');
+    expect(apps).toContain('`Connect ${card.label}`');
+    expect(apps).toContain('`Set up ${card.label}`');
+    expect(apps).toContain('aria-label="Search apps"');
+    expect(apps).toContain('aria-label="App categories"');
+    expect(apps).toContain("toolkit ? void connect(toolkit) : setSetupTarget(card.label)");
     expect(apps).toContain('More apps');
     expect(apps).toContain('Advanced service details');
     expect(apps).toContain('Add another account');

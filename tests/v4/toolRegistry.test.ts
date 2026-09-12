@@ -53,6 +53,26 @@ describe('ToolRegistry', () => {
     registry = new ToolRegistry();
   });
 
+  it('propagates an explicit unsuccessful handler result and does not cache it as success', async () => {
+    const handler = vi.fn(async () => ({ success: false, error: 'File does not exist' }));
+    registry.register(makeHandler('read_failure_contract', { execute: handler }));
+    const execute = registry.buildExecutor(makeContext());
+    for (let i = 0; i < 2; i++) {
+      const result = await execute(call('read_failure_contract'));
+      expect(result.error).toBe('File does not exist');
+      expect(result.result).toEqual({ success: false, error: 'File does not exist' });
+      expect(result.activityTiming?.terminalClassification).toBe('failed');
+    }
+    expect(handler).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not confuse failure text inside successful tool data with an execution failure', async () => {
+    registry.register(makeHandler('read_failure_document', { execute: async () => ({ success: true, content: { success: false, error: 'Example document' } }) }));
+    const result = await registry.buildExecutor(makeContext())(call('read_failure_document'));
+    expect(result.error).toBeUndefined();
+    expect(result.activityTiming?.terminalClassification).toBe('completed');
+  });
+
   it('records approval wait separately from actual handler execution', async () => {
     let now = 1_000;
     const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);

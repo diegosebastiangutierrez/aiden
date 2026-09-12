@@ -45,6 +45,7 @@ describe('Workbench reliable automation port', () => {
     ).run(created.automationId, created.revisionId);
     expect(port.setEnabled(created.automationId, false).enabled).toBe(false);
     const snapshot = port.snapshot();
+    expect(snapshot.capability.visualWorkflows).toBe(true);
     expect(snapshot.automations).toHaveLength(1);
     expect(snapshot.history).toEqual([
       expect.objectContaining({

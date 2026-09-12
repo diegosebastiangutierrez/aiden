@@ -6,12 +6,18 @@ import {
   type ReactNode, type RefObject, type ChangeEvent, type FormEvent,
 } from 'react'
 import { OnboardingModal } from '../components/OnboardingModal'
+import { AutoModeButton } from '../components/AutoModeButton'
+import { AidenMark } from '../components/AidenMark'
 import PricingModal, { type CommercialWorkbenchStatus } from '../components/PricingModal'
 import WorkflowView from '../components/WorkflowView'
 import LiveExecutionTerminal from '../components/LiveExecutionTerminal'
 import { SafeMarkdown } from '../components/SafeMarkdown'
 import { ProductButton, StatusBadge } from '../components/ProductUI'
 import { ProductIcon, type ProductIconName } from '../components/ProductIcon'
+import { BrainExplorer } from '../components/BrainExplorer'
+import { WorkflowOutline } from '../components/WorkflowOutline'
+import { WorkflowCanvas } from '../components/WorkflowCanvas'
+import { catalogApps, knowledgeScopeLabel } from '../lib/productExperience'
 import * as aiden from '../lib/aidenClient'
 import { PUBLIC_SPONSORS, SPONSOR_URL } from '../lib/publicSponsors'
 import {
@@ -21,7 +27,6 @@ import {
   mergeLiveActivity,
   pendingApprovalCards,
   pendingApprovalsForProjection,
-  projectRecommendedApps,
   selectChatLiveActivity,
   shouldShowChatTelemetry,
   summarizeCompletedActivity,
@@ -2186,13 +2191,7 @@ function NavBar() {
           onClick={() => setHistoryOpen((open) => !open)}
           style={{ width: 28, height: 28, border: '1px solid var(--border)', borderRadius: 7, background: 'transparent', color: 'var(--muted3)', cursor: 'pointer' }}
         ><ProductIcon name={historyOpen ? 'chevron-left' : 'menu'} size={16} /></button>
-        <div style={{
-          width: 24, height: 24, borderRadius: 5,
-          background: 'var(--orange)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 10, fontWeight: 800, color: '#000', flexShrink: 0,
-          animation: isExecuting ? 'pulse-orange 1s infinite' : 'none',
-        }}>A</div>
+        <AidenMark size={28} />
         <span style={{ fontSize: 14, color: 'var(--text)', fontWeight: 650, fontFamily: 'var(--sans)' }}>
           Aiden
         </span>
@@ -2263,12 +2262,12 @@ function HistorySidebar() {
 
   if (!historyOpen) return (
     <aside className="history-sidebar sidebar-rail" aria-label="Collapsed navigation">
-      <button type="button" className="rail-brand" title="Aiden Workbench" aria-label="Aiden Workbench">A</button>
+      <button type="button" className="rail-brand" title="Aiden Workbench" aria-label="Aiden Workbench"><AidenMark size={36} /></button>
       <button type="button" className="rail-action is-primary" title="New Chat" aria-label="New Chat" onClick={startNewChat}><ProductIcon name="plus" /></button>
       <button type="button" className={mainView === 'chat' ? 'rail-action is-active' : 'rail-action'} title="Home" aria-label="Home" onClick={() => openView('chat')}><ProductIcon name="home" /></button>
       <button type="button" className={mainView === 'activity' ? 'rail-action is-active' : 'rail-action'} title={`Active Work (${activeJobs.length})`} aria-label="Active Work" onClick={() => openView('activity')}><ProductIcon name="work" /></button>
       <button type="button" className={mainView === 'apps' ? 'rail-action is-active' : 'rail-action'} title="Apps" aria-label="Apps" onClick={() => openView('apps')}><ProductIcon name="apps" /></button>
-      <button type="button" className={mainView === 'brain' ? 'rail-action is-active' : 'rail-action'} title="Brain" aria-label="Brain" onClick={() => openView('brain')}><ProductIcon name="work" /></button>
+      <button type="button" className={mainView === 'brain' ? 'rail-action is-active' : 'rail-action'} title="Brain" aria-label="Brain" onClick={() => openView('brain')}><ProductIcon name="brain" /></button>
       <button type="button" className={mainView === 'automations' ? 'rail-action is-active' : 'rail-action'} title="Automations" aria-label="Automations" onClick={() => openView('automations')}><ProductIcon name="automation" /></button>
       <button type="button" className={mainView === 'artifacts' ? 'rail-action is-active' : 'rail-action'} title="Artifacts" aria-label="Artifacts" onClick={() => openView('artifacts')}><ProductIcon name="artifact" /></button>
       <span className="rail-spacer" />
@@ -2284,7 +2283,7 @@ function HistorySidebar() {
       <button onClick={startNewChat} style={{
         margin: 12, padding: '8px 14px', borderRadius: 6,
         background: 'transparent', border: '1px solid var(--border2)',
-        color: 'var(--muted2)', fontFamily: 'var(--mono)', fontSize: 12,
+        color: 'var(--text2)', fontFamily: 'var(--sans)', fontSize: 13,
         cursor: 'pointer', textAlign: 'left', transition: 'all 0.15s',
         display: 'flex', alignItems: 'center', gap: 8,
       }}>
@@ -2296,37 +2295,38 @@ function HistorySidebar() {
         <button type="button" className={mainView === 'chat' ? 'is-active' : ''} onClick={() => openView('chat')}><span><ProductIcon name="home" size={16} /></span>Home</button>
         <button type="button" className={mainView === 'activity' ? 'is-active' : ''} onClick={() => openView('activity')}><span><ProductIcon name="work" size={16} /></span>Active Work{activeJobs.length > 0 && <small>{activeJobs.length}</small>}</button>
         <button type="button" className={mainView === 'apps' ? 'is-active' : ''} onClick={() => openView('apps')}><span><ProductIcon name="apps" size={16} /></span>Apps</button>
-        <button type="button" className={mainView === 'brain' ? 'is-active' : ''} onClick={() => openView('brain')}><span><ProductIcon name="work" size={16} /></span>Brain</button>
+        <button type="button" className={mainView === 'brain' ? 'is-active' : ''} onClick={() => openView('brain')}><span><ProductIcon name="brain" size={16} /></span>Brain</button>
         <button type="button" className={mainView === 'automations' ? 'is-active' : ''} onClick={() => openView('automations')}><span><ProductIcon name="automation" size={16} /></span>Automations</button>
         <button type="button" className={mainView === 'artifacts' ? 'is-active' : ''} onClick={() => openView('artifacts')}><span><ProductIcon name="artifact" size={16} /></span>Artifacts</button>
       </nav>
 
       <div style={{ flex: 1, overflowY: 'auto', padding: '0 8px' }}>
         {activeJobs.length > 0 && (
-          <div style={{ margin: '4px 0 8px', padding: '8px', border: '1px solid var(--border)', borderRadius: 5 }}>
-            <div style={{ padding: '0 4px 5px', fontSize: 9, color: 'var(--orange)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Active Work</div>
-            {activeJobs.map((job) => (
+          <details className="sidebar-work-summary" open={mainView === 'chat' || mainView === 'activity'}>
+            <summary>Active Work <span>{activeJobs.length}</span></summary>
+            {activeJobs.slice(0, 3).map((job) => (
               <button key={job.jobId} onClick={() => selectActiveJob(job)} style={{
                 display: 'block', width: '100%', padding: '4px', border: 'none', background: 'transparent',
-                color: 'var(--muted2)', fontFamily: 'var(--mono)', fontSize: 10, textAlign: 'left', cursor: 'pointer',
+                color: 'var(--text2)', fontFamily: 'var(--sans)', fontSize: 12, textAlign: 'left', cursor: 'pointer',
               }}>
                 <span style={{ color: job.status === 'approval_required' ? 'var(--orange)' : job.status === 'blocked' ? 'var(--red)' : 'var(--blue)' }}>●</span>{' '}
                 <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {job.title || job.jobId.slice(0, 18)}
                 </span>
-                <span style={{ display: 'block', color: 'var(--muted)', marginTop: 2 }}>
+                <span className="sidebar-work-detail" style={{ color: 'var(--muted3)', marginTop: 2 }}>
                   {presentRuntimeDetail(job.statusDetail, job.status)}
                 </span>
               </button>
             ))}
-          </div>
+            <button className="sidebar-view-all" type="button" onClick={() => openView('activity')}>View all work &amp; details →</button>
+          </details>
         )}
         {(Object.entries(grouped) as [string, Conversation[]][]).map(([group, convs]) => convs.length > 0 && (
           <div key={group}>
             <div style={{
-              padding: '8px 8px 4px', fontSize: 9,
-              color: 'var(--muted)', textTransform: 'uppercase',
-              letterSpacing: '0.1em', fontFamily: 'var(--mono)',
+              padding: '14px 8px 6px', fontSize: 11,
+              color: 'var(--muted3)', textTransform: 'uppercase',
+              letterSpacing: '0.08em', fontFamily: 'var(--sans)',
             }}>
               {group === 'completed' ? 'Completed' : 'Recent'}
             </div>
@@ -2339,7 +2339,7 @@ function HistorySidebar() {
                 border: 'none',
                 borderLeft: `2px solid ${currentConvId === conv.id ? 'var(--orange)' : 'transparent'}`,
                 color: currentConvId === conv.id ? 'var(--text)' : 'var(--muted2)',
-                fontFamily: 'var(--mono)', fontSize: 11, cursor: 'pointer',
+                fontFamily: 'var(--sans)', fontSize: 12, cursor: 'pointer',
                 transition: 'all 0.15s', overflow: 'hidden',
               }}>
                 <span style={{ overflow: 'hidden', minWidth: 0, flex: 1 }}>
@@ -2395,7 +2395,7 @@ function EmptyState() {
   }
   return (
     <div className="workbench-home">
-      <div className="workbench-home-mark" aria-hidden="true">A</div>
+      <div className="workbench-home-mark" aria-hidden="true"><AidenMark size={64} /></div>
       <div className="workbench-home-copy">
         <h1>What should Aiden take care of?</h1>
         <p>Describe the outcome you want. Aiden will show the work, ask before sensitive actions, and preserve the evidence.</p>
@@ -2820,6 +2820,11 @@ function AppsView() {
   const [pending, setPending] = useState<aiden.WorkbenchAppConnection | null>(null)
   const [disconnecting, setDisconnecting] = useState<aiden.WorkbenchConnectedAccount | null>(null)
   const [setupTarget, setSetupTarget] = useState<string | null>(null)
+  const [catalogQuery, setCatalogQuery] = useState('')
+  const [catalogCategory, setCatalogCategory] = useState('All')
+  const [appsTab, setAppsTab] = useState<'discover' | 'connected' | 'workflows'>('discover')
+  const setupPanel = useRef<HTMLDivElement>(null)
+  useEffect(() => { if (setupTarget) setupPanel.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }) }, [setupTarget])
 
   const reload = useCallback(async () => {
     try {
@@ -2904,18 +2909,20 @@ function AppsView() {
     unavailable: 'Unavailable',
   }[health] ?? health.replace(/_/g, ' '))
   const recommendedApps = useMemo(
-    () => snapshot ? projectRecommendedApps(snapshot) : [],
+    () => snapshot ? catalogApps(snapshot.toolkits, snapshot.accounts) : [],
     [snapshot],
   )
+  const catalogCategories = ['All', ...Array.from(new Set(recommendedApps.map(card => card.category)))]
+  const filteredApps = recommendedApps.filter(card => (catalogCategory === 'All' || card.category === catalogCategory)
+    && `${card.label} ${card.description} ${card.category}`.toLowerCase().includes(catalogQuery.trim().toLowerCase()))
 
   return (
-    <section className="workspace-surface" aria-labelledby="apps-title">
+    <section className="workspace-surface product-workspace" aria-labelledby="apps-title">
       <header className="workspace-surface-header">
         <div>
-          <span className="eyebrow">Connected accounts</span>
+          <span className="eyebrow">Your tools, together</span>
           <h2 id="apps-title">Apps</h2>
-          <p>Choose the exact account Aiden may use. External changes still require Aiden approval.</p>
-          <p>Optional: connect via Composio using your own project key. Chat works without it.</p>
+          <p>Bring your work into Aiden. Connect an account, choose an action, and keep control.</p>
         </div>
         <button type="button" className="nav-btn" onClick={() => { void reload() }} disabled={busy !== null}>Refresh</button>
       </header>
@@ -2940,11 +2947,17 @@ function AppsView() {
 
       {snapshot && (
         <>
+          <nav className="product-tabs" aria-label="Apps sections">
+            <button type="button" aria-pressed={appsTab === 'discover'} onClick={() => setAppsTab('discover')}>Discover</button>
+            <button type="button" aria-pressed={appsTab === 'connected'} onClick={() => setAppsTab('connected')}>Connected accounts <span>{snapshot.accounts.filter(account => account.status !== 'revoked').length}</span></button>
+            <button type="button" aria-pressed={appsTab === 'workflows'} onClick={() => setAppsTab('workflows')}>App workflows</button>
+          </nav>
+          {appsTab === 'connected' && <>
           <div className="artifact-gallery apps-card-grid" aria-label="Connected accounts">
             {snapshot.accounts.length === 0 ? (
               <div className="workspace-empty-state">
                 <strong>No connected accounts</strong>
-                <span>Connect your first account below. Aiden will always use an explicitly selected account.</span>
+                <span>Choose an app to securely connect your first account.</span><button type="button" className="product-primary" onClick={() => setAppsTab('discover')}>Browse apps</button>
               </div>
             ) : snapshot.accounts.map((account) => (
               <article className="surface-card" key={account.accountId} style={{ padding: 18 }}>
@@ -2963,23 +2976,29 @@ function AppsView() {
               </article>
             ))}
           </div>
-
-          <AppWorkflowForm accounts={snapshot.accounts} />
-          <header className="workspace-surface-header" style={{ marginTop: 24 }}>
-            <div><span className="eyebrow">Available apps</span><h3>Connect an app</h3></div>
+          </>}
+          {appsTab === 'workflows' && (snapshot.accounts.some(account => account.status === 'active' && account.health === 'healthy')
+            ? <AppWorkflowForm accounts={snapshot.accounts} />
+            : <div className="product-empty"><ProductIcon name="automation" size={30} /><h3>Connect an account to build a workflow</h3><p>Aiden needs a healthy, explicitly selected account before it can show you its available actions.</p><button type="button" className="product-primary" onClick={() => setAppsTab('discover')}>Find an app</button></div>)}
+          {appsTab === 'discover' && <>
+          <div className="product-toolbar"><label className="product-search"><ProductIcon name="search" size={18} /><input type="search" aria-label="Search apps" value={catalogQuery} onChange={event => setCatalogQuery(event.target.value)} placeholder="Search apps and what you can do…" /></label><button type="button" className="nav-btn" onClick={() => setSetupTarget('More apps')}>Connection setup</button></div>
+          <div className="product-filter-chips" aria-label="App categories">{catalogCategories.map(category => <button type="button" key={category} aria-pressed={catalogCategory === category} onClick={() => setCatalogCategory(category)}>{category}</button>)}</div>
+          <header className="product-section-heading">
+            <div><h3>Connect an app</h3><p className="product-footnote">{snapshot.toolkits.length ? 'Actions come from your configured provider. Review each account’s permissions before connecting.' : 'Start with GitHub or Gmail. An optional Composio project key is needed once; then authorize each account.'}</p></div>
           </header>
           <div className="artifact-gallery apps-card-grid" aria-label="Available apps">
-            {recommendedApps.map((card) => {
+            {filteredApps.map((card) => {
               const toolkit = card.toolkit
               return (
-                <article className="surface-card" key={card.id} style={{ padding: 18 }}>
-                  <span className="eyebrow">{card.accounts.length > 0 ? `${card.accounts.length} connected` : 'Available'}</span>
+                <article className="surface-card catalog-app" data-app={card.label.toLowerCase()} key={card.id}>
+                  <div className="catalog-app-top"><span className="catalog-app-mark" aria-hidden="true">{card.label === 'GitHub' ? <ProductIcon name="branch" size={25} /> : card.label === 'Gmail' ? <ProductIcon name="mail" size={25} /> : card.mark}</span><span className={`product-status ${card.status}`}>{card.status === 'setup' ? 'Setup needed' : card.status === 'attention' ? 'Needs attention' : card.status === 'connected' ? 'Connected' : 'Available'}</span></div>
                   <h3 style={{ margin: '6px 0' }}>{card.label}</h3>
-                  <p style={{ color: 'var(--muted2)', minHeight: 36 }}>{card.description}</p>
+                  <span className="catalog-category">{card.category}</span>
+                  <p style={{ color: 'var(--muted3)', minHeight: 36 }}>{card.description}</p>
                   {card.accounts.map((account) => (
                     <div key={account.accountId} className="app-account-row">
                       <span><strong>{account.label}</strong><small>{healthLabel(account.health)}</small></span>
-                      {account.needsReconnect && (
+                      {(account.status === 'revoked' || ['expired', 'degraded', 'insufficient_scope'].includes(account.health)) && (
                         <button type="button" className="nav-btn" disabled={busy !== null} onClick={() => { void accountAction(account, 'reconnect') }}>Reconnect</button>
                       )}
                     </div>
@@ -2989,16 +3008,15 @@ function AppsView() {
                     className="nav-btn"
                     disabled={busy !== null}
                     onClick={() => toolkit ? void connect(toolkit) : setSetupTarget(card.label)}
-                  >{card.id === 'github'
-                      ? (card.accounts.length > 0 ? 'Add another account' : toolkit ? 'Connect GitHub' : 'Set up GitHub')
-                      : card.id === 'gmail'
-                        ? (card.accounts.length > 0 ? 'Add another account' : toolkit ? 'Connect Gmail' : 'Set up Gmail')
-                        : 'Browse apps'}</button>
+                  >{card.accounts.length > 0 ? 'Add another account' : toolkit ? `Connect ${card.label}` : `Set up ${card.label}`}</button>
+                  {toolkit && <small className="catalog-provider">Via {snapshot.providers.find(provider => provider.id === toolkit.providerId)?.label ?? toolkit.providerId}</small>}
                 </article>
               )
             })}
           </div>
-
+          {filteredApps.length === 0 && <div className="product-empty"><ProductIcon name="search" size={28} /><h3>No matching apps</h3><p>Try another search or category. Only provider-discovered apps are listed as available.</p><button className="nav-btn" type="button" onClick={() => { setCatalogQuery(''); setCatalogCategory('All') }}>Clear filters</button></div>}
+          </>}
+          <div ref={setupPanel}>
           {setupTarget && (
             <article className="surface-card app-setup-state" role="status">
               <span className="eyebrow">One-time setup</span>
@@ -3028,6 +3046,7 @@ function AppsView() {
               </details>
             </article>
           )}
+          </div>
 
           <details className="apps-provider-diagnostics">
             <summary>Advanced service diagnostics</summary>
@@ -3069,15 +3088,37 @@ function AutomationsView() {
   const [preview, setPreview] = useState<string[]>([])
   const [editing, setEditing] = useState<aiden.WorkbenchAutomationSummary | null>(null)
   const [confirmingRemoval, setConfirmingRemoval] = useState<string | null>(null)
+  const [workflowTab, setWorkflowTab] = useState<'workflows' | 'create' | 'history' | 'canvas'>('workflows')
+  const [canvasWorkflow, setCanvasWorkflow] = useState<aiden.WorkbenchAutomationSummary | undefined>()
+  const [outline, setOutline] = useState({ prompt: '', schedule: 'Every weekday at 9:00 AM', allowWrite: false })
   const automationFormRef = useRef<HTMLFormElement>(null)
   const runRequests = useRef(new Map<string, string>())
   const customerLocale = useMemo(() => detectWorkbenchLocale(), [])
+  const syncOutline = () => {
+    if (!automationFormRef.current) return
+    const data = new FormData(automationFormRef.current)
+    const expression = String(data.get('expression') ?? '').trim() || String(data.get('schedulePreset') ?? '')
+    setOutline({ prompt: String(data.get('prompt') ?? ''), schedule: describeAutomationSchedule(expression), allowWrite: data.get('allowWrite') === 'on' })
+    setPreview([])
+  }
 
   const reload = useCallback(async () => {
     try { setError(null); setSnapshot(await aiden.loadAutomations()) }
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Automations are unavailable') }
   }, [])
   useEffect(() => { void reload() }, [reload])
+
+  useEffect(() => {
+    if (workflowTab !== 'history') return
+    let stopped = false
+    let timer: ReturnType<typeof setTimeout>
+    const poll = async () => {
+      if (!document.hidden) await reload()
+      if (!stopped) timer = setTimeout(poll, 3000)
+    }
+    timer = setTimeout(poll, 3000)
+    return () => { stopped = true; clearTimeout(timer) }
+  }, [workflowTab, reload])
 
   const create = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -3097,7 +3138,7 @@ function AutomationsView() {
     try {
       if (editing) await aiden.reviseAutomation(editing.automationId, input)
       else await aiden.createAutomation(input)
-      form.reset(); setPreview([]); setEditing(null); await reload()
+      form.reset(); setPreview([]); setEditing(null); syncOutline(); setWorkflowTab('workflows'); await reload()
     }
     catch (cause) { setError(cause instanceof Error ? cause.message : `Automation could not be ${editing ? 'updated' : 'created'}`) }
     finally { setBusy(null) }
@@ -3122,6 +3163,7 @@ function AutomationsView() {
         runRequests.current.set(automation.automationId, request)
         await aiden.runAutomationNow(automation.automationId, request)
         runRequests.current.delete(automation.automationId)
+        setWorkflowTab('history')
       }
       else if (kind === 'replay' && automation.lastOccurrence) await aiden.replayAutomationOccurrence(automation.lastOccurrence.occurrenceId)
       else if (kind === 'remove') await aiden.removeAutomation(automation.automationId)
@@ -3135,6 +3177,8 @@ function AutomationsView() {
   const applyAutomationTemplate = (template: typeof AUTOMATION_TEMPLATES[number]) => {
     const form = automationFormRef.current
     if (!form) return
+    form.reset()
+    setEditing(null)
     const name = form.elements.namedItem('name') as HTMLInputElement | null
     const prompt = form.elements.namedItem('prompt') as HTMLTextAreaElement | null
     const preset = form.elements.namedItem('schedulePreset') as HTMLSelectElement | null
@@ -3144,6 +3188,8 @@ function AutomationsView() {
     if (preset && Array.from(preset.options).some((option) => option.value === template.expression)) preset.value = template.expression
     else if (expression) expression.value = template.expression
     setPreview([])
+    syncOutline()
+    setWorkflowTab('create')
   }
 
   const editAutomation = (automation: aiden.WorkbenchAutomationSummary) => {
@@ -3165,20 +3211,27 @@ function AutomationsView() {
     if (misfire) misfire.value = automation.policies.misfire.kind === 'catch_up' ? 'catch_up' : automation.policies.misfire.kind
     if (allowWrite) allowWrite.checked = automation.capabilities.includes('repository.write')
     setPreview([])
+    syncOutline()
+    setWorkflowTab('create')
     form.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
 
   return (
-    <section className="workspace-surface automation-surface" aria-labelledby="automations-title">
+    <section className="workspace-surface automation-surface product-workspace" aria-labelledby="automations-title">
       <header className="workspace-surface-header">
-        <div><span className="eyebrow">Reliable schedules</span><h2 id="automations-title">Automations</h2><p>Each logical occurrence creates one durable Job with normal approval and Evidence.</p></div>
+        <div><span className="eyebrow">Make good work repeatable</span><h2 id="automations-title">Automations</h2><p>Set a routine once. Review the results, not a wall of execution logs.</p></div>
         <button type="button" className="nav-btn" onClick={() => { void reload() }} disabled={busy !== null}>Refresh</button>
       </header>
       {error && <div className="workspace-empty-state" role="alert"><strong>Automations need attention</strong><span>{error}</span></div>}
       {snapshot && !snapshot.capability.available && <div className="workspace-empty-state"><strong>Pro capability required</strong><span>{snapshot.capability.reason}</span></div>}
       {snapshot?.capability.available && (
         <>
-          <form ref={automationFormRef} className="surface-card automation-create" onSubmit={(event) => { void create(event) }}>
+          <nav className="product-tabs" aria-label="Automation sections"><button type="button" aria-pressed={workflowTab === 'workflows'} onClick={() => setWorkflowTab('workflows')}>My workflows <span>{snapshot.automations.length}</span></button><button type="button" aria-pressed={workflowTab === 'canvas'} disabled={!snapshot.capability.visualWorkflows} title={snapshot.capability.visualWorkflows ? 'Build a connected workflow' : 'Restart Aiden to load visual workflow support'} onClick={() => { setCanvasWorkflow(undefined); setWorkflowTab('canvas') }}>Visual builder</button><button type="button" aria-pressed={workflowTab === 'create'} onClick={() => setWorkflowTab('create')}>{editing ? 'Edit workflow' : 'Create workflow'}</button><button type="button" aria-pressed={workflowTab === 'history'} onClick={() => setWorkflowTab('history')}>Run history</button></nav>
+          {workflowTab === 'canvas' && snapshot.capability.visualWorkflows && <WorkflowCanvas key={canvasWorkflow?.revisionId ?? 'new'} existing={canvasWorkflow} onClose={() => setWorkflowTab('workflows')} onSaved={() => { setWorkflowTab('workflows'); void reload() }} />}
+          {workflowTab === 'workflows' && <section className="product-template-section"><div className="product-section-heading"><div><h3>Start with an outcome</h3><p className="product-footnote">Choose a starting point. Review and customise it before anything runs.</p></div><button className="nav-btn" type="button" onClick={() => setWorkflowTab('create')}>Build your own</button></div><div className="workflow-template-grid">{AUTOMATION_TEMPLATES.map(template => <button type="button" key={template.id} onClick={() => applyAutomationTemplate(template)}><ProductIcon name="automation" size={22} /><strong>{template.label}</strong><span>{template.prompt}</span><small>Customise workflow →</small></button>)}</div></section>}
+          <div hidden={workflowTab !== 'create'}>
+          <div className="workflow-builder-layout">
+          <form ref={automationFormRef} className="surface-card automation-create" onChange={syncOutline} onSubmit={(event) => { void create(event) }}>
             <div><span className="eyebrow">{editing ? 'Edit automation' : 'Create automation'}</span><h3>{editing ? editing.name : 'Schedule reliable work'}</h3><p className="automation-meta">{editing ? 'Saving creates a new durable revision. Prior runs keep their exact original revision.' : 'Choose a template or describe the task yourself. Nothing runs until you create it.'}</p></div>
             {!editing && <div className="automation-templates" aria-label="Automation templates">
               {AUTOMATION_TEMPLATES.map((template) => <button key={template.id} type="button" onClick={() => applyAutomationTemplate(template)}>{template.label}</button>)}
@@ -3196,13 +3249,16 @@ function AutomationsView() {
             <label className="automation-write-option"><input type="checkbox" name="allowWrite" /><span>Allow workspace changes. Consequential actions still require normal Aiden approval.</span></label>
             <div><span className="automation-step">4</span><strong>Review &amp; Create</strong><p className="automation-meta">Scheduling never bypasses approvals. This automation stays bound to the current workspace.</p></div><div className="automation-actions">
               <button type="button" className="nav-btn" disabled={busy !== null} onClick={(event) => { void previewSchedule(event.currentTarget.form!) }}>Preview next 5</button>
-              {editing && <ProductButton type="button" variant="ghost" disabled={busy !== null} onClick={() => { automationFormRef.current?.reset(); setEditing(null); setPreview([]) }}>Cancel edit</ProductButton>}
+              {editing && <ProductButton type="button" variant="ghost" disabled={busy !== null} onClick={() => { automationFormRef.current?.reset(); setEditing(null); syncOutline(); setWorkflowTab('workflows') }}>Cancel edit</ProductButton>}
               <ProductButton type="submit" variant="primary" disabled={busy !== null}>{busy === 'edit' ? 'Saving…' : busy === 'create' ? 'Creating…' : editing ? 'Save new revision' : 'Create automation'}</ProductButton>
             </div>
             {preview.length > 0 && <ol className="automation-preview">{preview.map((instant) => <li key={instant}>{new Date(instant).toLocaleString(customerLocale.locale)} <code>{instant}</code></li>)}</ol>}
           </form>
+          <WorkflowOutline {...outline} />
+          </div></div>
+          <div hidden={workflowTab !== 'workflows'}>
           <div className="artifact-gallery automation-grid" aria-label="Automations">
-            {snapshot.automations.length === 0 ? <div className="workspace-empty-state"><strong>No automations yet</strong><span>Create a safe schedule above.</span></div> : snapshot.automations.map((automation) => (
+            {snapshot.automations.length === 0 ? <div className="product-empty"><ProductIcon name="clock" size={28} /><h3>Your first routine starts here</h3><p>Choose a template above or describe your own recurring task. Nothing runs until you create it.</p></div> : snapshot.automations.map((automation) => (
               <article className="surface-card automation-card" key={automation.automationId}>
                 <span className="eyebrow">{automation.enabled ? 'Active' : 'Paused'}</span>
                 <h3>{automation.name}</h3>
@@ -3211,8 +3267,9 @@ function AutomationsView() {
                 {automation.lastOccurrence && <p className="automation-meta">Last run: {automation.lastOccurrence.state.replaceAll('_', ' ')}</p>}
                 <details className="automation-advanced"><summary>Advanced details</summary><p className="automation-meta">Revision {automation.revisionNumber} · Automation ID {automation.automationId}</p></details>
                 <div className="automation-actions">
+                  {automation.visual && <button type="button" className="nav-btn" disabled={busy !== null} onClick={() => { setCanvasWorkflow(automation); setWorkflowTab('canvas') }}>Open canvas</button>}
                   <button type="button" className="nav-btn" disabled={busy !== null} onClick={() => { void action(automation, 'run') }}>Run now</button>
-                  {automation.action.kind === 'prompt' && automation.trigger.kind === 'schedule' && <button type="button" className="nav-btn" disabled={busy !== null} onClick={() => editAutomation(automation)}>Edit</button>}
+                  {!automation.visual && automation.action.kind === 'prompt' && automation.trigger.kind === 'schedule' && <button type="button" className="nav-btn" disabled={busy !== null} onClick={() => editAutomation(automation)}>Edit</button>}
                   <button type="button" className="nav-btn" disabled={busy !== null} onClick={() => { void action(automation, 'toggle') }}>{automation.enabled ? 'Pause' : 'Resume'}</button>
                   {automation.lastOccurrence && automation.lastOccurrence.state !== 'unknown' && <button type="button" className="nav-btn" disabled={busy !== null} onClick={() => { void action(automation, 'replay') }}>Replay</button>}
                   {!automation.enabled && confirmingRemoval !== automation.automationId && <button type="button" className="nav-btn" disabled={busy !== null} onClick={() => setConfirmingRemoval(automation.automationId)}>Remove</button>}
@@ -3225,8 +3282,10 @@ function AutomationsView() {
               </article>
             ))}
           </div>
+          </div>
+          <div hidden={workflowTab !== 'history'}>
           <section className="surface-card automation-history" aria-labelledby="automation-history-title">
-            <div><span className="eyebrow">Durable history</span><h3 id="automation-history-title">Occurrences</h3></div>
+            <div><span className="eyebrow">Durable history</span><h3 id="automation-history-title">Run history</h3><p className="product-footnote">Actual outcomes, verification, and evidence from each run. Removed workflows keep their history.</p></div>
             {snapshot.history.length === 0 ? <p className="automation-meta">No occurrences yet.</p> : (
               <div className="automation-history-list">
                 {snapshot.history.map((occurrence) => (
@@ -3237,7 +3296,7 @@ function AutomationsView() {
                     {occurrence.detail.reason && <span>{occurrence.detail.reason}</span>}
                     {occurrence.execution && (
                       <div className="automation-child-execution">
-                        <strong>{occurrence.execution.title}</strong>
+                        <strong>{snapshot.automations.find(item => item.automationId === occurrence.automationId)?.name ?? 'Workflow run'}</strong>
                         <span>
                           {presentRuntimeStatus(occurrence.execution.status).label}
                           {' · '}{occurrence.execution.verification === 'verified' ? 'Verified' : occurrence.execution.verification.replaceAll('_', ' ')}
@@ -3270,6 +3329,7 @@ function AutomationsView() {
               </div>
             )}
           </section>
+          </div>
         </>
       )}
     </section>
@@ -3963,6 +4023,7 @@ function ChatPanel() {
             </button>
           )}
         </div>
+        <AutoModeButton disabled={Boolean(thinking) || isStreaming || !executionAvailable || workbenchReadOnly} />
         {(!executionAvailable || workbenchReadOnly) && (
           <div style={{ maxWidth: 800, margin: '6px auto 0', color: 'var(--muted)', fontSize: 10 }}>
             {workbenchReadOnly
@@ -6049,7 +6110,9 @@ response = client.chat.completions.create(
 
 // ── SettingsDrawer ────────────────────────────────────────────
 
-function LearningSettingsTab() {
+function LearningSettingsTab({ standalone = false }: { standalone?: boolean } = {}) {
+  const rememberPanel = useRef<HTMLDetailsElement>(null)
+  const reviewPanel = useRef<HTMLDivElement>(null)
   const [snapshot, setSnapshot] = useState<aiden.WorkbenchLearningSnapshot | null>(null)
   const [review, setReview] = useState<aiden.WorkbenchLearningReview | null>(null)
   const [filter, setFilter] = useState<'all' | 'preferences' | 'corrections' | 'workspace' | 'skills'>('all')
@@ -6061,6 +6124,9 @@ function LearningSettingsTab() {
   const [edit, setEdit] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const reviewRequest = useRef(0)
+  useEffect(() => () => { reviewRequest.current++ }, [])
+  useEffect(() => { if (review) { reviewPanel.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); reviewPanel.current?.focus() } }, [review])
   const refresh = useCallback(async () => {
     setError(null)
     try { const next = await aiden.loadLearning(); setSnapshot(next); setContextPreview(null)
@@ -6074,10 +6140,11 @@ function LearningSettingsTab() {
     ? crypto.randomUUID()
     : `learning-${Date.now()}`
   const openReview = async (entryId: string) => {
+    const request = ++reviewRequest.current
     setBusy(true); setError(null)
-    try { const value = await aiden.loadLearningReview(entryId); setReview(value); setEdit(value.entry.content ?? '') }
-    catch (cause) { setError(cause instanceof Error ? cause.message : 'Learning review is unavailable') }
-    finally { setBusy(false) }
+    try { const value = await aiden.loadLearningReview(entryId); if (request !== reviewRequest.current) return; setReview(value); setEdit(value.entry.content ?? '') }
+    catch (cause) { if (request === reviewRequest.current) setError(cause instanceof Error ? cause.message : 'Learning review is unavailable') }
+    finally { if (request === reviewRequest.current) setBusy(false) }
   }
   useEffect(() => {
     const requested = new URLSearchParams(window.location.search).get('context')
@@ -6113,19 +6180,24 @@ function LearningSettingsTab() {
   ))
 
   return (
-    <SettingsSection title="What Aiden has learned">
-      <p style={settingsTextStyle}>Evidence-linked context stays local and never grants permission, approval, budget, or execution authority.</p>
-      <p style={settingsTextStyle}>Trusted means supported by its recorded source, not universally correct. Explicit preferences are user-stated; model prose alone is not trusted.</p>
+    <SettingsSection title={standalone ? 'Brain' : 'What Aiden has learned'}>
+      <div className="brain-workspace">
+      <div className="product-toolbar brain-tools"><p>Your project context, with sources you can inspect.</p><div className="learning-actions">
+        <button type="button" disabled={busy} onClick={() => { void refresh() }}>Refresh</button>
+        <button type="button" disabled={busy} onClick={() => { void exportJson() }}>Export JSON</button>
+      </div></div>
+      {error && <p className="learning-error" role="alert">{error}</p>}
+      {!snapshot && !error && <p role="status">Loading your knowledge…</p>}
+      {snapshot && <BrainExplorer snapshot={snapshot} busy={busy} onReview={id => { void openReview(id) }} onRemember={() => {
+        if (rememberPanel.current) { rememberPanel.current.open = true; rememberPanel.current.scrollIntoView({ behavior: 'smooth', block: 'start' }); rememberPanel.current.querySelector('textarea')?.focus() }
+      }} />}
+      <details ref={rememberPanel} className="product-panel brain-capture"><summary>Remember something</summary>
+      <p className="product-footnote">Add a preference or project detail in your own words. Choose where Aiden may use it.</p>
       <label>Context scope<select aria-label="Context scope" value={scopeKind} disabled={busy} onChange={event => { setScopeKind(event.target.value as aiden.WorkbenchLearningScopeKind); setContextPreview(null) }}>
-        {(snapshot?.scopes ?? []).map(scope => <option key={`${scope.kind}:${scope.key}`} value={scope.kind}>{scope.kind.replaceAll('_', ' ')} · {scope.key}</option>)}
+        {(snapshot?.scopes ?? []).map(scope => <option key={`${scope.kind}:${scope.key}`} value={scope.kind}>{knowledgeScopeLabel(scope.kind)}</option>)}
       </select></label>
       {scopeKind === 'USER_GLOBAL' && <p role="note">User-global context is shared across your workspaces by your explicit choice. Use repository scope for project-only facts.</p>}
       {snapshot && !snapshot.enabled && <p className="learning-notice">New capture and use are unavailable. Inspect, export, archive, and delete remain available.</p>}
-      {error && <p className="learning-error">{error}</p>}
-      <div className="learning-actions">
-        <button type="button" disabled={busy} onClick={() => { void refresh() }}>Refresh</button>
-        <button type="button" disabled={busy} onClick={() => { void exportJson() }}>Export JSON</button>
-      </div>
       <form className="learning-remember" onSubmit={(event) => {
         event.preventDefault()
         if (!draft.trim()) return
@@ -6135,9 +6207,12 @@ function LearningSettingsTab() {
         })).then(saved => { if (saved) setDraft('') })
       }}>
         <label>Remember this<textarea value={draft} disabled={!snapshot?.enabled || busy} onChange={(event) => setDraft(event.target.value)} placeholder="A preference or repository convention you explicitly want Aiden to remember" /></label>
-        <input value={subject} disabled={!snapshot?.enabled || busy} onChange={(event) => setSubject(event.target.value)} aria-label="Learning subject" />
+        <details><summary>Advanced subject key</summary><input value={subject} disabled={!snapshot?.enabled || busy} onChange={(event) => setSubject(event.target.value)} aria-label="Learning subject" /></details>
         <button type="submit" disabled={!snapshot?.enabled || busy || !draft.trim()}>Remember this</button>
       </form>
+      </details>
+      <details className="product-panel brain-capture"><summary>Preview context for a task</summary>
+      <p className="product-footnote">Find out what would be supplied to a task, without running it. Uses the context scope selected above.</p>
       <form className="learning-remember" onSubmit={event => {
         event.preventDefault(); setBusy(true); setError(null); setContextPreview(null)
         void aiden.previewLearning(query, scopeKind).then(setContextPreview)
@@ -6149,6 +6224,10 @@ function LearningSettingsTab() {
       {contextPreview && <section aria-label="Context preview"><p>{contextPreview.items.length} matching entries. This is a preview, not proof of use in an earlier Job.</p>
         {cards(contextPreview.items)}<details><summary>Exact bounded context</summary><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{contextPreview.context || 'No eligible matching context.'}</pre></details>
       </section>}
+      </details>
+      <details className="product-panel"><summary>Context controls &amp; policies</summary>
+      <p style={settingsTextStyle}>Evidence-linked context stays local and never grants permission, approval, budget, or execution authority.</p>
+      <p style={settingsTextStyle}>Trusted means supported by its recorded source, not universally correct. Explicit preferences are user-stated; model prose alone is not trusted.</p>
       <div className="learning-filters" aria-label="Learning filters">
         {([['all', 'All'], ['preferences', 'Preferences'], ['corrections', 'Corrections'], ['workspace', 'Workspace lessons'], ['skills', 'Skill reliability']] as const).map(([id, label]) => (
           <button type="button" className={filter === id ? 'is-active' : ''} key={id} onClick={() => setFilter(id)}>{label}</button>
@@ -6162,7 +6241,8 @@ function LearningSettingsTab() {
           {snapshot.conflicts.length ? snapshot.conflicts.map((conflict) => <button className="learning-conflict" type="button" key={conflict.id} onClick={() => { void openReview(conflict.leftEntryId) }}>Needs review · {conflict.reasonCode.replace(/_/g, ' ')}</button>) : <p>No unresolved conflicts.</p>}
         </section>
       </div>}
-      {review && <div className="learning-review" role="dialog" aria-label="Learning review">
+      </details>
+      {review && <div ref={reviewPanel} tabIndex={-1} className="learning-review product-panel" role="dialog" aria-label="Learning review">
         <div className="learning-review-head"><h4>Review learned context</h4><button type="button" onClick={() => setReview(null)}>Close</button></div>
         <textarea value={edit} disabled={!snapshot?.enabled || busy || review.entry.lifecycle === 'DELETED'} onChange={(event) => setEdit(event.target.value)} />
         <p>Editing preserves history.</p>
@@ -6192,6 +6272,7 @@ function LearningSettingsTab() {
           <button type="button" key={version.id} disabled={!snapshot?.enabled || busy} onClick={() => { void mutate(() => aiden.rollbackLearning(review.entry.id, { expectedVersion: review.entry.version, versionId: version.id, idempotencyKey: idempotencyKey() }), review.entry.id) }}>Roll back · {new Date(version.createdAt).toLocaleString()}</button>
         ))}</div>}
       </div>}
+      </div>
     </SettingsSection>
   )
 }
@@ -8257,7 +8338,7 @@ export default function Home() {
   // ── Dashboard ───────────────────────────────────────────────
   return (
     <DevOSCtx.Provider value={ctxValue}>
-      <div style={{
+      <div className="workbench-shell" style={{
         display: 'flex', flexDirection: 'column',
         height: '100vh', background: 'var(--bg)',
         color: 'var(--text)', fontFamily: 'var(--sans)', overflow: 'hidden',
@@ -8317,7 +8398,7 @@ export default function Home() {
             )}
             {mainView === 'artifacts' && <ArtifactsView />}
             {mainView === 'apps' && <AppsView />}
-            {mainView === 'brain' && <section className="workspace-surface" aria-label="Brain"><h2>Brain</h2><LearningSettingsTab /></section>}
+            {mainView === 'brain' && <section className="workspace-surface" aria-label="Brain"><LearningSettingsTab standalone /></section>}
             {mainView === 'automations' && <AutomationsView />}
             {mainView === 'sponsors' && <SponsorsView />}
             {!liveViewOpen && liveExecution?.surfaces.length ? (

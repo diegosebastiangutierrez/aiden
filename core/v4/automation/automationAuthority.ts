@@ -14,6 +14,7 @@ import type {
 } from './types';
 import { nextScheduleInstants } from './schedule';
 import { validateScriptSpec } from './scriptSpec';
+import { compileVisualWorkflow } from './visualWorkflow';
 import { validateExactActionArguments } from '../integrations/tools';
 import type { AutomationDeliveryTargetSpec } from './types';
 
@@ -49,6 +50,12 @@ function assertNoEmbeddedCredential(value: unknown, path = 'revision', depth = 0
 
 function validateSpec(spec: AutomationRevisionSpec): void {
   if (!spec || typeof spec !== 'object') throw new Error('Automation revision is required');
+  if (spec.visual) {
+    const compiled = compileVisualWorkflow(spec.visual);
+    for (const key of ['action', 'trigger', 'policies', 'capabilities', 'credentialRefs', 'approval', 'budget', 'delivery'] as const) {
+      if (canonicalRequest(spec[key] ?? null) !== canonicalRequest(compiled[key] ?? null)) throw new Error('Visual workflow does not match its execution contract');
+    }
+  }
   if (!spec.action || typeof spec.action !== 'object' || !ACTION_KINDS.has(spec.action.kind)) {
     throw new Error('Automation action kind is invalid');
   }
@@ -293,6 +300,7 @@ export function createAutomationAuthority(options: { db: Database.Database }): A
       }
       const spec: AutomationRevisionSpec = {
         action: command.action, trigger: command.trigger, policies: command.policies,
+        ...(command.visual ? { visual: structuredClone(command.visual) } : {}),
         capabilities: [...command.capabilities], credentialRefs: [...command.credentialRefs],
         ...(command.workspace ? { workspace: { rootPath: path.resolve(command.workspace.rootPath) } } : {}),
         ...(command.budget ? { budget: { ...command.budget } } : {}),

@@ -16,6 +16,7 @@ import type { AutomationRevisionSpec } from '../automation/types';
 import { projectChildExecutionVerification, type WorkbenchJobProjectionReader } from './projection';
 
 export interface WorkbenchAutomationSummary {
+  visual?: AutomationRevisionSpec['visual'];
   automationId: string;
   name: string;
   enabled: boolean;
@@ -30,7 +31,7 @@ export interface WorkbenchAutomationSummary {
 }
 
 export interface WorkbenchAutomationSnapshot {
-  capability: { available: boolean; reason?: string };
+  capability: { available: boolean; reason?: string; visualWorkflows?: boolean };
   scheduler: { ready: boolean; dueBindings: number; reason?: string };
   automations: WorkbenchAutomationSummary[];
   history: WorkbenchAutomationOccurrence[];
@@ -189,6 +190,7 @@ export function createWorkbenchAutomationPort(options: {
       automationId: row.automation_id, name: row.name, enabled: row.enabled === 1,
       revisionId: row.current_revision_id, revisionNumber: row.revision_number,
       action: spec.action, trigger: spec.trigger, policies: spec.policies,
+      ...(spec.visual ? { visual: spec.visual } : {}),
       capabilities: [...spec.capabilities], nextFireAt: row.next_fire_at,
       lastOccurrence: occurrence ? {
         occurrenceId: occurrence.occurrence_id, state: occurrence.state,
@@ -232,7 +234,7 @@ export function createWorkbenchAutomationPort(options: {
         detail_json: string;
       }>;
       return {
-        capability: available ? { available: true } : { available: false, reason: 'Reliable Automations require Aiden Pro' },
+        capability: available ? { available: true, visualWorkflows: true } : { available: false, reason: 'Reliable Automations require Aiden Pro' },
         scheduler: options.schedulerReady?.() === true
           ? { ready: true, dueBindings: due.count }
           : { ready: false, dueBindings: due.count, reason: 'Automation execution host is unavailable.' },

@@ -4,9 +4,12 @@ export type ProductIconName =
   | 'home' | 'work' | 'apps' | 'automation' | 'artifact' | 'settings' | 'plus'
   | 'paperclip' | 'search' | 'browser' | 'sparkles' | 'send' | 'refresh'
   | 'chevron-down' | 'chevron-left' | 'close' | 'file' | 'code' | 'check'
-  | 'alert' | 'model' | 'copy' | 'external' | 'menu' | 'clock';
+  | 'alert' | 'model' | 'copy' | 'external' | 'menu' | 'clock' | 'mail' | 'branch' | 'brain';
 
 const paths: Record<ProductIconName, JSX.Element> = {
+  mail: <><rect x="3" y="5" width="18" height="14" rx="3"/><path d="m4 7 8 6 8-6"/></>,
+  branch: <><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M6 7v10M18 7v3a5 5 0 0 1-5 5H6"/></>,
+  brain: <><circle cx="12" cy="12" r="3"/><circle cx="5" cy="5" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/><path d="m7 7 3 3m4 0 3-3m-3 7 3 3m-7-3-3 3"/></>,
   home: <><path d="M3 10.5 12 3l9 7.5"/><path d="M5.5 9.5V21h13V9.5"/><path d="M9.5 21v-7h5v7"/></>,
   work: <><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></>,
   apps: <><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></>,

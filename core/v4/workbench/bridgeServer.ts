@@ -281,6 +281,7 @@ export interface WorkbenchBridgeOptions {
   input?:      TaskInputReceiver;
   control?:    TaskController;
   approval?:   ApprovalDecider;
+  trust?: ReturnType<typeof import('./trustMode').createWorkbenchTrustPort>;
   attachments?: WorkbenchAttachmentPort;
   artifacts?: WorkbenchArtifactPort;
   capabilities?: () => WorkbenchCapabilitiesProjection;
@@ -548,6 +549,23 @@ export function startWorkbenchBridge(opts: WorkbenchBridgeOptions): Promise<Work
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? '/', `http://${host}`);
+
+    if (url.pathname === '/api/workbench/trust' && (req.method === 'GET' || req.method === 'POST')) {
+      if (!passesTokenGate(req, res)) return;
+      if (!opts.trust) { sendJson(res, 503, { error: 'Trust control is unavailable in this runtime' }); return; }
+      if (req.method === 'GET') {
+        try { sendJson(res, 200, opts.trust.snapshot()); }
+        catch { sendJson(res, 503, { error: 'Saved trust mode could not be read' }); }
+        return;
+      }
+      readJsonBody(req, 1024).then(async (body) => {
+        if (!['Observer', 'Assistant', 'Partner'].includes(String(body.level))) {
+          sendJson(res, 400, { error: 'Choose Observer, Assistant or Partner' }); return;
+        }
+        sendJson(res, 200, await opts.trust!.set(body.level as 'Observer' | 'Assistant' | 'Partner'));
+      }).catch(() => sendJson(res, 400, { error: 'Trust mode could not be saved. Refresh and try again.' }));
+      return;
+    }
 
     // The write endpoints — both token-gated (see passesWriteGate). Every other
     // non-GET is rejected.
@@ -1756,6 +1774,7 @@ export function startWorkbenchBridge(opts: WorkbenchBridgeOptions): Promise<Work
           name,
           ...(typeof body.requestId === 'string' ? { requestId: body.requestId } : {}),
           action: body.action as never,
+          ...(body.visual ? { visual: body.visual as never } : {}),
           trigger: body.trigger as never,
           policies: body.policies as never,
           capabilities: Array.isArray(body.capabilities) ? body.capabilities.filter((v): v is string => typeof v === 'string') : [],
@@ -1783,6 +1802,7 @@ export function startWorkbenchBridge(opts: WorkbenchBridgeOptions): Promise<Work
       try {
         sendJson(res, 200, opts.automations!.revise(decodeURIComponent(rawId), {
           action: body.action as never,
+          ...(body.visual ? { visual: body.visual as never } : {}),
           trigger: body.trigger as never,
           policies: body.policies as never,
           capabilities: Array.isArray(body.capabilities) ? body.capabilities.filter((value): value is string => typeof value === 'string') : [],

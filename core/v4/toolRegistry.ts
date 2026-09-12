@@ -1526,6 +1526,13 @@ export class ToolRegistry {
         }
         return perCall;
       };
+      const explicitHandlerFailure = (value: unknown): string | undefined => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+        const record = value as { success?: unknown; error?: unknown };
+        if (record.success !== false) return;
+        return typeof record.error === 'string' && record.error.trim()
+          ? record.error : 'Tool reported unsuccessful execution';
+      };
       const dispatch = async (a: Record<string, unknown>): Promise<unknown> =>
         executeWithDurableToolCall({
           toolCallId: call.id,
@@ -1536,6 +1543,7 @@ export class ToolRegistry {
           effect: effectDescriptor,
           prepared: preparedToolCall,
           captureFilesystemProof: preparedRepositoryChange === undefined,
+          isSuccessful: value => explicitHandlerFailure(value) === undefined,
           execute: async () => {
             const jobContext = currentJobExecutionContext();
             if (
@@ -1823,6 +1831,12 @@ export class ToolRegistry {
           | null
           | undefined;
         const out: ToolCallResult = { id: call.id, name: call.name, result };
+        const handlerFailure = explicitHandlerFailure(result);
+        if (handlerFailure !== undefined) {
+          out.error = handlerFailure;
+          executionAttempt.terminalResult = 'failed';
+          return finish(out, 'failed');
+        }
         if (typeof inner?.degraded === 'boolean' && inner.degraded) {
           out.degraded = true;
           if (typeof inner.degradedReason === 'string') {

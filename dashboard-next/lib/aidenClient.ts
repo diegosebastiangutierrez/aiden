@@ -502,6 +502,7 @@ export interface WorkbenchAppsSnapshot {
 }
 
 export interface WorkbenchAutomationSummary {
+  visual?: import('../../core/v4/automation/visualWorkflow').VisualWorkflow;
   automationId: string;
   name: string;
   enabled: boolean;
@@ -520,7 +521,7 @@ export interface WorkbenchAutomationSummary {
 }
 
 export interface WorkbenchAutomationSnapshot {
-  capability: { available: boolean; reason?: string };
+  capability: { available: boolean; reason?: string; visualWorkflows?: boolean };
   scheduler: { ready: boolean; dueBindings: number };
   automations: WorkbenchAutomationSummary[];
   history: WorkbenchAutomationOccurrence[];
@@ -1335,6 +1336,16 @@ async function appsRequest<T>(path: string, init?: RequestInit): Promise<T> {
   return body;
 }
 
+export type WorkbenchTrustMode = { level: 'Observer' | 'Assistant' | 'Partner'; appliesTo: 'new-chat-jobs' };
+
+export function getTrustMode(): Promise<WorkbenchTrustMode> {
+  return managementRequest('/api/workbench/trust');
+}
+
+export function setTrustMode(level: WorkbenchTrustMode['level']): Promise<WorkbenchTrustMode> {
+  return managementRequest('/api/workbench/trust', { method: 'POST', body: JSON.stringify({ level }) });
+}
+
 async function managementRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     cache: 'no-store',
@@ -1605,6 +1616,13 @@ export function exportLearning(): Promise<Record<string, unknown>> {
 
 export function loadAutomations(): Promise<WorkbenchAutomationSnapshot> {
   return appsRequest<WorkbenchAutomationSnapshot>('/api/automations');
+}
+
+export function saveVisualWorkflow(input: { name: string; spec: import('../../core/v4/automation/types').AutomationRevisionSpec; requestId: string; automationId?: string }): Promise<WorkbenchAutomationSummary> {
+  return appsRequest(input.automationId ? `/api/automations/${encodeURIComponent(input.automationId)}` : '/api/automations', {
+    method: input.automationId ? 'PUT' : 'POST',
+    body: JSON.stringify({ ...input.spec, name: input.name, requestId: input.requestId }),
+  });
 }
 
 export interface WorkbenchAppAction {

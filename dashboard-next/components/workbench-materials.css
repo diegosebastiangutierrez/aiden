@@ -1,0 +1,147 @@
+/* Shared materials: atmosphere, readable surfaces, and restrained elevation. */
+:root {
+  --muted2: #96969e;
+  --material-base: color-mix(in srgb, var(--bg1) 94%, #8198bf);
+  --material-panel: color-mix(in srgb, var(--bg2) 92%, #8198bf);
+  --material-glass: color-mix(in srgb, var(--material-base) 84%, transparent);
+  --material-edge: color-mix(in srgb, var(--text) 16%, transparent);
+  --material-highlight: color-mix(in srgb, var(--text) 7%, transparent);
+  --material-shadow: 0 12px 32px #00000018, inset 0 1px 0 var(--material-highlight);
+  --material-atmosphere: radial-gradient(ellipse at 85% 5%, #7b92e91a, transparent 50%), radial-gradient(ellipse at 8% 55%, #ff804018, transparent 52%);
+}
+.workbench-shell {
+  background-image: var(--material-atmosphere) !important;
+  -webkit-font-smoothing: antialiased;
+}
+.workbench-shell .workbench-main { background: transparent; }
+.workbench-shell .workbench-topbar {
+  background: var(--material-base) !important;
+  border-bottom-color: var(--material-edge) !important;
+  box-shadow: inset 0 1px 0 var(--material-highlight);
+}
+.workbench-shell .history-sidebar {
+  background: var(--material-base) !important;
+  border-right-color: var(--material-edge) !important;
+}
+.sidebar-nav button, .sidebar-secondary-nav button { min-height: 40px; border-radius: 10px; padding: 9px 12px; }
+.sidebar-nav button.is-active, .sidebar-secondary-nav button.is-active, .rail-action.is-active {
+  background: linear-gradient(115deg, var(--orange2), var(--orange3));
+  border-color: color-mix(in srgb, var(--orange) 25%, transparent);
+  box-shadow: inset 0 1px 0 var(--material-highlight);
+}
+.rail-brand, .workbench-home-mark { box-shadow: 0 6px 24px #ff6b3526, inset 0 1px 0 #ffffff30; }
+.workbench-shell .workspace-surface { padding: clamp(22px, 2.8vw, 38px); }
+.workspace-surface-header { padding-bottom: 12px; margin-bottom: 18px; align-items: center; border-bottom: 0; }
+.workspace-surface-header h2 { font-size: clamp(28px, 3vw, 38px); font-weight: 650; letter-spacing: -.045em; line-height: 1.15; margin: 8px 0 10px; }
+.eyebrow { font: 650 10px/1.5 var(--sans); letter-spacing: .13em; }
+.product-tabs {
+  width: fit-content; max-width: 100%; padding: 5px; gap: 4px;
+  background: var(--material-base); border: 1px solid var(--border2); border-radius: 13px;
+  box-shadow: inset 0 1px 0 var(--material-highlight);
+}
+.workspace-surface.product-workspace > .product-tabs { margin-left: 0; }
+.product-tabs button { border-radius: 9px; font-size: 13px; padding: 9px 15px; }
+.product-tabs button[aria-pressed='true'] { color: var(--text); background: var(--material-panel); border-color: var(--material-edge); box-shadow: 0 2px 6px #0002; }
+.product-search { background: var(--material-base); border-radius: 13px; border-color: var(--material-edge); box-shadow: inset 0 1px 0 var(--material-highlight); }
+.product-search input::placeholder { color: var(--muted3); }
+.product-toolbar { gap: 14px; }
+.product-filter-chips { margin-bottom: 14px; }
+.product-filter-chips button { border-radius: 20px; padding: 7px 13px; }
+.product-section-heading { margin-top: 18px; }
+.product-section-heading h3 { font-size: 18px; }
+.product-section-heading p { margin: 7px 0 0; }
+.apps-card-grid {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 270px), 1fr));
+  gap: 18px; padding: 0; border: 0; background: transparent; border-radius: 0;
+}
+.catalog-app, .knowledge-card, .workflow-template, .product-intro-card, .product-stat-grid button, .starter-workflows button {
+  background: linear-gradient(145deg, var(--material-highlight), transparent 65%), var(--material-base);
+  border: 1px solid var(--material-edge); border-radius: 18px;
+  box-shadow: var(--material-shadow);
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+.catalog-app { padding: 20px; gap: 2px; min-height: 230px; }
+.catalog-app-top { margin-bottom: 9px; }
+.catalog-app h3 { font-size: 20px; letter-spacing: -.03em; }
+.catalog-app > p { margin: 10px 0 14px; font-size: 14px; }
+.catalog-category { color: var(--muted3); font-size: 11px; }
+.catalog-app-mark { width: 46px; height: 46px; border-radius: 14px; background: var(--bg3); box-shadow: inset 0 1px 0 var(--material-edge), 0 5px 12px #0002; }
+.catalog-app[data-app='github'] .catalog-app-mark { background: #242b38; color: #f5f7ff; }
+.catalog-app[data-app='gmail'] .catalog-app-mark { background: #f5f2ee; color: #a82424; }
+.catalog-app > .nav-btn { width: 100%; padding: 11px 14px; justify-content: space-between; }
+.catalog-app > .nav-btn::after { content: '↗'; color: var(--muted3); }
+.product-status { background: var(--bg2); font-size: 11px; padding: 4px 9px; }
+.product-panel, .artifact-gallery:not(.apps-card-grid), .workspace-empty-state, .product-empty {
+  background: var(--material-base); border-color: var(--material-edge); border-radius: 16px; box-shadow: inset 0 1px 0 var(--material-highlight);
+}
+.product-empty { border-style: solid; padding: 44px 24px; }
+.nav-btn, .product-primary { min-height: 36px; border-radius: 10px; }
+.product-primary { box-shadow: inset 0 1px 0 #ffffff40, 0 4px 12px #ff6b3520; }
+.workbench-home-mark { width: 64px; height: 64px; border-radius: 21px; font-size: 27px; background: linear-gradient(140deg, #ff985230, var(--material-base)); }
+.workbench-home-copy h1 { font-size: clamp(30px, 3.4vw, 46px); font-weight: 630; letter-spacing: -.045em; }
+.workbench-home-copy p { max-width: 570px; margin: 0 auto; font-size: 15px; }
+.starter-workflows { gap: 16px; margin-top: 6px; }
+.starter-workflows button { padding: 20px; }
+.workbench-shell .workbench-composer { background: transparent !important; border-top-color: transparent !important; }
+.composer-row { background: var(--material-base) !important; border-color: var(--material-edge) !important; box-shadow: var(--material-shadow); }
+.composer-row:focus-within { border-color: color-mix(in srgb, var(--orange) 55%, transparent) !important; box-shadow: 0 0 0 3px var(--orange3), var(--material-shadow); }
+.workbench-shell .composer-input:focus-visible { outline: none; }
+.settings-drawer { box-shadow: -20px 0 80px #0004; }
+.settings-header, .settings-navigation { background: var(--material-base) !important; }
+.settings-header button { color: var(--muted3) !important; }
+.settings-content { background: var(--bg1); }
+.settings-section { border-color: var(--border2); }
+.memory-graph-shell, .workflow-canvas-shell { border-radius: 20px; border-color: var(--material-edge); box-shadow: var(--material-shadow); }
+.memory-graph-header, .workflow-canvas-toolbar { background: var(--material-base); }
+.memory-graph-body .spatial-stage { height: clamp(280px, calc(100dvh - 450px), 620px); }
+.spatial-stage { background-color: var(--bg); background-image: radial-gradient(ellipse at 55% 40%, #748edf12, transparent 70%), radial-gradient(var(--border3) .8px, transparent .8px); background-size: auto, 24px 24px; }
+.spatial-controls { background: var(--material-base); border-color: var(--material-edge); border-radius: 12px; box-shadow: var(--material-shadow); }
+.graph-inspector, .workflow-inspector, .workflow-palette { background: var(--material-base); }
+.graph-inspector-icon { background: linear-gradient(135deg, var(--orange2), #819df120); box-shadow: inset 0 1px 0 var(--material-highlight); }
+.workflow-block { background: linear-gradient(145deg, var(--material-highlight), transparent), var(--material-base); box-shadow: 0 8px 24px #0003, inset 0 1px 0 var(--material-highlight); border-radius: 15px; }
+.memory-node text { paint-order: stroke; stroke: var(--bg); stroke-width: 4px; stroke-linejoin: round; }
+.memory-edge.highlighted { stroke: var(--text2); stroke-opacity: .8; stroke-width: 2; }
+.memory-edge.conflict.highlighted { stroke: var(--warning); }
+.graph-motion-control { display: inline-flex; gap: 7px; align-items: center; font-size: 12px; color: var(--muted3); }
+.workspace-surface[aria-label='Brain'] > .settings-section > h2 { font: 650 32px/1.2 var(--sans); letter-spacing: -.04em; }
+.brain-workspace .learning-actions button { background: var(--material-panel); border: 1px solid var(--material-edge); border-radius: 10px; min-height: 36px; padding: 8px 12px; }
+:root[data-appearance='light'] .product-status.setup, :root[data-appearance='light'] .product-status.attention { color: #815000; }
+:root[data-appearance='light'] { --muted2: #665f59; --orange: #b5441c; --green: #197845; --warning: #815000; }
+:root[data-appearance='light'] :is(.product-primary, .aiden-button-primary) { color: #fff; }
+@media (prefers-color-scheme: light) {
+  :root[data-appearance='system'] { --muted2: #665f59; --orange: #b5441c; --green: #197845; --warning: #815000; }
+  :root[data-appearance='system'] :is(.product-primary, .aiden-button-primary) { color: #fff; }
+  :root[data-appearance='system'] .product-status.setup, :root[data-appearance='system'] .product-status.attention { color: #815000; }
+}
+@supports (backdrop-filter: blur(16px)) {
+  .workbench-shell .workbench-topbar, .workbench-shell .history-sidebar, .spatial-controls {
+    background: var(--material-glass) !important; backdrop-filter: blur(16px) saturate(120%);
+  }
+}
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .catalog-app:hover, .knowledge-card:hover, .product-stat-grid button:hover { transform: translateY(-3px); border-color: color-mix(in srgb, var(--text) 27%, transparent); box-shadow: 0 18px 38px #0002, inset 0 1px 0 var(--material-highlight); }
+}
+@media (max-width: 700px) {
+  .workbench-shell .workspace-surface { padding: 22px 16px; }
+  .workspace-surface-header { gap: 15px; }
+  .product-tabs { width: 100%; }
+  .product-tabs button { padding: 8px 10px; font-size: 12px; }
+  .catalog-app { min-height: 220px; }
+  .starter-workflows button { padding: 15px; }
+  .workbench-home { padding: 28px 18px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .workbench-shell *, .workbench-shell *::before, .workbench-shell *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+@media (prefers-reduced-transparency: reduce), (forced-colors: active) {
+  .workbench-shell .workbench-topbar, .workbench-shell .history-sidebar, .spatial-controls { background: var(--bg1) !important; backdrop-filter: none; }
+  .workbench-shell { background-image: none !important; }
+}
+.aiden-brand-mark { display: inline-block; position: relative; overflow: hidden; flex-shrink: 0; border-radius: 9px; background: #080b0d; }
+.aiden-brand-mark img { position: absolute; width: 270%; max-width: none; height: auto; left: -85%; top: -20%; }
+.workbench-shell .rail-brand, .workbench-shell .workbench-home-mark { background: transparent; box-shadow: none; }
+.composer-mode-control { display: flex; align-items: center; gap: 10px; padding: 8px 4px 0; flex-wrap: wrap; max-width: 720px; margin: 0 auto; }
+.composer-auto-mode { border: 1px solid var(--border); border-radius: 16px; padding: 5px 10px; background: var(--bg3); color: var(--text); font: 500 12px var(--sans); cursor: pointer; }
+.composer-auto-mode[aria-pressed="true"] { border-color: var(--orange); color: var(--orange); background: color-mix(in srgb, var(--orange) 10%, var(--bg3)); }
+.composer-auto-mode:disabled { opacity: .55; cursor: not-allowed; }
+.composer-mode-hint { color: var(--muted2); font: 11px var(--sans); }

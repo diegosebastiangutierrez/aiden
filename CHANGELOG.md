@@ -1,3 +1,25 @@
+## v4.21.1 — 2026-09-12
+
+### Workbench and execution continuity
+
+- Added a one-click Auto mode control backed by the saved autonomy policy. The control applies to new Workbench tasks and preserves required approval floors.
+- Preserved exact Job, Attempt, session and run identity while reopening completed work with its Artifacts, Evidence and Verification.
+- Kept required Automation child outcomes visible and truthful through the normal Workbench history surfaces.
+- Added bounded visual workflow authoring that compiles into the existing Automation contract with typed operations, workspace-relative paths and deterministic validation.
+- Hardened Workbench approval snapshots so the selected autonomy policy is recorded consistently for each new chat engine without mutating running work or Automation policy.
+- Kept browser/session ownership, cancellation, Retry, late-result fencing and provider/model binding aligned with the durable execution contract.
+
+### Runtime and release scope
+
+- Restored the source CLI CommonJS module boundary for shared workflow code and verified Node 20 and Node 22 imports.
+- Preserved the public `aiden-runtime` package boundary under AGPL-3.0-only. Desktop installers and external account setup remain separate acceptance scopes.
+
+### Validation
+
+- Node 22 deterministic non-network/non-PTY suite: 9,123 passed, 0 failed, 52 skipped across 884 files.
+- Focused module-boundary and workflow regression: 11 passed, 0 failed.
+- Root and dashboard typecheck/build passed; production dependency audits reported no high-severity production findings.
+
 ## v4.21.0 — 2026-08-24
 
 ### Unified public runtime

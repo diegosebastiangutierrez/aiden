@@ -104,7 +104,7 @@ Give Aiden a goal. It can work across your files, terminal, browser, supported a
 ![Built solo](https://img.shields.io/badge/Built-solo-B8A893?style=flat-square)
 ![By Taracod](https://img.shields.io/badge/By-Taracod-FF6B35?style=flat-square)
 ![White Lotus](https://img.shields.io/badge/Brand-White_Lotus-FFB088?style=flat-square)
-![Stable](https://img.shields.io/badge/Stable-v4.21.0-4ADE80?style=flat-square)
+![Stable](https://img.shields.io/badge/Stable-v4.21.1-4ADE80?style=flat-square)
 
 </details>
 
@@ -183,11 +183,11 @@ Research this topic, compare the strongest findings, and save a structured Markd
 > [!IMPORTANT]
 > **Release channels**
 >
-> - **Stable:** `v4.21.0` through npm `latest`
-> - **Local release candidate:** `v4.21.1` — release preparation only; not published. See [candidate notes](RELEASE-NOTES-v4.21.1.md).
+> - **Stable:** `v4.21.1` through npm `latest`
+> - **Release notes:** [v4.21.1](RELEASE-NOTES-v4.21.1.md)
 > - **Archived RC:** [`v4.19.0-rc.1`](https://github.com/taracodlabs/aiden/releases/tag/v4.19.0-rc.1)
 
-### Stable — v4.21.0
+### Stable — v4.21.1
 
 ```bash
 npm install -g aiden-runtime
@@ -205,7 +205,7 @@ That’s it. The first launch opens Aiden’s current setup flow, checks the sel
 Stable channel:
 
 ```text
-npm latest → 4.21.0
+npm latest → 4.21.1
 ```
 
 Without permanent installation:
@@ -225,7 +225,7 @@ aiden --version
 Expected output:
 
 ```text
-4.21.0
+4.21.1
 ```
 
 Both public commands, `aiden` and `aiden-runtime`, start the same standalone
@@ -254,6 +254,23 @@ Drop a file in `~/Documents/inbox/anything.txt` and Aiden acts on it. The agent 
 https://github.com/user-attachments/assets/7a66bc19-8b17-4b01-be85-3aa5945a1b3b
 
 <br>
+
+## What's new in v4.21.1
+
+**Aiden v4.21.1 strengthens Workbench continuity and dependable execution.**
+
+- **Workbench control.** A one-click Auto mode follows the saved autonomy policy and keeps required approvals enforced.
+- **Completed work.** Jobs, Artifacts, Evidence and Verification remain discoverable after restart and reopen.
+- **Reliable Automations.** Required child outcomes stay linked to their parent, with truthful success and failure visibility.
+- **Visual workflows.** The Workbench can design bounded, typed, workspace-safe workflows that compile to the existing Automation contract.
+- **Core hardening.** Browser/session identity, approval snapshots, model binding, cancellation, Retry and late-result fencing remain durable and exact-once.
+- **Runtime boundary.** The source CLI and bundled runtime share the supported CommonJS module boundary and continue to support Node 20 and Node 22.
+
+### Known limitations
+
+- Real third-party account connections require provider setup and authorization in Apps.
+- Aggressive terminal resizing may produce cosmetic activity-row projection artifacts. No duplicate execution, duplicate mutating effect, durable-state corruption, approval corruption, lost input or crash was found; this remains a P2 cosmetic issue.
+- Windows installer/uninstall acceptance is deferred. The public release is the runtime package; no desktop installer is attached.
 
 ## What's new in v4.19.0
 

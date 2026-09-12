@@ -73,6 +73,7 @@ export interface AutomationDeliverySpec extends AutomationDeliveryTargetSpec {
 }
 
 export interface AutomationRevisionSpec {
+  visual?: import('./visualWorkflow').VisualWorkflow;
   action: AutomationActionSpec;
   trigger: AutomationTriggerSpec;
   policies: AutomationPolicies;

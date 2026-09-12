@@ -85,6 +85,29 @@ function stubInput(over: Partial<Parameters<ReturnType<typeof buildDaemonAgentBu
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 describe('buildDaemonAgentBuilder — construction', () => {
+  it('snapshots the saved Workbench mode into the exact chat executor without changing existing engines', async () => {
+    let level: 'Partner' | 'Assistant' = 'Partner';
+    const engines: any[] = [];
+    const snapshots: any[] = [];
+    const { deps } = stubDeps({ workbenchTrustLevel: () => level, toolContext: { policySnapshot: { trustLevel: 'Assistant', autonomyPolicy: 'runtime' } } as any });
+    vi.spyOn(deps.toolRegistry, 'buildExecutor').mockImplementation((context) => {
+      engines.push(context.approvalEngine);
+      snapshots.push(context.policySnapshot);
+      return vi.fn() as any;
+    });
+    const context = { engine: { getJob: () => ({ entryPoint: 'workbench' }) }, jobId: 'chat-job',
+      workspacePath: process.cwd(), attemptId: 'chat-attempt', generation: 1, fenceToken: 'test-fence', producer: 'workbench' } as any;
+    const builder = buildDaemonAgentBuilder(deps);
+    await runWithJobExecutionContext(context, () => builder(stubInput({ approvalMode: 'policy' })));
+    level = 'Assistant';
+    await runWithJobExecutionContext(context, () => builder(stubInput({ approvalMode: 'policy' })));
+    expect(engines[0].getAutonomyPolicy().level).toBe('Partner');
+    expect(engines[1].getAutonomyPolicy().level).toBe('Assistant');
+    expect(snapshots[0].trustLevel).toBe('Partner');
+    expect(JSON.parse(snapshots[0].autonomyPolicy).level).toBe('Partner');
+    expect(snapshots[1].trustLevel).toBe('Assistant');
+    expect(deps.toolContext?.policySnapshot?.trustLevel).toBe('Assistant');
+  });
   it('returns an AgentBuilder that constructs an AidenAgent', async () => {
     const { deps } = stubDeps();
     const builder = buildDaemonAgentBuilder(deps);

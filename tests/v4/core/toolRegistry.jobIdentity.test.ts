@@ -55,6 +55,30 @@ function resourceAuthorityMock() {
 }
 
 describe('ToolRegistry durable execution identity', () => {
+  it.each([false, true])('records an explicit handler failure durably (mutates=%s)', async (mutates) => {
+    const engine = {
+      ...resourceAuthorityMock(),
+      prepareToolCall: vi.fn(() => ({ applied: true, ...(mutates ? { effectId: 'effect_unsuccessful' } : {}) })),
+      startToolCall: vi.fn(() => ({ applied: true })),
+      completeToolCall: vi.fn(() => ({ applied: true })),
+    } as unknown as JobEngine;
+    const registry = new ToolRegistry();
+    registry.register({
+      schema: { name: 'unsuccessful_result', description: 'failure contract', inputSchema: { type: 'object' } },
+      category: mutates ? 'write' : 'read', riskTier: mutates ? 'caution' : 'safe', mutates, toolset: 'misc',
+      ...(mutates ? { effectContract: TEST_EFFECT_CONTRACT } : {}),
+      async execute() { return { success: false, error: 'Operation did not complete' }; },
+    });
+    const execute = registry.buildExecutor({ cwd: process.cwd(), paths: resolveAidenPaths({ rootOverride: 'C:/tmp/aiden-job-identity' }) });
+    const result = await runWithJobExecutionContext({ engine, jobId: 'job_result', attemptId: 'attempt_result',
+      generation: 1, fenceToken: 'fence_result', producer: 'test' },
+      () => execute({ id: 'unsuccessful_call', name: 'unsuccessful_result', arguments: {} }));
+    expect(result.error).toBe('Operation did not complete');
+    expect(engine.completeToolCall).toHaveBeenCalledWith(expect.objectContaining({
+      state: 'failed', sideEffectState: mutates ? 'unknown' : undefined,
+    }));
+    expect(result.activityTiming?.terminalClassification).toBe('failed');
+  });
   it('fails closed when the durable browser contract lookup is unavailable', async () => {
     const handler = vi.fn(async () => ({ ok: true }));
     const engine = { ...resourceAuthorityMock(), listEvents: vi.fn(() => { throw new Error('history unavailable'); }) } as unknown as JobEngine;

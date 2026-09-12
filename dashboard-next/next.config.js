@@ -10,8 +10,10 @@ const nextConfig = {
   // No image optimization server in a static export.
   images: { unoptimized: true },
 
-  // Pin tracing root to this directory (harmless for export; kept for parity).
-  outputFileTracingRoot: path.join(__dirname),
+  // Share the same project root with the browser-safe workflow compiler.
+  outputFileTracingRoot: path.join(__dirname, '..'),
+  // The visual compiler is shared with the runtime; its imports are type-only.
+  turbopack: { root: path.join(__dirname, '..') },
 }
 
 module.exports = nextConfig

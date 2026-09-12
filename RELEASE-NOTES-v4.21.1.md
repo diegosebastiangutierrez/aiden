@@ -1,13 +1,18 @@
-# Aiden v4.21.1 — release preparation
+# Aiden v4.21.1
 
-This patch release improves the reliability of completed work, Retry, and Automations.
+This release improves Workbench continuity, dependable execution and visual workflow authoring.
 
-- Retry creates new work while preserving the original outcome. Users can explicitly choose the original model or the selected model.
-- Completed work can be reopened with its recorded Artifacts, Evidence, and Verification after restart.
-- Required Automation children expose their own outcomes and Evidence. A failed required child prevents a clean parent success.
+Aiden v4.21.1 is the stable runtime release.
+
+- One-click Auto mode uses the saved autonomy policy for new Workbench tasks while required approvals remain enforced.
+- Retry creates a new Job while preserving the original outcome and model binding rules.
+- Completed work can be reopened with its recorded Artifacts, Evidence and Verification after restart.
+- Required Automation children expose their own outcomes and Evidence; failed required children prevent clean parent success.
 - Historical denied actions reconcile truthfully without inventing missing Evidence or repeating execution.
-- Production dependency chains include the reviewed security updates.
+- Browser/session identity, cancellation, late-result fencing, provider/model binding and approval snapshots remain durable.
+- Bounded visual workflows compile into the existing Automation contract with typed operations, workspace-safe paths and deterministic validation.
+- The runtime preserves the supported Node 20 and Node 22 module boundary.
 
-Aiden Core remains available under AGPL-3.0-only. Content Studio is a separately installed private product with its own entitlement and licence terms.
+Aiden Core remains available under AGPL-3.0-only.
 
-This local candidate has not been published. Desktop installers and Pro activation require their separate acceptance and release approval.
+Known limitations: real third-party account connections require provider setup and authorization; aggressive terminal resizing may show cosmetic activity-row projection artifacts; Windows installer/uninstall acceptance remains deferred. This release publishes the runtime package only and includes no desktop installer.

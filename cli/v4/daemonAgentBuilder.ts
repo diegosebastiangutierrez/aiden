@@ -50,6 +50,8 @@ import { currentJobExecutionContext } from '../../core/v4/daemon/jobExecutionCon
 import { createAutomationApprovalContinuationRuntime } from '../../core/v4/automation/approvalContinuation';
 import { validateScriptSpec } from '../../core/v4/automation/scriptSpec';
 import { PlannerGuard, type PlannerGuardMode } from '../../moat/plannerGuard';
+import { applyWorkbenchTrust } from '../../core/v4/workbench/trustMode';
+import type { AutonomyLevel } from '../../moat/autonomy';
 
 // ── Public types ───────────────────────────────────────────────────────────
 
@@ -79,6 +81,7 @@ export interface BuildDaemonAgentBuilderInput {
   learningScopes?: AidenAgentOptions['learningScopes'];
   /** Use the same canonical self-awareness/tool-selection policy as the REPL. */
   plannerGuardMode?: PlannerGuardMode;
+  workbenchTrustLevel?: () => AutonomyLevel;
   recoverExternalCoding?: AgentBuilder['recoverExternalCoding'];
   /**
    * v4.7.0 Phase 2.4 — honesty-mode plumbed in from the REPL's config
@@ -133,8 +136,22 @@ export function buildDaemonAgentBuilder(
     // allowlist doesn't bleed across daemon turns.
     const approvalEngine = new ApprovalEngine(input.approvalMode === 'always' ? 'manual' : 'smart');
     approvalEngine['callbacks'] = input.approvalCallbacks;
+    if (deps.workbenchTrustLevel) {
+      applyWorkbenchTrust(approvalEngine, currentJobExecutionContext(), deps.workbenchTrustLevel(), input.approvalMode);
+    }
+    const autonomyPolicy = approvalEngine.getAutonomyPolicy();
     const toolExecutor = deps.toolContext
-      ? deps.toolRegistry.buildExecutor({ ...deps.toolContext, approvalEngine })
+      ? deps.toolRegistry.buildExecutor({
+          ...deps.toolContext,
+          approvalEngine,
+          ...(autonomyPolicy && deps.toolContext.policySnapshot ? {
+            policySnapshot: {
+              ...deps.toolContext.policySnapshot,
+              trustLevel: autonomyPolicy.level,
+              autonomyPolicy: JSON.stringify(autonomyPolicy),
+            },
+          } : {}),
+        })
       : deps.toolExecutor;
     const plannerGuardMode = deps.plannerGuardMode ?? 'rule_based';
     const plannerGuard = new PlannerGuard(

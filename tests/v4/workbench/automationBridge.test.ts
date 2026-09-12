@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { WorkbenchAutomationPort } from '../../../core/v4/workbench/automationPort';
 import { startWorkbenchBridge, type WorkbenchBridge } from '../../../core/v4/workbench/bridgeServer';
+import { compileVisualWorkflow, createVisualWorkflow } from '../../../core/v4/automation/visualWorkflow';
 
 const TOKEN = 'automation-token';
 const reader = { listEventsScoped: () => [] };
@@ -39,6 +40,20 @@ function stub(): WorkbenchAutomationPort {
 }
 
 describe('Workbench Automations bridge', () => {
+  it('forwards the exact visual contract for authorized creation and revision without running it', async () => {
+    const automations = stub();
+    bridge = await startWorkbenchBridge({ reader, automations, token: TOKEN, port: 0 });
+    const spec = compileVisualWorkflow(createVisualWorkflow('files'));
+    const headers = { 'Content-Type': 'application/json', 'x-workbench-token': TOKEN };
+    const body = JSON.stringify({ ...spec, name: 'File review', requestId: 'visual-request' });
+    expect((await request('/api/automations', { method: 'POST', body })).status).toBe(401);
+    expect(automations.create).not.toHaveBeenCalled();
+    expect((await request('/api/automations', { method: 'POST', headers, body })).status).toBe(201);
+    expect(automations.create).toHaveBeenCalledWith(expect.objectContaining(spec));
+    expect((await request('/api/automations/automation-1', { method: 'PUT', headers, body })).status).toBe(200);
+    expect(automations.revise).toHaveBeenCalledWith('automation-1', expect.objectContaining(spec));
+    expect(automations.runNow).not.toHaveBeenCalled();
+  });
   it('requires the current exact app preview and never dispatches from preview or save', async () => {
     const automations = stub();
     const step = { kind: 'app_action', operation: 'mutation', providerId: 'fake', toolkitId: 'projects',
