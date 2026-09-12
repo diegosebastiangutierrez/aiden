@@ -152,15 +152,23 @@ export function evaluateStructuredProcessAdmission(
     return unavailable('UNAVAILABLE_BY_POLICY', 'path_traversal', 'The script path may not traverse outside the workspace.');
   }
   const lexicalScript = path.resolve(cwd, requestedScript);
-  if (!samePath(lexicalScript, workspaceRoot) && !isWithin(lexicalScript, workspaceRoot)) {
-    return unavailable('UNAVAILABLE_BY_POLICY', 'outside_workspace', 'The script is outside the authorized workspace.');
-  }
   const script = realpathWithFallback(lexicalScript);
-  if (!samePath(script, lexicalScript)) {
-    return unavailable('UNAVAILABLE_BY_POLICY', 'symlink_escape', 'The script path crosses a symlink or junction boundary.');
-  }
-  if (!samePath(script, workspaceRoot) && !isWithin(script, workspaceRoot)) {
-    return unavailable('UNAVAILABLE_BY_POLICY', 'symlink_escape', 'The script resolves outside the authorized workspace.');
+  // Compare the physical path before rejecting containment. Some supported
+  // platforms expose a system path alias (for example macOS `/var` →
+  // `/private/var`), so a valid workspace file can have a lexical spelling
+  // that is not textually under the canonical workspace root. Physical
+  // containment is authoritative; a lexical-in-workspace path that resolves
+  // outside still remains a symlink escape and is rejected below.
+  const lexicalInWorkspace = samePath(lexicalScript, workspaceRoot) || isWithin(lexicalScript, workspaceRoot);
+  const physicalInWorkspace = samePath(script, workspaceRoot) || isWithin(script, workspaceRoot);
+  if (!physicalInWorkspace) {
+    return unavailable(
+      'UNAVAILABLE_BY_POLICY',
+      lexicalInWorkspace ? 'symlink_escape' : 'outside_workspace',
+      lexicalInWorkspace
+        ? 'The script path crosses a symlink or junction boundary.'
+        : 'The script is outside the authorized workspace.',
+    );
   }
   if (!/\.(?:cjs|mjs|js)$/iu.test(script)) {
     return unavailable('UNAVAILABLE_BY_POLICY', 'script_type', 'Only JavaScript module files are supported.');

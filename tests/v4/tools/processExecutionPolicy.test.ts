@@ -62,6 +62,20 @@ describe('structured local process admission', () => {
       .toMatchObject({ state: 'APPROVAL_REQUIRED', executable: fs.realpathSync.native(process.execPath), script: fs.realpathSync.native(script) });
   });
 
+  it.runIf(process.platform === 'darwin')('accepts a platform path alias for the same authorized workspace', () => {
+    const canonicalRoot = fs.realpathSync.native(root);
+    const aliasRoot = canonicalRoot.startsWith('/private/') ? canonicalRoot.slice('/private'.length) : canonicalRoot;
+    const aliasScript = path.join(aliasRoot, 'task.mjs');
+    expect(evaluateStructuredProcessAdmission(request({ cwd: aliasRoot, script: aliasScript }), {
+      workspaceRoot: root,
+      runtimeExecutable: process.execPath,
+    })).toMatchObject({
+      state: 'APPROVAL_REQUIRED',
+      cwd: canonicalRoot,
+      script: fs.realpathSync.native(script),
+    });
+  });
+
   it('denies a script outside the authorized workspace', () => {
     const outside = path.join(path.dirname(root), `${path.basename(root)}-outside.mjs`);
     fs.writeFileSync(outside, 'setTimeout(() => {}, 1000);\n', 'utf8');
