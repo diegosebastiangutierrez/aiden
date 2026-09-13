@@ -40,6 +40,8 @@ interface ConnectionRow {
   user_code: string | null;
   expires_at: number | null;
   reconnect_account_id: string | null;
+  authorization_secret_handle: string | null;
+  completed_account_id: string | null;
 }
 
 interface ReceiptRow {
@@ -521,6 +523,8 @@ export function normalizeIntegrationError(error: unknown): IntegrationProviderEr
 }
 
 export class IntegrationActionAuthority {
+  private readonly startingConnections = new Map<string, Promise<ProviderConnectionStart>>();
+  private readonly completingConnections = new Map<string, Promise<ConnectedAccountRecord>>();
   readonly db: Db;
   readonly providers: IntegrationProviderRegistry;
   readonly accounts: ConnectedAccountAuthority;
@@ -620,7 +624,17 @@ export class IntegrationActionAuthority {
     }
   }
 
-  async initiateConnection(input: {
+  initiateConnection(input: {
+    providerId: string; toolkitId: string; ownerId: string; workspaceId: string; label?: string;
+    reconnectAccountId?: string;
+  }): Promise<ProviderConnectionStart> {
+    const key = JSON.stringify([input.providerId, input.toolkitId, input.ownerId, input.workspaceId, input.label ?? null, input.reconnectAccountId ?? null]);
+    const existing = this.startingConnections.get(key); if (existing) return existing;
+    const promise = this.initiateConnectionOnce(input).finally(() => this.startingConnections.delete(key));
+    this.startingConnections.set(key, promise); return promise;
+  }
+
+  private async initiateConnectionOnce(input: {
     providerId: string; toolkitId: string; ownerId: string; workspaceId: string; label?: string;
     reconnectAccountId?: string;
   }) {
@@ -640,6 +654,11 @@ export class IntegrationActionAuthority {
         throw new IntegrationProviderError('invalid_input', 'Reconnect does not match the connected app authority');
       }
     }
+    const pending = this.db.prepare(`SELECT connection_id FROM integration_connection_sessions
+      WHERE provider_id=? AND toolkit_id=? AND owner_id=? AND workspace_id=? AND label IS ? AND reconnect_account_id IS ?
+      AND state='pending' AND expires_at>? ORDER BY created_at DESC LIMIT 1`)
+      .get(providerId, toolkitId, ownerId, workspaceId, label ?? null, reconnectAccountId ?? null, Date.now()) as { connection_id: string } | undefined;
+    if (pending) return { ...await this.resumeConnection({ connectionId: pending.connection_id, ownerId, workspaceId }), state: 'pending' as const };
     const provider = this.providers.require(providerId);
     const providerCredential = await this.resolveProviderCredential({ providerId, ownerId, workspaceId })
       .catch(() => undefined);
@@ -663,31 +682,91 @@ export class IntegrationActionAuthority {
     const userCode = start.userCode === undefined
       ? undefined
       : requireBoundedOpaqueText(start.userCode, 'Provider connection user code', 256);
-    const expiresAt = start.expiresAt === undefined ? undefined : Number(start.expiresAt);
+    const expiresAt = start.expiresAt === undefined ? Date.now() + 10 * 60_000 : Number(start.expiresAt);
     if (expiresAt !== undefined && (!Number.isSafeInteger(expiresAt) || expiresAt < 0)) {
       throw new IntegrationProviderError('invalid_input', 'Provider connection expiry is invalid');
     }
     const now = Date.now();
-    this.db.prepare(
+    const authorizationHandle = authorizationUrl || userCode ? await this.secrets.create({
+      namespace: { providerId, ownerId, workspaceId }, label: 'Pending app authorization',
+      value: JSON.stringify({ authorizationUrl, userCode }),
+    }) : null;
+    try { this.db.prepare(
       `INSERT INTO integration_connection_sessions
          (connection_id,provider_id,toolkit_id,owner_id,workspace_id,label,state,
-          authorization_url,user_code,expires_at,created_at,updated_at,reconnect_account_id)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          authorization_url,user_code,expires_at,created_at,updated_at,reconnect_account_id,authorization_secret_handle)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     ).run(
       connectionId, providerId, toolkitId, ownerId, workspaceId,
-      label ?? null, start.state, null, null,
-      expiresAt ?? null, now, now, reconnectAccountId ?? null,
-    );
+      label ?? null, 'pending', null, null,
+      expiresAt, now, now, reconnectAccountId ?? null, authorizationHandle,
+    ); } catch (error) {
+      if (authorizationHandle) await this.secrets.delete(authorizationHandle, { ownerId, workspaceId });
+      throw error;
+    }
     return {
       connectionId,
-      state: start.state,
+      state: 'pending' as const,
       ...(authorizationUrl ? { authorizationUrl } : {}),
       ...(userCode ? { userCode } : {}),
       ...(expiresAt !== undefined ? { expiresAt } : {}),
     };
   }
 
-  async completeConnection(input: { connectionId: string; ownerId: string; workspaceId: string }): Promise<ConnectedAccountRecord> {
+  listConnections(scope: { ownerId: string; workspaceId: string }) {
+    return this.db.prepare(`SELECT connection_id AS connectionId,provider_id AS providerId,toolkit_id AS toolkitId,
+      label,expires_at AS expiresAt,created_at AS createdAt FROM integration_connection_sessions
+      WHERE owner_id=? AND workspace_id=? AND state='pending' AND (expires_at IS NULL OR expires_at>?)
+      ORDER BY created_at DESC LIMIT 20`).all(scope.ownerId, scope.workspaceId, Date.now()) as Array<{
+        connectionId: string; providerId: string; toolkitId: string; label: string | null; expiresAt: number | null; createdAt: number;
+      }>;
+  }
+
+  private requireConnection(input: { connectionId: string; ownerId: string; workspaceId: string }): ConnectionRow {
+    const row = this.db.prepare('SELECT * FROM integration_connection_sessions WHERE connection_id=?').get(input.connectionId) as ConnectionRow | undefined;
+    if (!row || row.owner_id !== input.ownerId || row.workspace_id !== input.workspaceId)
+      throw new IntegrationProviderError('account_not_found', 'Connection is not available in this scope');
+    return row;
+  }
+
+  private requirePendingConnection(row: ConnectionRow): void {
+    if (row.state === 'cancelled') throw new IntegrationProviderError('cancelled', 'Connection request cancelled');
+    if (row.state === 'failed') throw new IntegrationProviderError('permission_denied', 'Authorization was not granted; start a new connection');
+    if (row.state === 'expired' || (row.expires_at !== null && row.expires_at <= Date.now())) {
+      this.db.prepare("UPDATE integration_connection_sessions SET state='expired',updated_at=? WHERE connection_id=? AND state='pending'")
+        .run(Date.now(), row.connection_id);
+      throw new IntegrationProviderError('auth_expired', 'Connection authorization expired; start a new connection');
+    }
+    if (row.state !== 'pending') throw new IntegrationProviderError('invalid_input', 'Connection is no longer pending');
+  }
+
+  async resumeConnection(input: { connectionId: string; ownerId: string; workspaceId: string }) {
+    const row = this.requireConnection(input); this.requirePendingConnection(row);
+    const value = row.authorization_secret_handle
+      ? JSON.parse(await this.secrets.resolve(row.authorization_secret_handle, input)) as Record<string, unknown> : {};
+    this.requirePendingConnection(this.requireConnection(input));
+    return { connectionId: row.connection_id, providerId: row.provider_id, toolkitId: row.toolkit_id,
+      ...(value.authorizationUrl ? { authorizationUrl: validateAuthorizationUrl(String(value.authorizationUrl)) } : {}),
+      ...(value.userCode ? { userCode: requireBoundedOpaqueText(value.userCode, 'Provider connection user code', 256) } : {}),
+      ...(row.expires_at !== null ? { expiresAt: row.expires_at } : {}) };
+  }
+
+  async cancelConnection(input: { connectionId: string; ownerId: string; workspaceId: string }): Promise<void> {
+    const row = this.requireConnection(input);
+    if (row.state === 'completed') throw new IntegrationProviderError('invalid_input', 'Account already connected; use Disconnect account');
+    this.db.prepare("UPDATE integration_connection_sessions SET state='cancelled',updated_at=? WHERE connection_id=? AND state!='completed'")
+      .run(Date.now(), row.connection_id);
+    if (row.authorization_secret_handle) await this.secrets.revoke(row.authorization_secret_handle, input);
+  }
+
+  completeConnection(input: { connectionId: string; ownerId: string; workspaceId: string }): Promise<ConnectedAccountRecord> {
+    const key = JSON.stringify([input.workspaceId, input.ownerId, input.connectionId]);
+    const existing = this.completingConnections.get(key); if (existing) return existing;
+    const promise = this.completeConnectionOnce(input).finally(() => this.completingConnections.delete(key));
+    this.completingConnections.set(key, promise); return promise;
+  }
+
+  private async completeConnectionOnce(input: { connectionId: string; ownerId: string; workspaceId: string }): Promise<ConnectedAccountRecord> {
     const connectionId = requireBoundedOpaqueText(input.connectionId, 'Provider connection identity', 512);
     const ownerId = requireBoundedIdentity(input.ownerId, 'Owner identity');
     const workspaceId = requireBoundedIdentity(input.workspaceId, 'Workspace identity');
@@ -700,8 +779,12 @@ export class IntegrationActionAuthority {
       const accountId = this.db.prepare(
         'SELECT completed_account_id FROM integration_connection_sessions WHERE connection_id=?',
       ).pluck().get(connectionId) as string | undefined;
-      if (accountId) return this.accounts.require(accountId);
+      if (accountId) {
+        if (row.authorization_secret_handle) await this.secrets.revoke(row.authorization_secret_handle, input);
+        return this.accounts.requireInScope(accountId, input);
+      }
     }
+    this.requirePendingConnection(row);
     if (row.expires_at !== null && row.expires_at <= Date.now()) {
       this.db.prepare(
         "UPDATE integration_connection_sessions SET state='expired',updated_at=? WHERE connection_id=?",
@@ -715,12 +798,20 @@ export class IntegrationActionAuthority {
     let completed: ProviderConnectionResult;
     try {
       completed = normalizeConnectionResult(
-        await provider.completeConnection({ connectionId: row.connection_id, providerCredential }),
+        await provider.completeConnection({ connectionId: row.connection_id, providerCredential, ownerId, workspaceId }),
         row.connection_id,
       );
     } catch (error) {
-      throw normalizeIntegrationError(error);
+      const normalized = normalizeIntegrationError(error);
+      if (normalized.category === 'auth_expired' || normalized.category === 'permission_denied') {
+        this.db.prepare("UPDATE integration_connection_sessions SET state=?,updated_at=? WHERE connection_id=? AND state='pending'")
+          .run(normalized.category === 'auth_expired' ? 'expired' : 'failed', Date.now(), row.connection_id);
+      }
+      throw normalized;
     }
+    const afterReadback = this.requireConnection(input);
+    if (afterReadback.state === 'completed' && afterReadback.completed_account_id) return this.accounts.requireInScope(afterReadback.completed_account_id, input);
+    this.requirePendingConnection(afterReadback);
     const existingAccountId = this.db.prepare(
       `SELECT account_id FROM connected_accounts
        WHERE provider_id=? AND provider_account_ref=? AND workspace_id=? AND owner_id=?`,
@@ -748,8 +839,11 @@ export class IntegrationActionAuthority {
         value: completed.secretValue,
       });
     }
+    let committed = false;
     try {
       const account = this.db.transaction(() => {
+        const current = this.requireConnection(input);
+        this.requirePendingConnection(current);
         const resolved = targetAccount
           ? this.accounts.reactivate({
               accountId: targetAccount.accountId,
@@ -782,6 +876,8 @@ export class IntegrationActionAuthority {
         ).run(resolved.accountId, Date.now(), row.connection_id);
         return resolved;
       }).immediate();
+      committed = true;
+      if (row.authorization_secret_handle) await this.secrets.revoke(row.authorization_secret_handle, input);
       if (targetAccount?.secretHandle && secretHandle && targetAccount.secretHandle !== secretHandle) {
         await this.secrets.delete(targetAccount.secretHandle, {
           ownerId: row.owner_id, workspaceId: row.workspace_id,
@@ -789,7 +885,7 @@ export class IntegrationActionAuthority {
       }
       return account;
     } catch (error) {
-      if (secretHandle) await this.secrets.delete(secretHandle, {
+      if (secretHandle && !committed) await this.secrets.delete(secretHandle, {
         ownerId: row.owner_id, workspaceId: row.workspace_id,
       }).catch(() => undefined);
       throw error;

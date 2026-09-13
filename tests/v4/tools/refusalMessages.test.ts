@@ -26,6 +26,15 @@ describe('protectedPathMessage — reason + non-waivable remedy', () => {
 });
 
 describe('ApprovalEngine.explainDenial — which gate + how to allow', () => {
+  it.each(['deny', 'interrupted'] as const)('preserves the recorded outcome for mandatory approval: %s', async decision => {
+    const engine = new ApprovalEngine('smart', { promptUser: async () => decision });
+    const request = { toolName: 'app_connect', category: 'network' as const, args: { provider_id: 'composio', toolkit_id: 'github' }, approvalRequirement: 'always' as const };
+    expect(await engine.checkApproval(request)).toBe(false);
+    const message = engine.explainDenial(request);
+    expect(message).not.toContain('Review the pending approval');
+    expect(message).not.toContain('/mode auto');
+    expect(message).toContain(decision === 'deny' ? 'you declined' : 'interrupted');
+  });
   it('hard-block: never allowed at any level', () => {
     const engine = new ApprovalEngine('smart');
     const msg = engine.explainDenial({

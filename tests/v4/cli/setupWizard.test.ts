@@ -256,8 +256,7 @@ describe('SetupWizard', () => {
     expect(prompts.defaultIndexCalls).toHaveLength(3);
   });
 
-  it('wizard prints the "Press Enter to accept Groq" hint', async () => {
-    // Phase 30.2.1 — hint text changed alongside the default flip.
+  it('wizard explains the connection choices without requiring an account', async () => {
     // Use Ollama (kind=local) with a stubbed-reachable probe so the
     // wizard exits cleanly without needing API-key input.
     const fetchImpl = (async () => ({ ok: true } as Response)) as unknown as typeof fetch;
@@ -270,8 +269,8 @@ describe('SetupWizard', () => {
       fetchImpl,
     });
     const text = chunks.join('\n');
-    expect(text).toMatch(/Press Enter to accept Groq/i);
-    expect(text).toMatch(/fast hosted inference; API key required/i);
+    expect(text).toMatch(/Local model, cloud API key, or supported subscription sign-in/i);
+    expect(text).toMatch(/No Aiden account required/i);
   });
 
   it('skips when config exists with providers and force=false', async () => {

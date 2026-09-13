@@ -5,15 +5,9 @@
 
 // core/tools/gmailTool.ts — Gmail integration foundation.
 //
-// App Password + IMAP stub. The IMAP call is deliberately
-//     guarded behind a try/catch so missing packages don't crash
-//     the server. Full IMAP read is stubbed — it engages only if the
-//     imap-simple package is present in dependencies.
-//
-// NOTE: imap-simple brings transitive vulns
-// (semver/tough-cookie/qs/form-data). Acceptable
-// because this tool is optional and only runs when
-// a skill explicitly invokes Gmail operations.
+// App Password + IMAP reader, using the shared verified-TLS transport.
+import { createImapConnection } from '../v4/daemon/triggers/email/imapConnection'
+import { simpleParser } from 'mailparser'
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -30,61 +24,37 @@ export interface GmailConfig {
 }
 
 // ── Gmail reader (IMAP App Password) ─────────────────────────
-// Returns messages if imap-simple is installed, otherwise returns
-// an empty array and logs a hint.
+// Reading does not mark messages as seen.
 
 export async function readGmail(
   config: GmailConfig,
   count:  number = 10,
   folder: string = 'INBOX',
 ): Promise<GmailMessage[]> {
+  const connection = createImapConnection({ config: {
+    user: config.email, password: config.appPassword,
+    host: 'imap.gmail.com', port: 993, tls: true, authTimeoutMs: 10000,
+  } })
   try {
-    // Lazy-load imap-simple so its absence doesn't crash startup
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const imapSimple = require('imap-simple') as typeof import('imap-simple')
-
-    const connection = await imapSimple.connect({
-      imap: {
-        user:        config.email,
-        password:    config.appPassword,
-        host:        'imap.gmail.com',
-        port:        993,
-        tls:         true,
-        authTimeout: 10000,
-      },
-    })
-
-    await connection.openBox(folder)
-
-    const searchCriteria = ['UNSEEN']
-    const fetchOptions   = {
-      bodies:   ['HEADER.FIELDS (FROM SUBJECT DATE)'],
-      markSeen: false,
+    await connection.connect()
+    await connection.openMailbox(folder)
+    const uids = await connection.searchUnseen()
+    const results: GmailMessage[] = []
+    for (const uid of uids.slice(0, count)) {
+      const message = await connection.fetchMessage(uid)
+      if (!message) continue
+      const parsed = await simpleParser(message.raw)
+      results.push({ from: parsed.from?.text ?? '', subject: parsed.subject ?? '(no subject)',
+        date: parsed.date?.toISOString() ?? '', snippet: '' })
     }
-
-    const messages = await connection.search(searchCriteria, fetchOptions)
-    connection.end()
-
-    const results: GmailMessage[] = messages.slice(0, count).map((msg: any) => {
-      const header = msg.parts.find((p: any) => p.which.startsWith('HEADER'))
-      const h      = header?.body || {}
-      return {
-        from:    Array.isArray(h.from)    ? h.from[0]    : (h.from    || ''),
-        subject: Array.isArray(h.subject) ? h.subject[0] : (h.subject || '(no subject)'),
-        date:    Array.isArray(h.date)    ? h.date[0]    : (h.date    || ''),
-        snippet: '',
-      }
-    })
 
     console.log(`[Gmail] Fetched ${results.length} messages from ${folder}`)
     return results
   } catch (err: any) {
-    if (err?.code === 'MODULE_NOT_FOUND') {
-      console.log('[Gmail] imap-simple not installed — run: npm install imap-simple')
-    } else {
-      console.error('[Gmail] IMAP connection failed:', String(err).slice(0, 120))
-    }
+    console.error('[Gmail] IMAP read failed; check server and credentials')
     return []
+  } finally {
+    await connection.disconnect().catch(() => undefined)
   }
 }
 

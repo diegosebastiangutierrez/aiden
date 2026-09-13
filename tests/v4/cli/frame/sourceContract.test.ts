@@ -64,6 +64,7 @@ describe('frame source-contract guard', () => {
       'index.ts',
       'inkApp.ts',
       'inkRuntime.ts',
+      'inputTransport.ts',
       'interruptControls.ts',
       'runtime.ts',
       'state.ts',

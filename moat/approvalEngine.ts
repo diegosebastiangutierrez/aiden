@@ -437,9 +437,15 @@ export class ApprovalEngine {
       );
     }
     if (req.approvalRequirement === 'always') {
+      if (this.lastPromptDecision === 'deny') {
+        return 'you declined this exact action, so it did not run. Do not retry unless the user requests it again; a new request needs fresh explicit approval.';
+      }
+      if (this.lastPromptDecision === 'interrupted') {
+        return 'the approval was interrupted before a decision, so the action did not run. A new request needs fresh explicit approval.';
+      }
       return (
         `this action requires an explicit approval each time and was not approved. ` +
-        `Review the pending approval and choose Approve once or Deny.`
+        `No access or permission was granted. Review the current action state before requesting fresh approval.`
       );
     }
     if (this.autonomyPolicy && decideAutonomy(this.autonomyPolicy, req) === 'deny') {

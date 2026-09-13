@@ -874,9 +874,9 @@ async function runSetupWizardWithLedger(opts: SetupOptions): Promise<SetupResult
   );
 
   display.write(stepHeader(1));
-  display.write('  Welcome — let\'s pick a provider.\n');
+  display.write('  Welcome — connect a model, then ask your first task.\n');
   display.write(
-    `  ${kleur.dim('(Press Enter to accept Groq — fast hosted inference; API key required.)')}\n\n`,
+    `  ${kleur.dim('Local model, cloud API key, or supported subscription sign-in. No Aiden account required.')}\n\n`,
   );
 
   // Phase 30.2.1 — Groq is the new recommended default for first-time

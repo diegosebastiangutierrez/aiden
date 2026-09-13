@@ -35,8 +35,8 @@ function composioCase(): ContractCase {
       waitForConnection: async () => ({
         id: 'account-contract', userId: 'aiden:contract', status: 'ACTIVE', scopes: ['repo:read'],
       }),
-      get: async () => ({
-        id: 'account-contract', userId: 'aiden:contract', status: active ? 'ACTIVE' : 'REVOKED', scopes: ['repo:read'],
+      get: async (id) => ({
+        id, userId: 'aiden:contract', status: active ? 'ACTIVE' : 'REVOKED', scopes: ['repo:read'],
       }),
       delete: async () => { active = false; },
     },

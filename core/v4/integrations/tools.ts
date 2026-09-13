@@ -62,6 +62,46 @@ export interface IntegrationToolScope {
   workspaceId: string;
 }
 
+export function makeIntegrationConnectTool(
+  authority: Pick<IntegrationActionAuthority, 'initiateConnection'>,
+  scope: IntegrationToolScope,
+): ToolHandler {
+  const validate = (args: Readonly<Record<string, unknown>>) => {
+    if (Object.keys(args).some(key => key !== 'provider_id' && key !== 'toolkit_id')) return 'Only provider and app identities are accepted. Never supply credentials or account scope.';
+    return ['provider_id', 'toolkit_id'].some(key => typeof args[key] !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(args[key] as string))
+      ? 'Provider or app identity is invalid' : null;
+  };
+  return {
+    schema: {
+      name: 'app_connect',
+      description: 'Request connection of an app only when the user asks to connect it. The existing Composio integration supports provider_id composio with toolkit_id github or gmail. Requires user approval, then separate provider consent. Does not grant access or execute app actions. Never ask for credentials in chat. Workbench displays the pending permission card; CLI can resume it with /apps resume.',
+      inputSchema: { type: 'object', additionalProperties: false, properties: {
+        provider_id: { type: 'string', description: 'Exact installed integration provider id' },
+        toolkit_id: { type: 'string', description: 'Exact app/toolkit id requested by the user' },
+      }, required: ['provider_id', 'toolkit_id'] },
+    },
+    category: 'network', toolset: 'apps', mutates: true, riskTier: 'caution',
+    validateArguments: validate,
+    effectContract: {
+      classification: 'unsafe_mutation', kind: 'integration.connection_request', retrySafety: 'never_automatic',
+      idempotencySupported: false, reconciliationSupported: false, verificationSupported: false,
+      approvalRequirement: 'always', sensitiveFields: [], redactionRules: ['digest_arguments', 'omit_sensitive_values'],
+      target: args => `${args.provider_id}/${args.toolkit_id}`,
+    },
+    async execute(args, context) {
+      const error = validate(args); if (error) throw new Error(error);
+      if (context.signal?.aborted) throw new Error('App connection request cancelled');
+      try {
+        const started = await authority.initiateConnection({ providerId: String(args.provider_id), toolkitId: String(args.toolkit_id), ...scope });
+        return { connectionId: started.connectionId, state: 'awaiting_user_authorization', connected: false,
+          instruction: 'Review the pending connection card in Workbench Apps or Chat. In CLI, use /apps resume with this connection identity. Only canonical provider readback confirms connection. Do not claim access yet.' };
+      } catch {
+        throw new Error('App connection could not start. Open Apps → Connection setup to check the integration service, then review pending requests before retrying. No connected account was confirmed.');
+      }
+    },
+  };
+}
+
 export function makeIntegrationResolveTool(
   resolver: IntegrationResolver,
   scope: IntegrationToolScope = { ownerId: 'local-user', workspaceId: 'default' },
@@ -270,6 +310,7 @@ export function registerIntegrationTools(
   resolver?: IntegrationResolver,
 ): void {
   if (resolver) registry.register(makeIntegrationResolveTool(resolver, scope));
+  registry.register(makeIntegrationConnectTool(authority, scope));
   registry.register(makeIntegrationReadTool(authority, scope));
   registry.register(makeIntegrationMutationTool(authority, scope));
 }

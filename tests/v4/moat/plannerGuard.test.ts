@@ -87,6 +87,15 @@ class FakeAdapter implements ProviderAdapter {
 
 // ── Tests ──────────────────────────────────────────────────────────
 
+describe('connected app routing', () => {
+  it.each(['Connect my Gmail account and read mail after I authorize it', 'Connect GitHub and find my repository', 'Search my connected app for documents'])('keeps app tools visible for %s', async intent => {
+    const registry = new MockRegistry([handler('app_connect', 'apps'), handler('app_resolve', 'apps'), handler('file_read', 'files'), handler('web_search', 'web')]);
+    const decision = await new PlannerGuard(registry, 'rule_based').decide(intent, []);
+    expect(decision.selectedTools).toContain('app_connect');
+    expect(decision.selectedTools).toContain('app_resolve');
+  });
+});
+
 describe('PlannerGuard — off mode', () => {
   it('1. off mode returns all tools as selected, none excluded', async () => {
     const guard = new PlannerGuard(FULL_REGISTRY, 'off');

@@ -34,6 +34,13 @@
 
 import { c, termWidth } from '../../../core/v4/ui/theme';
 import type { ProviderOption } from '../setupWizard';
+import { MODEL_CONNECTION_CHOICES, type ModelConnectionKind } from '../../../core/v4/product/modelConnection';
+
+function connectionKind(provider: ProviderOption): ModelConnectionKind {
+  if (provider.kind === 'local') return 'local';
+  if (provider.kind === 'pro' || provider.kind === 'oauth') return 'oauth';
+  return 'byok';
+}
 
 export interface RichChoice {
   /** Unique provider id (matches ProviderOption.id). */
@@ -145,17 +152,26 @@ export async function pickProvider(
     ? Math.max(0, opts.providers.findIndex((p) => p.id === opts.defaultId))
     : 0;
 
-  const answer = (await inq.select({
-    message: c.text('Pick a provider:'),
-    choices,
-    default: String(defaultIdx),
-    loop: false,
-  })) as string;
-
-  const idx = Number.parseInt(answer, 10);
-  return {
-    id: opts.providers[idx].id,
-    index: idx,
-    choice: rich[idx],
-  };
+  if (!opts.providers.length) throw new Error('No supported providers are available');
+  while (true) {
+    const groups = MODEL_CONNECTION_CHOICES.filter((group) => opts.providers.some((provider) => connectionKind(provider) === group.id));
+    const kind = await inq.select({
+      message: c.text('How would you like to connect your model?'),
+      choices: groups.map((group) => ({ name: group.title, value: group.id, description: group.detail })),
+      default: connectionKind(opts.providers[defaultIdx]),
+      loop: false,
+    });
+    const matching = choices.filter((choice) => connectionKind(opts.providers[Number(choice.value)]) === kind);
+    if (!matching.length) throw new Error('Invalid connection selection');
+    const answer = await inq.select({
+      message: c.text('Pick a provider:'),
+      choices: [...matching, { name: '← Back to connection methods', value: 'back', description: 'No provider or model will be changed.' }],
+      default: matching.some((choice) => choice.value === String(defaultIdx)) ? String(defaultIdx) : matching[0].value,
+      loop: false,
+    });
+    if (answer === 'back') continue;
+    if (!matching.some((choice) => choice.value === answer)) throw new Error('Invalid provider selection');
+    const idx = Number(answer);
+    return { id: opts.providers[idx].id, index: idx, choice: rich[idx] };
+  }
 }

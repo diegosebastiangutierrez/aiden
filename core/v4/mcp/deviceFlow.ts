@@ -199,12 +199,14 @@ export interface RunDeviceFlowDeps {
  * via the same `persistMcpTokens` the loopback flow uses).
  */
 export async function runMcpDeviceFlow(deps: RunDeviceFlowDeps): Promise<OAuthFlowResult> {
+  if (deps.signal?.aborted) throw new Error(`Cancelled device authorization for "${deps.server}".`);
   const fetchImpl = deps.fetchImpl ?? (fetch as unknown as FetchImpl);
   const now = deps.now ?? Date.now;
 
   const auth = await requestDeviceAuthorization(deps.config, fetchImpl);
   const aborted = (): boolean => deps.signal?.aborted === true;
   const cancel = (): Error => new Error(`Cancelled device authorization for "${deps.server}".`);
+  if (aborted()) throw cancel();
 
   // Clear terminal UX: ALWAYS print the URL + code (SSH/WSL/headless-safe), the
   // expiry, the waiting state, and the cancel instruction — then best-effort
@@ -216,6 +218,8 @@ export async function runMcpDeviceFlow(deps: RunDeviceFlowDeps): Promise<OAuthFl
   deps.ua.log(`  2. Enter the code: ${auth.userCode}`);
   deps.ua.log('');
   deps.ua.log(`This code expires in ~${expiresMin} min. Waiting for approval…  (press Ctrl+C to cancel)`);
+  await deps.ua.onAuthorization?.({ url: auth.verificationUriComplete ?? auth.verificationUri, userCode: auth.userCode, expiresAt: now() + auth.expiresInSeconds * 1000 });
+  if (aborted()) throw cancel();
   await deps.ua.openBrowser(auth.verificationUriComplete ?? auth.verificationUri).catch(() => undefined);
 
   let intervalSec = auth.intervalSeconds;
@@ -228,6 +232,7 @@ export async function runMcpDeviceFlow(deps: RunDeviceFlowDeps): Promise<OAuthFl
   while (now() < deadline) {
     if (aborted()) throw cancel();
     const outcome = await pollDeviceTokenOnce(deps.config, auth.deviceCode, fetchImpl);
+    if (aborted()) throw cancel();
     switch (outcome.kind) {
       case 'success':
         return outcome.result;

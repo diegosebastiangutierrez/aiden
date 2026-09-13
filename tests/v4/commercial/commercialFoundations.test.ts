@@ -207,7 +207,7 @@ describe('readiness-backed onboarding plan', () => {
   it('projects the existing readiness authority without forcing optional capabilities', () => {
     const item = (id: string, healthy: boolean, blocking: boolean, detail: string) => ({
       id, category: 'chat' as const, state: healthy ? 'ready' as const : 'needs_setup' as const,
-      title: id, detail, configured: healthy, available: healthy, healthy, blocking,
+      title: id, detail, configured: healthy, available: healthy, healthy, ready: healthy, blocking,
       severity: healthy ? 'info' as const : 'warning' as const, availableActions: [], checkedAt: 1,
     });
     const items = [

@@ -3,8 +3,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as aiden from '../lib/aidenClient'
 import { projectStarterActions } from '../lib/workbenchProduct'
+import { onboardingReadiness, readOnboardingStep, saveOnboardingStep } from '../lib/onboardingProgress'
 import { ProductButton, StatusBadge } from './ProductUI'
 import { ProductIcon, type ProductIconName } from './ProductIcon'
+import { ModelConnectionChoices } from './ModelConnectionChoices'
+import type { ModelConnectionKind } from '../../core/v4/product/modelConnection'
 import type { WorkbenchSettingsSection } from '../lib/workbenchNavigation'
 
 type StepId = 'welcome' | 'computer' | 'ai' | 'browser' | 'coding' | 'apps' | 'ready'
@@ -19,23 +22,20 @@ const STEP_ORDER: Array<{ id: StepId; title: string; readinessId?: string; optio
   { id: 'ready', title: 'Ready' },
 ]
 
-const STEP_STORAGE_KEY = 'aiden:first-run:step:v1'
-
 export function OnboardingModal({
   onComplete,
   onOpenSettings,
   onOpenApps,
+  onDismiss,
 }: {
   onComplete: (choice: string) => void
-  onOpenSettings: (tab: WorkbenchSettingsSection) => void
+  onOpenSettings: (tab: WorkbenchSettingsSection, connectionKind?: ModelConnectionKind) => void
   onOpenApps: () => void
+  onDismiss: () => void
 }) {
   const dialogRef = useRef<HTMLDivElement>(null)
-  const [index, setIndex] = useState(() => {
-    if (typeof window === 'undefined') return 0
-    const stored = Number.parseInt(window.localStorage.getItem(STEP_STORAGE_KEY) ?? '0', 10)
-    return Number.isFinite(stored) ? Math.min(Math.max(stored, 0), STEP_ORDER.length - 1) : 0
-  })
+  const [index, setIndex] = useState(0)
+  const [restored, setRestored] = useState(false)
   const [readiness, setReadiness] = useState<aiden.SystemReadinessProjection | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [checking, setChecking] = useState(false)
@@ -49,16 +49,23 @@ export function OnboardingModal({
   }
 
   useEffect(() => { void refresh() }, [])
-  useEffect(() => { window.localStorage.setItem(STEP_STORAGE_KEY, String(index)) }, [index])
+  useEffect(() => {
+    try { setIndex(readOnboardingStep(window.localStorage, STEP_ORDER.length)) } catch { /* Local storage may be disabled. */ }
+    setRestored(true)
+  }, [])
+  useEffect(() => {
+    if (restored) { try { saveOnboardingStep(window.localStorage, index) } catch { /* Local storage may be disabled. */ } }
+  }, [index, restored])
 
   const current = STEP_ORDER[index]
   const readinessItem = useMemo(
     () => current.readinessId ? readiness?.items.find((item) => item.id === current.readinessId) : undefined,
     [current.readinessId, readiness],
   )
-  const complete = readinessItem?.ready ?? readinessItem?.healthy === true
+  const complete = readinessItem?.ready === true
   const starterActions = useMemo(() => projectStarterActions(readiness?.items ?? []), [readiness])
   const chatReady = readiness?.items.find((item) => item.id === 'chat-provider')?.ready === true
+  const canStart = onboardingReadiness(readiness).canStart
   const optionalNotConfigured = current.optional === true && !complete
     && ['setup_available', 'needs_setup', 'unavailable'].includes(readinessItem?.state ?? '')
   const next = () => setIndex((value) => Math.min(STEP_ORDER.length - 1, value + 1))
@@ -100,6 +107,9 @@ export function OnboardingModal({
     if (readinessItem.availableActions.includes('manage_apps')) {
       return <ProductButton variant="primary" onClick={onOpenApps}>Open Apps</ProductButton>
     }
+    if (readinessItem.availableActions.includes('manage_coding')) {
+      return <ProductButton variant="primary" onClick={() => onOpenSettings('coding')}>Open Coding setup</ProductButton>
+    }
     return <ProductButton variant="primary" onClick={() => onOpenSettings('runtime')}>Open Readiness</ProductButton>
   }
 
@@ -119,18 +129,19 @@ export function OnboardingModal({
             <span className="onboarding-icon" aria-hidden="true">A</span>
             <h2 id="onboarding-title">Welcome to Aiden</h2>
             <p id="onboarding-detail">
-              Aiden will check this computer, show what is ready, and explain the next action. Browser, coding, and Apps setup can be skipped.
+              Connect a model, then ask your first task. No Aiden account is required. Browser, coding, and Apps setup can wait.
             </p>
-            <ProductButton variant="primary" onClick={next}>Check this computer</ProductButton>
+            <ModelConnectionChoices onSelect={(kind) => onOpenSettings('model', kind)} />
+            <ProductButton variant="secondary" onClick={next}>Check this computer</ProductButton>
           </div>
         ) : current.id === 'ready' ? (
           <div>
             <span className="onboarding-icon" aria-hidden="true"><ProductIcon name="check" size={20} /></span>
-            <h2 id="onboarding-title">{readiness?.overall === 'ready' ? 'Aiden is ready' : 'Setup can continue later'}</h2>
+            <h2 id="onboarding-title">{canStart ? 'Aiden is ready' : 'Setup can continue later'}</h2>
             <p id="onboarding-detail">
-              {readiness?.overall === 'ready' ? 'Choose what you want to accomplish first.' : 'Required issues remain visible in Settings → Readiness. Optional capabilities do not block Chat.'}
+              {canStart ? 'Choose what you want to accomplish first.' : 'Required issues remain visible in Settings → Readiness. Optional capabilities do not block Chat.'}
             </p>
-            {!chatReady ? <ProductButton variant="primary" onClick={() => onOpenSettings('model')}>Connect AI for Chat</ProductButton> : <div className="onboarding-starters">
+            {!canStart ? <ProductButton variant="primary" onClick={() => onOpenSettings(chatReady ? 'runtime' : 'model')}>{chatReady ? 'Review execution readiness' : 'Connect AI for Chat'}</ProductButton> : <div className="onboarding-starters">
               {starterActions.map((starter, starterIndex) => <button key={starter.id} type="button" onClick={() => {
                 if (starter.available) onComplete(starter.prompt)
                 else if (starter.setup && 'settings' in starter.setup) onOpenSettings(starter.setup.settings)
@@ -154,7 +165,7 @@ export function OnboardingModal({
               <div>
                 <StatusBadge tone={complete ? 'ready' : optionalNotConfigured ? 'disabled' : 'attention'}>{complete ? 'Ready' : optionalNotConfigured ? 'Not configured' : 'Needs attention'}</StatusBadge>
                 <p id="onboarding-detail">{readinessItem.detail}</p>
-                {!complete ? action() : null}
+                {!complete ? current.id === 'ai' ? <ModelConnectionChoices onSelect={(kind) => onOpenSettings('model', kind)} /> : action() : null}
               </div>
             ) : <p id="onboarding-detail" className="onboarding-warning">Readiness information is unavailable. Open Settings → Readiness and recheck.</p>}
             <div className="onboarding-actions">
@@ -163,6 +174,10 @@ export function OnboardingModal({
             </div>
           </div>
         )}
+        <div className="onboarding-actions">
+          <ProductButton variant="ghost" onClick={onDismiss}>Continue to Workbench</ProductButton>
+          <span className="onboarding-optional">Setup can be resumed from Readiness. No account required for local use.</span>
+        </div>
       </div>
     </>
   )

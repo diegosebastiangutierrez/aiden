@@ -80,6 +80,8 @@ import { hooks }  from './hooksSlash';
 import { greeter } from './greeter';
 // v4.12 Slice 1a — /mcp read-only surfacing of the MCP client.
 import { mcp } from './mcpManage';
+import { discover } from './discover';
+import { account } from './account';
 // v4.12 /commands slice — /home working-directory show/change.
 import { home } from './home';
 import { approvals, attempts, effects, evidence, job, jobs, proof } from './operatorViews';
@@ -171,6 +173,8 @@ export {
 
 /** All built-in system commands, in canonical order. */
 export const allCommands: SlashCommand[] = [
+  discover,
+  account,
   help,
   tools,
   model,

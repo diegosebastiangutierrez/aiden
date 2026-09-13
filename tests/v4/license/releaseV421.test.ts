@@ -20,16 +20,16 @@ describe('stable release identity', () => {
       packages: Record<string, { version?: string }>;
     };
     const readme = readFileSync(path.join(root, 'README.md'), 'utf8');
-    const notes = readFileSync(path.join(root, 'RELEASE-NOTES-v4.21.1.md'), 'utf8');
+    const notes = readFileSync(path.join(root, 'RELEASE-NOTES-v4.21.2.md'), 'utf8');
 
-    expect(manifest).toMatchObject({ name: 'aiden-runtime', version: '4.21.1' });
-    expect(lock.version).toBe('4.21.1');
-    expect(lock.packages['']?.version).toBe('4.21.1');
+    expect(manifest).toMatchObject({ name: 'aiden-runtime', version: '4.21.2' });
+    expect(lock.version).toBe('4.21.2');
+    expect(lock.packages['']?.version).toBe('4.21.2');
     expect(lock.packages['packages/aiden-os']?.version).toBe('4.18.0');
-    expect(readme).toContain('**Stable:** `v4.21.1` through npm `latest`');
-    expect(readme).toContain('npm latest → 4.21.1');
-    expect(readme).not.toContain('**Local release candidate:** `v4.21.1`');
-    expect(notes).toContain('# Aiden v4.21.1');
+    expect(readme).toContain('**Stable:** `v4.21.2` through npm `latest`');
+    expect(readme).toContain('npm latest → 4.21.2');
+    expect(readme).not.toContain('**Local release candidate:** `v4.21.2`');
+    expect(notes).toContain('# Aiden v4.21.2');
     expect(notes).toContain('stable runtime release');
   });
 });

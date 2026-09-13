@@ -154,6 +154,7 @@ export class WindowsDpapiSecretBackend implements SecretBackend {
 
   async protect(value: string): Promise<string> {
     return invokeWindowsProtection(
+      "$ErrorActionPreference='Stop';Add-Type -AssemblyName System.Security;" +
       "$v=[Console]::In.ReadToEnd();$b=[Text.Encoding]::UTF8.GetBytes($v);" +
       "$p=[Security.Cryptography.ProtectedData]::Protect($b,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser);" +
       '[Console]::Out.Write([Convert]::ToBase64String($p))',
@@ -163,6 +164,7 @@ export class WindowsDpapiSecretBackend implements SecretBackend {
 
   async unprotect(value: string): Promise<string> {
     return invokeWindowsProtection(
+      "$ErrorActionPreference='Stop';Add-Type -AssemblyName System.Security;" +
       "$v=[Console]::In.ReadToEnd();$b=[Convert]::FromBase64String($v);" +
       "$p=[Security.Cryptography.ProtectedData]::Unprotect($b,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser);" +
       '[Console]::Out.Write([Text.Encoding]::UTF8.GetString($p))',

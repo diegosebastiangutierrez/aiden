@@ -58,6 +58,17 @@ function client() {
 }
 
 describe('Workbench external protocol projection', () => {
+  it('does not project private command arguments or URL credentials', () => {
+    const mcp = client();
+    const servers = mcp.list();
+    (servers[0].config as any) = { name: 'local', type: 'stdio', stdio: { command: 'node', args: ['--credential', 'private-argument-value'] } };
+    mcp.list = () => servers;
+    const port = createWorkbenchExternalProtocolsPort({ mcpClient: mcp as never, external: authority() as never, edition: buildEditionAuthority('pro') });
+    expect(JSON.stringify(port.snapshot())).not.toContain('private-argument-value');
+    (servers[0].config as any) = { name: 'remote', type: 'http', http: { baseUrl: 'https://user:private-password@example.test/mcp?key=private-query#private-fragment' } };
+    const endpoint = port.snapshot().mcp.servers[0].endpoint;
+    expect(endpoint).toBe('https://example.test/mcp');
+  });
   it('projects exact MCP and A2A authority without granting mutation', () => {
     const port = createWorkbenchExternalProtocolsPort({
       mcpClient: client() as never,

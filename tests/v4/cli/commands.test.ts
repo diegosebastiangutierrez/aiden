@@ -66,7 +66,7 @@ function makeCtx(over: Record<string, unknown> = {}) {
 }
 
 describe('barrel exports', () => {
-  it('allCommands has 71 entries with unique names', () => {
+  it('allCommands has 73 entries with unique names', () => {
     // Phase 16b.3 added /identity (17 → 18).
     // Phase 16b.4 added /debug-prompt (18 → 19).
     // Phase 16c added /streaming (19 → 20).
@@ -106,9 +106,11 @@ describe('barrel exports', () => {
     // Operator views and conversation/screen controls add eleven commands.
     // v4.20 Apps adds /apps (69 → 70).
     // v4.27 adds the read-only /a2a inspection surface (70 → 71).
-    expect(allCommands.length).toBe(71);
+    expect(allCommands.length).toBe(73);
     const names = new Set(allCommands.map((c) => c.name));
-    expect(names.size).toBe(71);
+    expect(names.size).toBe(73);
+    expect(names.has('discover')).toBe(true);
+    expect(names.has('account')).toBe(true);
   });
 
   it('every command exposes name, description, category', () => {

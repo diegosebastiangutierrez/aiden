@@ -93,6 +93,22 @@ export const apps: SlashCommand = {
     try {
       if (sub === 'list') await showApps(ctx);
       else if (sub === 'accounts') await showAccounts(ctx, ctx.args[1]);
+      else if (sub === 'pending') {
+        const rows = runtime.actions.listConnections(runtime.scope);
+        if (!rows.length) ctx.display.dim('No pending app connections.');
+        for (const row of rows) ctx.display.write(`${row.toolkitId} · /apps resume ${row.connectionId}\n`);
+      } else if (sub === 'resume' || sub === 'cancel') {
+        const connectionId = ctx.args[1];
+        if (!connectionId) { ctx.display.printError(`Usage: /apps ${sub} <connection-id>`); return {}; }
+        if (sub === 'cancel') {
+          await runtime.actions.cancelConnection({ connectionId, ...runtime.scope });
+          ctx.display.info('Request cancelled in Aiden. Review provider permissions separately if already approved.');
+        } else {
+          const start = await runtime.actions.resumeConnection({ connectionId, ...runtime.scope });
+          if (start.authorizationUrl) { ctx.display.write(`Open: ${start.authorizationUrl}\n`); await openOAuthBrowserUrl(start.authorizationUrl); }
+          ctx.display.dim(`After authorization, run /apps complete ${connectionId}`);
+        }
+      }
       else if (sub === 'status') {
         const accountId = ctx.args[1];
         if (!accountId) { await showAccounts(ctx); return {}; }
@@ -134,7 +150,7 @@ export const apps: SlashCommand = {
         await startConnection(ctx, account.providerId, account.toolkitId, account.label, account.accountId);
       } else {
         ctx.display.printError(`Unknown apps command: ${sub}`,
-          'Try: /apps list | accounts | connect | complete | status | reconnect | disconnect');
+          'Try: /apps list | accounts | connect | pending | resume | cancel | complete | status | reconnect | disconnect');
       }
     } catch (error) {
       ctx.display.printError(error instanceof Error ? error.message : 'Apps request failed');

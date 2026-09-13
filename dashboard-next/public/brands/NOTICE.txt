@@ -1,0 +1,11 @@
+GitHub integration mark
+
+Source: https://brand.github.com/GitHub_Logos.zip
+Original file: GitHub Logos/SVG/GitHub_Invertocat_White.svg
+Usage guidance: https://brand.github.com/foundations/logo
+Retrieved: 2026-09-12
+
+GITHUB and the INVERTOCAT logo design are trademarks of GitHub, Inc.
+The artwork remains the property of GitHub, Inc. All rights reserved.
+It identifies the GitHub integration only. Aiden is not endorsed by GitHub.
+This third-party artwork is not relicensed under Aiden's source-code licence.

@@ -527,11 +527,19 @@ export class ComposioIntegrationProvider implements IntegrationProvider {
   async completeConnection(input: {
     connectionId: string;
     providerCredential?: string;
+    ownerId?: string;
+    workspaceId?: string;
   }): Promise<ProviderConnectionResult> {
     const credential = requireCredential(input.providerCredential);
     try {
-      const account = await (await this.client(credential)).connectedAccounts.waitForConnection(input.connectionId);
+      const account = await (await this.client(credential)).connectedAccounts.get(input.connectionId);
       if (!account.id) throw new IntegrationProviderError('account_not_found', 'Connected account identity is unavailable');
+      if (account.id !== input.connectionId || (input.ownerId && (account.userId ?? account.user_id) !== `aiden:${input.ownerId}`))
+        throw new IntegrationProviderError('permission_denied', 'Connected account identity does not match this authorization');
+      if (['INITIALIZING', 'INITIATED', 'PENDING'].includes(account.status?.toUpperCase() ?? ''))
+        throw new IntegrationProviderError('authorization_pending', 'Waiting for provider authorization');
+      if (['FAILED', 'REVOKED', 'INACTIVE'].includes(account.status?.toUpperCase() ?? ''))
+        throw new IntegrationProviderError('permission_denied', 'Provider authorization was not granted');
       const state = normalizeAccountState(account.status);
       if (state.status !== 'active') throw new IntegrationProviderError('auth_expired', 'Connected account is not active');
       return {

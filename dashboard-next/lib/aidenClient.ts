@@ -495,6 +495,7 @@ export interface WorkbenchConnectedAccount {
 }
 
 export interface WorkbenchAppsSnapshot {
+  pendingConnections?: Array<{ connectionId: string; providerId: string; toolkitId: string; label: string | null; expiresAt: number | null; createdAt: number }>;
   providers: WorkbenchAppProvider[];
   toolkits: WorkbenchAppToolkit[];
   accounts: WorkbenchConnectedAccount[];
@@ -561,6 +562,8 @@ export interface WorkbenchAutomationOccurrence {
 }
 
 export interface WorkbenchAppConnection {
+  providerId?: string;
+  toolkitId?: string;
   connectionId: string;
   authorizationUrl?: string;
   userCode?: string;
@@ -813,6 +816,13 @@ function token(): string {
 }
 
 export function hasWriteToken(): boolean { return token().length > 0; }
+export async function accountAction(action: 'status' | 'begin' | 'disconnect'): Promise<import('../../core/v4/product/accountContract').AccountClientState> {
+  const response = await fetch(`/api/account/${action}`, { method: 'POST', cache: 'no-store',
+    headers: { 'Content-Type': 'application/json', 'x-workbench-token': token() }, body: '{}', signal: AbortSignal.timeout(15_000) });
+  const value = await response.json();
+  if (!response.ok) throw new Error('Account linking is unavailable right now. Your local work is unaffected.');
+  return value;
+}
 
 export async function loadCommercialStatus<T>(): Promise<T> {
   const response = await fetch('/api/commercial/status', { cache: 'no-store' });
@@ -1757,6 +1767,47 @@ export async function completeAppConnection(connectionId: string): Promise<Workb
     { method: 'POST' },
   );
   return result.account;
+}
+
+export type McpManagementAction = 'reconnect' | 'remove' | 'review' | 'add' | 'authorize';
+export interface McpManagementSnapshot {
+  available: boolean;
+  authorization?: { id: string; name: string; state: 'preparing' | 'waiting' | 'saving' | 'connecting' | 'connected' | 'authorized' | 'failed' | 'cancelled'; message: string; url?: string; userCode?: string; expiresAt?: number } | null;
+  servers: Array<{ name: string; status: string; reviewRequired: boolean; actions: McpManagementAction[] }>;
+}
+export interface McpManagementPreview {
+  confirmationId: string; name: string; action: McpManagementAction;
+  description: string; expiresAt: number; tools: Array<{ name: string; effect: string }>;
+  configuration?: { type: 'stdio' | 'http'; stdio?: { command: string; args: string[] }; http?: { baseUrl: string; transport?: string } };
+}
+async function mcpManagementRequest<T>(suffix: string, body?: Record<string, unknown>): Promise<T> {
+  const response = await fetch(`/api/mcp/management${suffix}`, {
+    method: body ? 'POST' : 'GET', cache: 'no-store',
+    headers: { 'Content-Type': 'application/json', 'x-workbench-token': token() },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  const value = await response.json() as T & { error?: string };
+  if (!response.ok) throw new Error(value.error || 'MCP connection change failed');
+  return value;
+}
+export const loadMcpManagement = () => mcpManagementRequest<McpManagementSnapshot>('');
+export const previewMcpChange = (name: string, action: McpManagementAction) => mcpManagementRequest<McpManagementPreview>('/preview', { name, action });
+export const previewMcpSetup = (name: string, configuration: NonNullable<McpManagementPreview['configuration']>) => mcpManagementRequest<McpManagementPreview>('/add', { name, configuration });
+export const confirmMcpChange = (confirmationId: string) => mcpManagementRequest<McpManagementSnapshot>('/confirm', { confirmationId });
+export const cancelMcpAuthorization = (id: string) => mcpManagementRequest<McpManagementSnapshot>('/cancel-authorization', { id });
+
+export function resumeAppConnection(connectionId: string): Promise<WorkbenchAppConnection> {
+  return appsRequest(`/api/apps/connections/${encodeURIComponent(connectionId)}/resume`, { method: 'POST', body: '{}' });
+}
+export async function loadPendingAppConnections(): Promise<NonNullable<WorkbenchAppsSnapshot['pendingConnections']>> {
+  const result = await appsRequest<{ connections: NonNullable<WorkbenchAppsSnapshot['pendingConnections']> }>('/api/apps/connections/pending', { method: 'POST', body: '{}' });
+  return result.connections;
+}
+export function cancelAppConnection(connectionId: string): Promise<{ state: 'cancelled' }> {
+  return appsRequest(`/api/apps/connections/${encodeURIComponent(connectionId)}/cancel`, { method: 'POST', body: '{}' });
+}
+export function checkAppConnection(connectionId: string): Promise<{ state: 'pending' | 'completed'; account?: WorkbenchConnectedAccount }> {
+  return appsRequest(`/api/apps/connections/${encodeURIComponent(connectionId)}/check`, { method: 'POST', body: '{}' });
 }
 
 export async function refreshAppAccount(accountId: string): Promise<WorkbenchConnectedAccount> {

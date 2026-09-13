@@ -23,6 +23,26 @@ async function request(path: string, init: RequestInit = {}) {
 }
 
 describe('Workbench Apps bridge', () => {
+  it('gates recovery controls, rejects injected scope and distinguishes pending from connected', async () => {
+    const pendingError = Object.assign(new Error('Waiting for provider authorization'), { category: 'authorization_pending' });
+    const apps: WorkbenchAppsPort = { snapshot: vi.fn(), configureProvider: vi.fn(), connect: vi.fn(),
+      complete: vi.fn(async () => { throw pendingError; }), refresh: vi.fn(), reconnect: vi.fn(), disconnect: vi.fn(),
+      pending: () => [{ connectionId: 'request', providerId: 'fake', toolkitId: 'projects', label: null, expiresAt: null, createdAt: 1 }],
+      resume: vi.fn(async () => ({ connectionId: 'request', providerId: 'fake', toolkitId: 'projects', authorizationUrl: 'https://example.invalid/authorize' })),
+      cancel: vi.fn(async () => {}),
+    };
+    bridge = await startWorkbenchBridge({ reader, apps, token: TOKEN, port: 0 });
+    for (const suffix of ['pending', 'request/resume', 'request/cancel', 'request/check']) {
+      const path = `/api/apps/connections/${suffix}`;
+      expect((await request(path, { method: 'POST', body: '{}' })).status).toBe(401);
+      expect((await request(path, { method: 'POST', headers: { 'x-workbench-token': TOKEN, origin: 'https://foreign.invalid' }, body: '{}' })).status).toBe(403);
+    }
+    const headers = { 'x-workbench-token': TOKEN, 'Content-Type': 'application/json' };
+    expect((await request('/api/apps/connections/request/resume', { method: 'POST', headers, body: JSON.stringify({ workspaceId: 'other' }) })).status).toBe(400);
+    expect((await request('/api/apps/connections/request/check', { method: 'POST', headers, body: '{}' })).body).toEqual({ state: 'pending' });
+    expect((await request('/api/apps/connections/request/cancel', { method: 'POST', headers, body: '{}' })).body).toEqual({ state: 'cancelled' });
+    expect(apps.cancel).toHaveBeenCalledWith('request');
+  });
   it('keeps account metadata token-gated and exposes no credential fields', async () => {
     const apps: WorkbenchAppsPort = {
       snapshot: vi.fn(async () => ({

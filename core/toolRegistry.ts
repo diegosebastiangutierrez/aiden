@@ -2286,7 +2286,7 @@ public class AidenVolSet {
     if (messages.length === 0) {
       return {
         success: true,
-        output:  'No unread messages found, or imap-simple is not yet installed (run: npm install imap-simple).',
+        output:  'No unread messages returned. If a connection error was reported, check Gmail IMAP access and app credentials.',
       }
     }
 

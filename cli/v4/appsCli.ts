@@ -10,7 +10,7 @@ import type { SecretBackend } from '../../core/v4/integrations/secretAuthority';
 import { openOAuthBrowserUrl } from './auth/loadProvider';
 
 export interface AppsCliInput {
-  action: 'list' | 'accounts' | 'status' | 'configure' | 'connect' | 'complete' | 'reconnect' | 'disconnect';
+  action: 'list' | 'accounts' | 'status' | 'configure' | 'connect' | 'complete' | 'reconnect' | 'disconnect' | 'pending' | 'resume' | 'cancel';
   providerId?: string;
   toolkitId?: string;
   accountId?: string;
@@ -117,6 +117,28 @@ export async function runAppsCli(input: AppsCliInput, deps: AppsCliDependencies)
       return 0;
     }
 
+    if (input.action === 'pending') {
+      const rows = runtime.actions.listConnections(runtime.scope);
+      write(rows.length ? 'Waiting for authorization:\n' : 'No pending app connections.\n');
+      for (const row of rows) write(`${row.toolkitId} · ${row.connectionId}\nResume: aiden apps resume ${row.connectionId}\n`);
+      return 0;
+    }
+    if (input.action === 'resume' || input.action === 'cancel') {
+      if (!input.connectionId) throw new Error('A connection identity is required');
+      const request = { connectionId: input.connectionId, ...runtime.scope };
+      if (input.action === 'cancel') {
+        await runtime.actions.cancelConnection(request);
+        write('Request cancelled in Aiden. Review provider permissions separately if you already approved access.\n');
+      } else {
+        const start = await runtime.actions.resumeConnection(request);
+        if (start.authorizationUrl) {
+          write(`Open: ${start.authorizationUrl}\n`);
+          if (input.open !== false) await (deps.openUrl ?? openOAuthBrowserUrl)(start.authorizationUrl);
+        }
+        write(`After authorization: aiden apps complete ${start.connectionId}\n`);
+      }
+      return 0;
+    }
     if (input.action === 'connect') {
       const providerId = input.providerId?.trim().toLowerCase() || 'composio';
       const toolkitId = input.toolkitId?.trim().toLowerCase();

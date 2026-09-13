@@ -26,6 +26,16 @@ beforeEach(async () => { root = await mkdtemp(path.join(os.tmpdir(), 'aiden-apps
 afterEach(async () => { await rm(root, { recursive: true, force: true }); });
 
 describe('apps CLI', () => {
+  it('recovers and cancels a pending connection across separate CLI invocations', async () => {
+    let output = ''; const write = (text: string) => { output += text; };
+    const base = { rootDir: root, cwd: root, write, includeFake: true, secretBackend: new TestBackend(), openUrl: vi.fn(async () => {}) };
+    expect(await runAppsCli({ action: 'connect', providerId: 'fake', toolkitId: 'projects', open: false }, base)).toBe(0);
+    const connectionId = output.match(/Connection:\s+(fake-connection-[a-f0-9]+)/)?.[1]; expect(connectionId).toBeTruthy(); output = '';
+    expect(await runAppsCli({ action: 'pending' }, base)).toBe(0); expect(output).toContain(connectionId); output = '';
+    expect(await runAppsCli({ action: 'resume', connectionId }, base)).toBe(0); expect(base.openUrl).toHaveBeenCalledOnce();
+    expect(await runAppsCli({ action: 'cancel', connectionId }, base)).toBe(0);
+    expect(await runAppsCli({ action: 'complete', connectionId }, base)).toBe(1);
+  });
   it('shows a truthful empty state when Composio is not configured', async () => {
     let output = '';
     const code = await runAppsCli({ action: 'list' }, {

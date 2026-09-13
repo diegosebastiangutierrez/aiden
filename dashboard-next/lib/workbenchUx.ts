@@ -195,6 +195,7 @@ export interface WorkbenchApprovalCard {
   riskTier: string;
   state: string;
   requestedAt: number;
+  appConnection?: { providerId: string; toolkitId: string };
   externalCoding: null | {
     repository: string;
     requestedScope: string[];
@@ -280,6 +281,21 @@ function localProcessApproval(value: unknown, toolName: string): WorkbenchApprov
   };
 }
 
+function appConnectionApproval(value: unknown, toolName: string): WorkbenchApprovalCard['appConnection'] {
+  if (toolName !== 'app_connect') return undefined;
+  let plan: unknown = value;
+  if (typeof plan === 'string') {
+    try { plan = JSON.parse(plan); } catch { return undefined; }
+  }
+  if (!plan || typeof plan !== 'object' || Array.isArray(plan)) return undefined;
+  const args = (plan as { args?: unknown }).args;
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return undefined;
+  const { provider_id, toolkit_id } = args as Record<string, unknown>;
+  const valid = (value: unknown): value is string => typeof value === 'string' && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(value);
+  if (!valid(provider_id) || !valid(toolkit_id)) return undefined;
+  return { providerId: provider_id, toolkitId: toolkit_id };
+}
+
 /** Translate the durable SQL projection into the narrow approval-card contract.
  * Rows lacking an exact Job/Attempt/generation/action binding are not actionable. */
 export function durableApprovalCards(rows: readonly WorkbenchApprovalRow[]): WorkbenchApprovalCard[] {
@@ -308,6 +324,7 @@ export function durableApprovalCards(rows: readonly WorkbenchApprovalRow[]): Wor
       requestedAt: Number.isFinite(Number(row.requested_at)) ? Number(row.requested_at) : 0,
       externalCoding: externalCodingApproval(row.normalized_execution_plan, toolName),
       localProcess: localProcessApproval(row.normalized_execution_plan, toolName),
+      ...(toolName === 'app_connect' ? { appConnection: appConnectionApproval(row.normalized_execution_plan, toolName) } : {}),
     }];
   }).sort((a, b) => a.requestedAt - b.requestedAt || a.approvalId.localeCompare(b.approvalId));
 }

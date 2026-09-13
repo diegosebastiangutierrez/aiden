@@ -7,13 +7,12 @@
 /**
  * core/v4/daemon/triggers/email/imapConnection.ts — v4.5 Phase 4a.
  *
- * Thin wrapper around imap-simple. Adds:
+ * Thin wrapper around the maintained IMAP transport. Adds:
  *   - exponential backoff reconnect (1s → 60s capped at 60s)
  *   - IMAP ID command on connect (defends against servers that
  *     disconnect unidentified clients — see audit §8)
  *   - UIDVALIDITY tracking for cross-restart UID correctness
- *   - typed Promise interface (imap-simple's surface is mostly
- *     callback-shaped underneath)
+ *   - typed Promise interface shared with email channel readers
  *
  * Lifecycle:
  *   const ic = createImapConnection(spec.imap, log);
@@ -26,13 +25,8 @@
  *   await ic.disconnect();
  */
 
-import * as imaps from 'imap-simple';
-import type { ImapSimple } from 'imap-simple';
+import { ImapFlow } from 'imapflow';
 import { VERSION } from '../../../../version';
-
-// `imap-simple` exposes `ImapSimple` as the class; older docs called
-// it `Connection`. Alias for readability in this module.
-type Connection = ImapSimple;
 
 export interface ImapConfig {
   host:           string;
@@ -81,119 +75,86 @@ const noopLog = (_l: 'info' | 'warn' | 'error', _m: string): void => undefined;
 export function createImapConnection(opts: CreateImapConnectionOptions): ImapConnection {
   const cfg = opts.config;
   const log = opts.log ?? noopLog;
-  let conn: Connection | null = null;
-  let backoffMs = BACKOFF_INITIAL_MS;
-  let currentMailbox: string | null = null;
-  let currentUidValidity = 0;
-
-  const buildConfig = () => ({
-    imap: {
-      host:           cfg.host,
-      port:           cfg.port,
-      user:           cfg.user,
-      password:       cfg.password,
-      tls:            cfg.tls,
-      authTimeout:    cfg.authTimeoutMs,
-      // Reasonable production defaults — imap-simple passes these to node-imap.
-      tlsOptions: { rejectUnauthorized: true },
-    },
-  });
-
-  const sendIdCommand = (c: Connection): Promise<void> => new Promise<void>((resolve) => {
-    // imap-simple exposes the raw node-imap Connection via .imap.
-    // Some servers (NetEase 163) disconnect without an ID exchange:
-    //   "BYE Unsafe Login. Please contact kefu@188.com for help".
-    // Apply unconditionally — other servers ignore it.
-    try {
-      const c2 = c as unknown as { imap?: { id?: (args: object, cb: (err: Error | null) => void) => void } };
-      if (c2.imap?.id) {
-        c2.imap.id({ name: 'Aiden', version: VERSION, vendor: 'Taracod' }, (_err) => resolve());
-      } else { resolve(); }
-    } catch {
-      // Older imap-simple versions don't expose .id — treat as no-op.
-      resolve();
-    }
-  });
+  let conn: ImapFlow | null = null;
+  const requireConnection = (): ImapFlow => {
+    if (!conn?.usable) throw new Error('[email] not connected');
+    return conn;
+  };
 
   return {
     async connect(): Promise<void> {
+      if (conn?.usable) return;
+      conn?.close();
+      const client = new ImapFlow({
+        host: cfg.host, port: cfg.port, secure: cfg.tls,
+        // Non-implicit TLS must upgrade before credentials can be sent.
+        ...(cfg.tls ? {} : { doSTARTTLS: true }),
+        auth: { user: cfg.user, pass: cfg.password },
+        tls: { rejectUnauthorized: true },
+        connectionTimeout: cfg.authTimeoutMs,
+        greetingTimeout: cfg.authTimeoutMs,
+        clientInfo: { name: 'Aiden', version: VERSION, vendor: 'Taracod' },
+        logger: false, logRaw: false,
+      });
+      // Never let protocol errors print credentials or become unhandled events.
+      client.on('error', () => log('warn', '[email] IMAP transport error'));
+      conn = client;
+      let deadline: ReturnType<typeof setTimeout> | undefined;
       try {
-        conn = await imaps.connect(buildConfig());
-        await sendIdCommand(conn);
-        backoffMs = BACKOFF_INITIAL_MS;          // reset on success
-        log('info', `[email] imap connected (${cfg.host}:${cfg.port} ${cfg.user})`);
+        await Promise.race([
+          client.connect(),
+          new Promise<never>((_resolve, reject) => {
+            deadline = setTimeout(() => { client.close(); reject(new Error('IMAP connect deadline')); }, cfg.authTimeoutMs);
+            deadline.unref();
+          }),
+        ]);
+        log('info', '[email] IMAP connected');
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        log('error', `[email] imap connect failed: ${msg}`);
-        throw e;
+        client.close();
+        if (conn === client) conn = null;
+        log('error', '[email] IMAP connection failed');
+        throw new Error('[email] IMAP connection failed; check server, TLS and credentials');
+      } finally {
+        if (deadline) clearTimeout(deadline);
       }
     },
     async disconnect(): Promise<void> {
-      if (!conn) return;
-      try { conn.end(); } catch { /* best-effort */ }
+      const client = conn;
       conn = null;
-      currentMailbox = null;
-      currentUidValidity = 0;
+      if (!client) return;
+      try { await client.logout(); } finally { client.close(); }
     },
     isConnected(): boolean {
-      return conn !== null;
+      return conn?.usable === true;
     },
     async openMailbox(mailbox: string): Promise<{ uidValidity: number }> {
-      if (!conn) throw new Error('[email] not connected');
-      // imap-simple openBox typed surface is awkward — accept Mailbox
-      // object back.
-      const box = await conn.openBox(mailbox) as unknown as { uidvalidity?: number };
-      currentMailbox = mailbox;
-      currentUidValidity = box.uidvalidity ?? 0;
-      return { uidValidity: currentUidValidity };
+      const box = await requireConnection().mailboxOpen(mailbox);
+      return { uidValidity: Number(box.uidValidity) };
     },
     async searchAll(): Promise<number[]> {
-      if (!conn) throw new Error('[email] not connected');
-      const results = await conn.search(['ALL'], { bodies: ['HEADER.FIELDS (MESSAGE-ID)'], markSeen: false }) as Array<{ attributes: { uid: number } }>;
-      return results.map((r) => r.attributes.uid);
+      return (await requireConnection().search({ all: true }, { uid: true })) || [];
     },
     async searchUnseen(): Promise<number[]> {
-      if (!conn) throw new Error('[email] not connected');
-      const results = await conn.search(['UNSEEN'], { bodies: ['HEADER.FIELDS (MESSAGE-ID)'], markSeen: false }) as Array<{ attributes: { uid: number } }>;
-      return results.map((r) => r.attributes.uid);
+      return (await requireConnection().search({ seen: false }, { uid: true })) || [];
     },
     async fetchMessage(uid: number): Promise<RawMessage | null> {
-      if (!conn) throw new Error('[email] not connected');
+      const client = requireConnection();
       try {
-        const fetched = await conn.search(
-          [['UID', String(uid)]],
-          {
-            // Fetch full RFC822 source — mailparser handles MIME.
-            bodies: [''],
-            markSeen: false,
-          },
-        ) as Array<{
-          attributes: { uid: number; flags?: string[]; date?: Date };
-          parts:      Array<{ which: string; body: string | Buffer }>;
-        }>;
-        if (fetched.length === 0) return null;
-        const m = fetched[0];
-        const part = m.parts.find((p) => p.which === '');
-        if (!part) return null;
-        const raw = Buffer.isBuffer(part.body) ? part.body : Buffer.from(part.body, 'utf-8');
+        const m = await client.fetchOne(String(uid), { source: true, flags: true, internalDate: true }, { uid: true });
+        if (!m || !m.source) return null;
         return {
-          uid:          m.attributes.uid,
-          raw,
-          flags:        m.attributes.flags ?? [],
-          internalDate: m.attributes.date ?? new Date(),
+          uid: m.uid,
+          raw: m.source,
+          flags: [...(m.flags ?? [])],
+          internalDate: m.internalDate instanceof Date ? m.internalDate : new Date(m.internalDate ?? Date.now()),
         };
       } catch (e) {
-        log('warn', `[email] fetch uid ${uid} failed: ${e instanceof Error ? e.message : String(e)}`);
+        log('warn', `[email] fetch uid ${uid} failed`);
         return null;
       }
     },
     async markSeen(uid: number): Promise<void> {
-      if (!conn) throw new Error('[email] not connected');
-      try {
-        await conn.addFlags(uid, '\\Seen');
-      } catch (e) {
-        log('warn', `[email] markSeen uid ${uid} failed: ${e instanceof Error ? e.message : String(e)}`);
-      }
+      await requireConnection().messageFlagsAdd(String(uid), ['\\Seen'], { uid: true });
     },
   };
 }

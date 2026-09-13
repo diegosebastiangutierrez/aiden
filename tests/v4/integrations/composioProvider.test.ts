@@ -88,6 +88,23 @@ function clientFixture() {
 }
 
 describe('ComposioIntegrationProvider', () => {
+  it('checks pending authorization once without entering the SDK wait loop', async () => {
+    const { client } = clientFixture();
+    client.connectedAccounts.get = vi.fn(async id => ({ id, userId: 'aiden:owner-a', status: 'INITIATED' }));
+    const wait = vi.spyOn(client.connectedAccounts, 'waitForConnection');
+    const provider = new ComposioIntegrationProvider({ clientFactory: async () => client });
+    await expect(provider.completeConnection({ connectionId: 'connection-1', providerCredential: 'project-key', ownerId: 'owner-a' }))
+      .rejects.toMatchObject({ category: 'authorization_pending' });
+    expect(client.connectedAccounts.get).toHaveBeenCalledTimes(1); expect(wait).not.toHaveBeenCalled();
+  });
+  it('rejects active readback from a different provider account or user', async () => {
+    const { client } = clientFixture();
+    client.connectedAccounts.get = vi.fn(async () => ({ id: 'different', userId: 'aiden:owner-a', status: 'ACTIVE' }));
+    const provider = new ComposioIntegrationProvider({ clientFactory: async () => client });
+    await expect(provider.completeConnection({ connectionId: 'connection-1', providerCredential: 'project-key', ownerId: 'owner-a' })).rejects.toThrow();
+    client.connectedAccounts.get = vi.fn(async id => ({ id, userId: 'aiden:other', status: 'ACTIVE' }));
+    await expect(provider.completeConnection({ connectionId: 'connection-1', providerCredential: 'project-key', ownerId: 'owner-a' })).rejects.toThrow();
+  });
   it('is optional and reports not configured without loading the SDK', async () => {
     const factory = vi.fn();
     const provider = new ComposioIntegrationProvider({ clientFactory: factory });
@@ -146,7 +163,7 @@ describe('ComposioIntegrationProvider', () => {
     ]);
     const account = await provider.completeConnection({ connectionId: start.connectionId, providerCredential: 'project-key' });
     expect(account).toMatchObject({
-      providerAccountRef: 'connected-1', providerUserRef: 'aiden:owner-a', hostedAuthRef: 'connected-1',
+      providerAccountRef: 'connection-1', providerUserRef: 'aiden:owner-a', hostedAuthRef: 'connection-1',
     });
   });
 

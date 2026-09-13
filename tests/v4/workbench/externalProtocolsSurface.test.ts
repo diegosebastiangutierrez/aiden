@@ -41,7 +41,9 @@ describe('Workbench external protocol product surface', () => {
     )?.[1] ?? '';
 
     expect(capabilitiesSurface).toContain('<PluginsList />');
-    expect(capabilitiesSurface).toContain('<MCPView />');
-    expect(capabilitiesSurface).toContain('Advanced protocols and extensions');
+    expect(capabilitiesSurface).toContain("openWorkbenchDestination({ settings: 'mcp' })");
+    const protocolSurface = page.match(/\{settingsTab === 'mcp'[\s\S]*?<SettingsSection title="MCP & external agents">([\s\S]*?)<\/SettingsSection>/)?.[1] ?? '';
+    expect(protocolSurface).toContain('<MCPView />');
+    expect(page).toContain("{ id: 'mcp', label: 'MCP & external agents'");
   });
 });

@@ -54,7 +54,10 @@ describe('Workbench rendered premium-quality contracts', () => {
     expect(menu).toContain("event.key === 'Escape'");
     expect(menu).toMatch(/ArrowDown|ArrowUp/);
     expect(menu).toContain('.focus()');
-    expect(menu).toContain('role="menu"');
+    expect(menu).toContain('role="dialog"');
+    expect(menu).toContain('aria-modal="true"');
+    expect(menu).toContain('type="search"');
+    expect(menu).toContain("event.key === 'Tab'");
   });
 
   it('presents the composer as one integrated premium control', () => {

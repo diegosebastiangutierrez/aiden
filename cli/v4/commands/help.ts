@@ -75,6 +75,7 @@ export const SUBSECTION_MAP: Readonly<Record<string, Subsection>> = {
   license: 'System',
   plugins: 'System',
   apps: 'System',
+  discover: 'System',
   'reload-mcp': 'System',
   // v4.12 Slice 1a — /mcp read-only surfacing of connected MCP servers.
   mcp: 'System',
@@ -142,6 +143,7 @@ export const SUBSECTION_MAP: Readonly<Record<string, Subsection>> = {
 
   // ── Authentication ──
   auth: 'Authentication',
+  account: 'Authentication',
 
   // ── Help ──
   help: 'Help',
@@ -153,14 +155,16 @@ export function subsectionFor(commandName: string): Subsection {
 
 const DEFAULT_HELP_GROUPS: ReadonlyArray<{ title: string; commands: readonly string[] }> = [
   { title: 'Work', commands: ['mode', 'tools', 'jobs'] },
-  { title: 'Models and setup', commands: ['model', 'doctor', 'auth'] },
+  { title: 'Models and setup', commands: ['model', 'doctor', 'auth', 'account'] },
   { title: 'Automation and attention', commands: ['cron', 'status', 'queue', 'approvals'] },
   { title: 'Memory & skills', commands: ['memory', 'skills', 'history'] },
-  { title: 'Connections', commands: ['apps', 'mcp', 'a2a', 'plugins', 'channel'] },
+  { title: 'Connections', commands: ['discover', 'apps', 'mcp', 'a2a', 'plugins', 'channel'] },
   { title: 'Diagnostics', commands: ['providers', 'usage', 'setup'] },
 ];
 
 const COMMAND_USAGE: Readonly<Record<string, string>> = {
+  account: '/account [status|open]',
+  discover: '/discover [search words]',
   history: '/history [list [N] | clear --yes]',
   model: '/model [provider:model | model]',
   skills: '/skills [list [query] [page N] | search <query> | view <name> | health | setup]',

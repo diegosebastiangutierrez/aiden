@@ -13,6 +13,14 @@ import { A2A_JSONRPC_BINDING, A2A_PROTOCOL_VERSION } from '../a2a/protocol';
 import { MCP_PROTOCOL_VERSION } from '../mcp/protocol';
 import type { McpClient } from '../mcpClient';
 
+function visibleMcpEndpoint(config: import('../mcpClient').McpServerConfig): string {
+  if (config.type !== 'http') return `Local process · ${config.stdio?.args?.length ?? 0} configured arguments`;
+  try {
+    const url = new URL(config.http?.baseUrl ?? '');
+    return `${url.protocol}//${url.host}${url.pathname === '/' ? '' : url.pathname}`;
+  } catch { return 'Configured remote endpoint'; }
+}
+
 export interface WorkbenchExternalProtocolSnapshot {
   entitlements: { mcpExternal: boolean; a2aPreview: boolean };
   mcp: {
@@ -106,9 +114,7 @@ export function createWorkbenchExternalProtocolsPort(input: {
             const readToolCount = server.tools.filter((tool) => tool.effect === 'read_only').length;
             return {
               name: server.config.name,
-              endpoint: server.config.type === 'http'
-                ? server.config.http?.baseUrl ?? 'unavailable'
-                : `${server.config.stdio?.command ?? 'stdio'} ${(server.config.stdio?.args ?? []).join(' ')}`.trim(),
+              endpoint: visibleMcpEndpoint(server.config),
               transport: server.config.type === 'http'
                 ? server.config.http?.transport ?? 'streamable'
                 : 'stdio',

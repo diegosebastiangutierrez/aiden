@@ -32,7 +32,7 @@ describe('commercial Workbench onboarding source contract', () => {
 
   it('temporarily releases onboarding for durable readiness and Apps deep links without marking setup complete', () => {
     expect(page).toContain('setOnboardingVisible(false)');
-    expect(page).toContain('onOpenSettings={(tab) => { openWorkbenchDestination({ settings: tab }) }}');
+    expect(page).toContain('onOpenSettings={(tab, connectionKind) => { openWorkbenchDestination({ settings: tab, connectionKind }) }}');
     expect(page).toContain("openWorkbenchDestination({ view: 'apps' })");
     expect(page).toContain('parseWorkbenchDestination(window.location.search)');
   });

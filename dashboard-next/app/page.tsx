@@ -6,7 +6,17 @@ import {
   type ReactNode, type RefObject, type ChangeEvent, type FormEvent,
 } from 'react'
 import { OnboardingModal } from '../components/OnboardingModal'
+import { ModelConnectionChoices } from '../components/ModelConnectionChoices'
+import { McpSetupForm } from '../components/McpSetupForm'
+import { searchProductFeatures } from '../../core/v4/product/featureCatalog'
+import { modelConnectionKind, type ModelConnectionKind } from '../../core/v4/product/modelConnection'
+import { ConnectionsWorkspace } from '../components/ConnectionsWorkspace'
+import { MessagingSetupPanel } from '../components/MessagingSetupPanel'
+import { AccountSetupPanel } from '../components/AccountSetupPanel'
+import { presentMcpConnection } from '../lib/connectionPresentation'
 import { AutoModeButton } from '../components/AutoModeButton'
+import { AppConnectionRequests } from '../components/AppConnectionRequests'
+import { AppBrandIcon } from '../components/AppBrandIcon'
 import { AidenMark } from '../components/AidenMark'
 import PricingModal, { type CommercialWorkbenchStatus } from '../components/PricingModal'
 import WorkflowView from '../components/WorkflowView'
@@ -642,6 +652,7 @@ interface DevOSCtxType {
   mainView:       MainView
   setMainView:    Dispatch<SetStateAction<MainView>>
   openWorkbenchDestination: (destination: WorkbenchDestination) => void
+  resumeOnboarding: () => void
   appearance:     WorkbenchAppearance
   setAppearance:  Dispatch<SetStateAction<WorkbenchAppearance>>
   density:        WorkbenchDensity
@@ -2266,7 +2277,8 @@ function HistorySidebar() {
       <button type="button" className="rail-action is-primary" title="New Chat" aria-label="New Chat" onClick={startNewChat}><ProductIcon name="plus" /></button>
       <button type="button" className={mainView === 'chat' ? 'rail-action is-active' : 'rail-action'} title="Home" aria-label="Home" onClick={() => openView('chat')}><ProductIcon name="home" /></button>
       <button type="button" className={mainView === 'activity' ? 'rail-action is-active' : 'rail-action'} title={`Active Work (${activeJobs.length})`} aria-label="Active Work" onClick={() => openView('activity')}><ProductIcon name="work" /></button>
-      <button type="button" className={mainView === 'apps' ? 'rail-action is-active' : 'rail-action'} title="Apps" aria-label="Apps" onClick={() => openView('apps')}><ProductIcon name="apps" /></button>
+      <button type="button" className={mainView === 'connections' || mainView === 'apps' ? 'rail-action is-active' : 'rail-action'} title="Connections" aria-label="Connections" onClick={() => openView('connections')}><ProductIcon name="apps" /></button>
+      <button type="button" className={mainView === 'skills' ? 'rail-action is-active' : 'rail-action'} title="Skills & Tools" aria-label="Skills & Tools" onClick={() => openView('skills')}><ProductIcon name="sparkles" /></button>
       <button type="button" className={mainView === 'brain' ? 'rail-action is-active' : 'rail-action'} title="Brain" aria-label="Brain" onClick={() => openView('brain')}><ProductIcon name="brain" /></button>
       <button type="button" className={mainView === 'automations' ? 'rail-action is-active' : 'rail-action'} title="Automations" aria-label="Automations" onClick={() => openView('automations')}><ProductIcon name="automation" /></button>
       <button type="button" className={mainView === 'artifacts' ? 'rail-action is-active' : 'rail-action'} title="Artifacts" aria-label="Artifacts" onClick={() => openView('artifacts')}><ProductIcon name="artifact" /></button>
@@ -2294,7 +2306,8 @@ function HistorySidebar() {
       <nav className="sidebar-nav" aria-label="Workbench surfaces">
         <button type="button" className={mainView === 'chat' ? 'is-active' : ''} onClick={() => openView('chat')}><span><ProductIcon name="home" size={16} /></span>Home</button>
         <button type="button" className={mainView === 'activity' ? 'is-active' : ''} onClick={() => openView('activity')}><span><ProductIcon name="work" size={16} /></span>Active Work{activeJobs.length > 0 && <small>{activeJobs.length}</small>}</button>
-        <button type="button" className={mainView === 'apps' ? 'is-active' : ''} onClick={() => openView('apps')}><span><ProductIcon name="apps" size={16} /></span>Apps</button>
+        <button type="button" className={mainView === 'connections' || mainView === 'apps' ? 'is-active' : ''} onClick={() => openView('connections')}><span><ProductIcon name="apps" size={16} /></span>Connections</button>
+        <button type="button" className={mainView === 'skills' ? 'is-active' : ''} onClick={() => openView('skills')}><span><ProductIcon name="sparkles" size={16} /></span>Skills &amp; Tools</button>
         <button type="button" className={mainView === 'brain' ? 'is-active' : ''} onClick={() => openView('brain')}><span><ProductIcon name="brain" size={16} /></span>Brain</button>
         <button type="button" className={mainView === 'automations' ? 'is-active' : ''} onClick={() => openView('automations')}><span><ProductIcon name="automation" size={16} /></span>Automations</button>
         <button type="button" className={mainView === 'artifacts' ? 'is-active' : ''} onClick={() => openView('artifacts')}><span><ProductIcon name="artifact" size={16} /></span>Artifacts</button>
@@ -2429,6 +2442,7 @@ function PlusMenu() {
     kbInputRef, setInput, openWorkbenchDestination,
   } = useDevOS()
   const [readinessItems, setReadinessItems] = useState<aiden.SystemReadinessItem[]>([])
+  const [capabilityQuery, setCapabilityQuery] = useState('')
   const menuRef = useRef<HTMLDivElement>(null)
   const restoreFocusRef = useRef<HTMLElement | null>(null)
 
@@ -2445,7 +2459,7 @@ function PlusMenu() {
     if (!plusMenuOpen) return
     restoreFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const focusableItems = () => Array.from(
-      menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"], input, button[type="submit"]') ?? [],
+      menuRef.current?.querySelectorAll<HTMLElement>('input, button') ?? [],
     ).filter((item) => !item.hasAttribute('disabled'))
     const focusFrame = window.requestAnimationFrame(() => focusableItems()[0]?.focus())
     const onKeyDown = (event: KeyboardEvent) => {
@@ -2456,6 +2470,13 @@ function PlusMenu() {
         setPlusMenuOpen(false)
         return
       }
+      if (event.key === 'Tab') {
+        const items = focusableItems(); const first = items[0], last = items.at(-1)
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus() }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
+        return
+      }
+      if (document.activeElement instanceof HTMLInputElement && ['Home', 'End', 'ArrowUp'].includes(event.key)) return
       if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
       const items = focusableItems()
       if (items.length === 0) return
@@ -2528,15 +2549,24 @@ function PlusMenu() {
         style={{ position: 'fixed', inset: 0, zIndex: 90 }}
       />
 
-      <div ref={menuRef} className="composer-action-menu" role="menu" aria-label="Add to this request">
-        <div className="composer-action-menu-header"><strong>Add to this request</strong><span>Only available actions can run.</span></div>
-        {PLUS_MENU.map((item) => (
-          <button key={item.id} type="button" role="menuitem" className="composer-action-item" onClick={item.action}>
+      <div ref={menuRef} className="composer-action-menu" role="dialog" aria-modal="true" aria-label="Add to this request">
+        <div className="composer-action-menu-header"><strong>Add to this request</strong><span>Find an action or open setup. Browsing does not grant access.</span></div>
+        <label className="composer-capability-search"><span className="sr-only">Search actions and capabilities</span><input type="search" value={capabilityQuery} onChange={event => setCapabilityQuery(event.target.value)} placeholder="Search apps, MCP, skills, Brain…" /></label>
+        {PLUS_MENU.filter(item => `${item.label} ${item.description}`.toLowerCase().includes(capabilityQuery.trim().toLowerCase())).map((item) => (
+          <button key={item.id} type="button" className="composer-action-item" onClick={item.action}>
             <span className="composer-action-icon"><ProductIcon name={item.icon} size={18} /></span>
             <span><strong>{item.label}</strong><small>{item.description}</small></span>
             {!item.available ? <em>Setup required</em> : null}
           </button>
         ))}
+        <div className="composer-action-menu-header"><strong>Connections & capabilities</strong><span>Setup and status · no task is started</span></div>
+        {searchProductFeatures(capabilityQuery).map(feature => <button key={feature.id} type="button" className="composer-action-item" aria-label={`Open ${feature.title}`} onClick={() => {
+          setPlusMenuOpen(false); setMiniPrompt(null); setCapabilityQuery(''); openWorkbenchDestination(feature.destination)
+        }}>
+          <span className="composer-action-icon"><ProductIcon name={feature.category === 'apps' ? 'apps' : feature.category === 'messaging' ? 'mail' : feature.category === 'tools' ? 'code' : 'work'} size={18} /></span>
+          <span><strong>{feature.title}</strong><small>{feature.setupNote}</small></span><em>Open</em>
+        </button>)}
+        {capabilityQuery.trim() && searchProductFeatures(capabilityQuery).length === 0 && !PLUS_MENU.some(item => `${item.label} ${item.description}`.toLowerCase().includes(capabilityQuery.trim().toLowerCase())) && <p role="status">No matching actions or capabilities.</p>}
         {miniPrompt && (
           <form className="composer-action-prompt" onSubmit={(event) => { event.preventDefault(); submitMiniPrompt() }}>
             <label htmlFor="composer-action-query">{miniPrompt.type === 'research' ? 'Deep research' : 'Quick web search'}</label>
@@ -2817,7 +2847,6 @@ function AppsView() {
   const [snapshot, setSnapshot] = useState<aiden.WorkbenchAppsSnapshot | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
-  const [pending, setPending] = useState<aiden.WorkbenchAppConnection | null>(null)
   const [disconnecting, setDisconnecting] = useState<aiden.WorkbenchConnectedAccount | null>(null)
   const [setupTarget, setSetupTarget] = useState<string | null>(null)
   const [catalogQuery, setCatalogQuery] = useState('')
@@ -2841,27 +2870,13 @@ function AppsView() {
     setBusy(`connect:${toolkit.providerId}:${toolkit.toolkitId}`)
     setError(null)
     try {
-      const connection = await aiden.connectApp({
+      await aiden.connectApp({
         providerId: toolkit.providerId,
         toolkitId: toolkit.toolkitId,
       })
-      setPending(connection)
-      if (connection.authorizationUrl) window.open(connection.authorizationUrl, '_blank', 'noopener,noreferrer')
+      window.dispatchEvent(new Event('aiden-app-connections-changed'))
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Connection could not start')
-    } finally { setBusy(null) }
-  }
-
-  const complete = async () => {
-    if (!pending) return
-    setBusy(`complete:${pending.connectionId}`)
-    setError(null)
-    try {
-      await aiden.completeAppConnection(pending.connectionId)
-      setPending(null)
-      await reload()
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Connection is not ready')
     } finally { setBusy(null) }
   }
 
@@ -2875,9 +2890,8 @@ function AppsView() {
       if (action === 'refresh') await aiden.refreshAppAccount(account.accountId)
       else if (action === 'disconnect') await aiden.disconnectAppAccount(account.accountId)
       else {
-        const connection = await aiden.reconnectAppAccount(account.accountId)
-        setPending(connection)
-        if (connection.authorizationUrl) window.open(connection.authorizationUrl, '_blank', 'noopener,noreferrer')
+        await aiden.reconnectAppAccount(account.accountId)
+        window.dispatchEvent(new Event('aiden-app-connections-changed'))
       }
       setDisconnecting(null)
       await reload()
@@ -2929,19 +2943,7 @@ function AppsView() {
 
       {error && <div className="workspace-empty-state" role="alert"><strong>Apps need attention</strong><span>{error}</span></div>}
 
-      {pending && (
-        <article className="surface-card" style={{ padding: 18, marginBottom: 18 }}>
-          <span className="eyebrow">Authorization in progress</span>
-          <h3 style={{ margin: '6px 0' }}>Finish connecting your account</h3>
-          <p style={{ color: 'var(--muted2)' }}>Complete authorization in the provider window, then confirm here.</p>
-          {pending.userCode && <code>{pending.userCode}</code>}
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            {pending.authorizationUrl && <a className="sponsor-button" href={pending.authorizationUrl} target="_blank" rel="noopener noreferrer">Open authorization</a>}
-            <button type="button" className="nav-btn" onClick={() => { void complete() }} disabled={busy !== null}>Complete connection</button>
-            <button type="button" className="nav-btn" onClick={() => setPending(null)} disabled={busy !== null}>Cancel</button>
-          </div>
-        </article>
-      )}
+      <AppConnectionRequests onChanged={reload} />
 
       {!snapshot && !error ? <div className="workspace-empty-state"><strong>Loading Apps</strong><span>Checking local connected-account authority.</span></div> : null}
 
@@ -2991,7 +2993,7 @@ function AppsView() {
               const toolkit = card.toolkit
               return (
                 <article className="surface-card catalog-app" data-app={card.label.toLowerCase()} key={card.id}>
-                  <div className="catalog-app-top"><span className="catalog-app-mark" aria-hidden="true">{card.label === 'GitHub' ? <ProductIcon name="branch" size={25} /> : card.label === 'Gmail' ? <ProductIcon name="mail" size={25} /> : card.mark}</span><span className={`product-status ${card.status}`}>{card.status === 'setup' ? 'Setup needed' : card.status === 'attention' ? 'Needs attention' : card.status === 'connected' ? 'Connected' : 'Available'}</span></div>
+                  <div className="catalog-app-top"><span className="catalog-app-mark" aria-hidden="true">{['GitHub', 'Gmail'].includes(card.label) ? <AppBrandIcon app={card.label} size={25} /> : card.mark}</span><span className={`product-status ${card.status}`}>{card.status === 'setup' ? 'Setup needed' : card.status === 'attention' ? 'Needs attention' : card.status === 'connected' ? 'Connected' : 'Available'}</span></div>
                   <h3 style={{ margin: '6px 0' }}>{card.label}</h3>
                   <span className="catalog-category">{card.category}</span>
                   <p style={{ color: 'var(--muted3)', minHeight: 36 }}>{card.description}</p>
@@ -3660,7 +3662,7 @@ function LiveActivitySurface() {
               {approval.target && <code className="approval-target">{approval.target}</code>}
               <small>{approval.approvalId} · generation {approval.generation}</small>
               <div className="approval-actions">
-                <button disabled={decisionPending === approval.approvalId} onClick={() => { void decide(approval.approvalId, 'approved') }}>Approve once</button>
+                <button disabled={!presentation.actionable || decisionPending === approval.approvalId} onClick={() => { void decide(approval.approvalId, 'approved') }}>Approve once</button>
                 <button disabled={decisionPending === approval.approvalId} onClick={() => { void decide(approval.approvalId, 'denied') }}>Deny</button>
               </div>
                 </>
@@ -3784,7 +3786,7 @@ function LiveActivitySurface() {
   )
 }
 
-function ChatPanel() {
+function ChatPanel({ visible = true }: { visible?: boolean }) {
   const {
     messages, input, setInput, isStreaming, execMode, setExecMode,
     thinking, budget,
@@ -3877,6 +3879,7 @@ function ChatPanel() {
       )}
 
       {/* Input area */}
+      {visible && <AppConnectionRequests showConnect />}
       <div className="workbench-composer" style={{
         borderTop: '1px solid var(--border)',
         padding: '12px 24px',
@@ -4663,17 +4666,42 @@ function SkillsManager() {
 
 function MCPView() {
   const [snapshot, setSnapshot] = useState<aiden.WorkbenchExternalProtocolSnapshot | null>(null)
+  const [management, setManagement] = useState<aiden.McpManagementSnapshot | null>(null)
+  const [review, setReview] = useState<aiden.McpManagementPreview | null>(null)
+  const [changing, setChanging] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [workingTask, setWorkingTask] = useState<string | null>(null)
   const refresh = useCallback(async () => {
     try {
       setSnapshot(await aiden.loadWorkbenchExternalProtocols())
-      setError(null)
+      setManagement(await aiden.loadMcpManagement().catch(() => null))
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'External protocol status is unavailable.')
     }
   }, [])
   useEffect(() => { void refresh() }, [refresh])
+  const authorizationPending = Boolean(management?.authorization && ['preparing', 'waiting', 'saving', 'connecting'].includes(management.authorization.state))
+  useEffect(() => {
+    if (!authorizationPending) return
+    const timer = window.setInterval(() => void refresh(), 1500)
+    return () => window.clearInterval(timer)
+  }, [authorizationPending, refresh])
+  const previewChange = async (name: string, action: aiden.McpManagementAction) => {
+    setChanging(true); setError(null); setNotice(null); setReview(null)
+    try { setReview(await aiden.previewMcpChange(name, action)) }
+    catch (cause) { setError(cause instanceof Error ? cause.message : 'Connection review is unavailable.') }
+    finally { setChanging(false) }
+  }
+  const confirmChange = async () => {
+    if (!review) return
+    setChanging(true); setError(null)
+    try {
+      await aiden.confirmMcpChange(review.confirmationId)
+      setNotice(`${review.name}: ${review.action === 'authorize' ? 'authorization started; waiting for the verified provider result.' : 'connection change completed.'}`)
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Connection change failed.') }
+    finally { setReview(null); setChanging(false); void refresh() }
+  }
   const controlTask = useCallback(async (recordId: string, action: 'cancel' | 'reconcile') => {
     setWorkingTask(`${recordId}:${action}`)
     try {
@@ -4702,10 +4730,49 @@ function MCPView() {
         <button type="button" onClick={() => { void refresh() }} className="nav-btn">Refresh</button>
       </div>
       {error && <div style={{ ...card, color: 'var(--red)' }}>{error}</div>}
+      {notice && <div role="status" style={card}>{notice}</div>}
+      {review && <section aria-label="Review MCP connection change" style={card}>
+        <strong>{review.action === 'review' ? 'Review capabilities' : review.action === 'remove' ? 'Remove connection' : review.action === 'add' ? 'Add server' : review.action === 'authorize' ? 'Authorize server' : 'Reconnect server'} · {review.name}</strong>
+        <p style={fact}>{review.description}</p>
+        {review.tools.length > 0 && <ul>{review.tools.map((tool, index) => <li key={`${tool.name}:${index}`}>{tool.name} · {tool.effect}</li>)}</ul>}
+        {review.configuration && <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 12 }}>{JSON.stringify(review.configuration, null, 2)}</pre>}
+        <p style={fact}>This confirmation expires in two minutes. Changed configuration or capabilities require a new review.</p>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button type="button" className="nav-btn" disabled={changing} onClick={() => void confirmChange()}>Confirm {review.action}</button>
+          <button type="button" className="nav-btn" disabled={changing} onClick={() => setReview(null)}>Cancel</button>
+        </div>
+      </section>}
+      {management?.authorization && <section aria-label="MCP provider authorization" style={card}>
+        <strong>{management.authorization.name} · {management.authorization.state}</strong>
+        <p role="status">{management.authorization.message}</p>
+        {management.authorization.state === 'waiting' && management.authorization.url && <>
+          <a className="nav-btn" href={management.authorization.url} target="_blank" rel="noopener noreferrer">Open provider authorization</a>
+          {management.authorization.userCode && <p>Provider code: <code>{management.authorization.userCode}</code></p>}
+          <p style={fact}>Only approve permissions you understand. Closing this panel does not cancel the request; use Cancel authorization.</p>
+        </>}
+        {['preparing', 'waiting'].includes(management.authorization.state) && <button type="button" className="nav-btn" disabled={changing} onClick={() => {
+          const request = management.authorization; if (!request) return
+          setChanging(true); setError(null)
+          void aiden.cancelMcpAuthorization(request.id).then(setManagement).catch(cause => setError(cause instanceof Error ? cause.message : 'Cancellation failed')).finally(() => setChanging(false))
+        }}>Cancel authorization</button>}
+      </section>}
       {!snapshot && !error && <div style={{ color: 'var(--muted)', padding: 12 }}>Loading protocol status…</div>}
       {snapshot && <>
         <div style={{ fontSize: 10, color: 'var(--muted2)', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 6 }}>
           MCP connections
+        </div>
+        <div style={card}>
+          <strong>Manage trusted servers</strong>
+          <p style={fact}>Add a server, authorize through its provider, reconnect, review changed capabilities, or remove a saved connection here. Servers without supported OAuth registration may need a registered public client ID through <code>/mcp catalog</code> first. The same authorization is available in CLI with <code>/mcp auth &lt;name&gt;</code>. Never paste credentials into Chat.</p>
+          {management?.available && <McpSetupForm disabled={changing || review !== null || authorizationPending} onPreview={setReview} />}
+          {!management && <div style={fact}>Connection controls are unavailable in this runtime. Status remains available below.</div>}
+          {management?.servers.filter(server => !snapshot.mcp.servers.some(live => live.name === server.name)).map(server => <div key={server.name} style={{ padding: '8px 0', borderTop: '1px solid var(--border)' }}>
+            <strong>{server.name}</strong> · {server.status}
+            {server.status === 'needs-auth' && <p style={fact}>Provider authorization is required. Reconnecting alone cannot sign you in.</p>}
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
+              {server.actions.map(action => <button key={action} type="button" className="nav-btn" disabled={changing || review !== null} aria-label={`${action} ${server.name}`} onClick={() => void previewChange(server.name, action)}>{action === 'review' ? 'Review capabilities' : action === 'remove' ? 'Remove' : 'Reconnect'}</button>)}
+            </div>
+          </div>)}
         </div>
         {snapshot.mcp.servers.length === 0
           ? <div style={card}><strong style={{ color: 'var(--text)' }}>No MCP servers</strong><div style={fact}>Connect a trusted server when you want Aiden to use its tools or resources.</div></div>
@@ -4713,10 +4780,14 @@ function MCPView() {
             <div key={server.name} style={card}>
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
                 <strong style={{ color: 'var(--text)' }}>{server.name}</strong>
-                <span style={{ color: server.reviewRequired ? 'var(--orange)' : server.authState === 'required' ? 'var(--red)' : 'var(--green)' }}>{server.reviewRequired ? 'New permissions need review' : server.authState === 'required' ? 'Authentication required' : 'Connected'}</span>
+                <StatusBadge tone={presentMcpConnection(server).tone}>{presentMcpConnection(server).label}</StatusBadge>
               </div>
               <div style={fact}>{server.readToolCount} read-only tools available{server.resourcesAvailable ? ' · resources available' : ''}</div>
               <div style={fact}>{server.mutationBlocked ? 'Mutation is blocked until the connection review is complete.' : 'Mutation requires normal Aiden approval.'}</div>
+              {server.authState === 'required' && <p style={fact}>Provider authorization is required. Reconnecting alone cannot sign you in.</p>}
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+                {management?.servers.find(item => item.name === server.name)?.actions.map(action => <button key={action} type="button" className="nav-btn" disabled={changing || review !== null} aria-label={`${action} ${server.name}`} onClick={() => void previewChange(server.name, action)}>{action === 'review' ? 'Review capabilities' : action === 'remove' ? 'Remove' : 'Reconnect'}</button>)}
+              </div>
               <details style={{ marginTop: 8 }}><summary>Advanced details</summary><div style={{ ...fact, marginTop: 6 }}>{server.endpoint}</div><div style={fact}>{server.transport} · protocol {server.protocolVersion ?? 'not negotiated'} · auth {server.authState}</div><div style={fact}>trust {server.trustState} · identity {server.identityId ?? 'not observed'}</div><div style={fact}>capabilities {server.capabilityChange} · {server.toolCount} total tools · {server.mutationToolCount} mutating</div></details>
             </div>
           ))}
@@ -6279,6 +6350,7 @@ function LearningSettingsTab({ standalone = false }: { standalone?: boolean } = 
 
 const SETTINGS_TABS = [
   { id: 'runtime', label: 'Readiness', section: 'General' },
+  { id: 'account', label: 'Aiden account', section: 'General' },
   { id: 'model', label: 'AI & Models', section: 'General' },
   { id: 'coding', label: 'Coding', section: 'General' },
   { id: 'conversation', label: 'Conversation', section: 'General' },
@@ -6286,6 +6358,9 @@ const SETTINGS_TABS = [
   { id: 'skills', label: 'Skills', section: 'Tools & connections' },
   { id: 'capabilities', label: 'Capabilities', section: 'Tools & connections' },
   { id: 'apps', label: 'Apps', section: 'Tools & connections' },
+  { id: 'channels', label: 'Messaging', section: 'Tools & connections' },
+  { id: 'mcp', label: 'MCP & external agents', section: 'Tools & connections' },
+  { id: 'ide', label: 'IDE connections', section: 'Tools & connections' },
   { id: 'automations', label: 'Automations', section: 'Tools & connections' },
   { id: 'pro', label: 'Plan & Billing', section: 'About' },
   { id: 'updates', label: 'Updates', section: 'About' },
@@ -6421,9 +6496,10 @@ function ReadinessSettings({ sessionId, onOpenModels, onOpenApps }: {
 }
 
 function AIModelsSettings({ sessionId, readOnly }: { sessionId: string; readOnly: boolean }) {
+  const [connectionKind, setConnectionKind] = useState<ModelConnectionKind | null>(null)
   const [snapshot, setSnapshot] = useState<aiden.WorkbenchProviderSnapshot | null>(null)
   const [providerId, setProviderId] = useState('')
-  const [modelId, setModelId] = useState('')
+  const [modelChoice, setModelId] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [auth, setAuth] = useState<aiden.WorkbenchAuthSession | null>(null)
@@ -6433,8 +6509,14 @@ function AIModelsSettings({ sessionId, readOnly }: { sessionId: string; readOnly
       const next = await aiden.loadProviderSetup(sessionId)
       setSnapshot(next)
       const selected = next.sessionSelection ?? next.defaultSelection
-      setProviderId((current) => current || selected?.providerId || next.providers[0]?.id || '')
-      setModelId((current) => current || selected?.modelId || next.providers.find((provider) => provider.id === (selected?.providerId || next.providers[0]?.id))?.models[0]?.id || '')
+      const destination = parseWorkbenchDestination(window.location.search)
+      const requested = destination.settings === 'model' ? destination.connectionKind : undefined
+      const initialProvider = next.providers.find((item) => item.id === selected?.providerId && (!requested || modelConnectionKind(item.authKinds) === requested))
+        ?? next.providers.find((item) => !requested || modelConnectionKind(item.authKinds) === requested)
+      const nextKind = requested ?? (initialProvider ? modelConnectionKind(initialProvider.authKinds) : null)
+      setConnectionKind((current) => current ?? nextKind)
+      setProviderId((current) => current || initialProvider?.id || '')
+      setModelId((current) => current || (initialProvider?.id === selected?.providerId ? selected?.modelId : initialProvider?.models[0]?.id) || '')
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Provider setup is unavailable') }
   }, [sessionId])
   useEffect(() => { void reload() }, [reload])
@@ -6449,10 +6531,18 @@ function AIModelsSettings({ sessionId, readOnly }: { sessionId: string; readOnly
     return () => window.clearInterval(timer)
   }, [auth, reload])
   const provider = snapshot?.providers.find((item) => item.id === providerId) ?? null
+  const modelId = provider?.models.some((model) => model.id === modelChoice) ? modelChoice : provider?.models[0]?.id ?? ''
   const chooseProvider = (nextId: string) => {
     setProviderId(nextId)
     setModelId(snapshot?.providers.find((item) => item.id === nextId)?.models[0]?.id || '')
     setError(null)
+  }
+  const chooseConnection = (kind: ModelConnectionKind) => {
+    setConnectionKind(kind)
+    const match = snapshot?.providers.find((item) => item.id === providerId && modelConnectionKind(item.authKinds) === kind)
+      ?? snapshot?.providers.find((item) => modelConnectionKind(item.authKinds) === kind)
+    if (match?.id !== providerId) chooseProvider(match?.id ?? '')
+    window.history.replaceState(window.history.state, '', applyWorkbenchDestination(window.location.href, { settings: 'model', connectionKind: kind }))
   }
   const act = async (label: string, operation: () => Promise<unknown>) => {
     setBusy(label); setError(null)
@@ -6478,17 +6568,23 @@ function AIModelsSettings({ sessionId, readOnly }: { sessionId: string; readOnly
     : 'Not configured'
   return (
     <div style={{ display: 'grid', gap: 12 }}>
-      <p style={settingsTextStyle}>Credentials are handled by the local backend and protected by <strong style={{ color: 'var(--text)' }}>{snapshot.secretStorage.backend}</strong>. They are never stored in browser state.</p>
+      <p style={settingsTextStyle}>Connect your model to start working. An Aiden account is optional and separate from your model provider.</p>
+      <ModelConnectionChoices selected={connectionKind} disabled={busy !== null} onSelect={chooseConnection} />
+      <p style={settingsTextStyle}>{snapshot.secretStorage.available && snapshot.secretStorage.protectedByOs
+        ? <>Credentials are handled by the local backend and protected by <strong style={{ color: 'var(--text)' }}>{snapshot.secretStorage.backend}</strong>. They are not saved in browser storage.</>
+        : <>Protected credential storage is unavailable. API-key entry is disabled. {snapshot.secretStorage.detail}</>}</p>
       {activationInstruction && <p role="status" style={{ ...settingsTextStyle, padding: 10, border: '1px solid var(--border)', borderRadius: 8 }}>{activationInstruction}</p>}
       <div style={{ display: 'grid', gap: 4, padding: 10, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg2)' }}>
         <span style={settingsTextStyle}>Current chat: <strong style={{ color: 'var(--text)' }}>{snapshot.sessionSelection ? selectionLabel(snapshot.sessionSelection) : 'Uses the future default'}</strong></span>
         <span style={settingsTextStyle}>Future default: <strong style={{ color: 'var(--text)' }}>{selectionLabel(snapshot.defaultSelection)}</strong></span>
       </div>
       <label style={settingsTextStyle}>Provider
-        <select value={providerId} onChange={(event) => chooseProvider(event.target.value)} style={{ width: '100%', marginTop: 5, padding: 8, background: 'var(--bg2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6 }}>
-          {snapshot.providers.map((item) => <option key={item.id} value={item.id}>{item.displayName}</option>)}
+        <select disabled={busy !== null} value={providerId} onChange={(event) => chooseProvider(event.target.value)} style={{ width: '100%', marginTop: 5, padding: 8, background: 'var(--bg2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6 }}>
+          <option value="" disabled>Choose a provider</option>
+          {snapshot.providers.filter((item) => !connectionKind || modelConnectionKind(item.authKinds) === connectionKind).map((item) => <option key={item.id} value={item.id}>{item.displayName}</option>)}
         </select>
       </label>
+      {connectionKind && !snapshot.providers.some((item) => modelConnectionKind(item.authKinds) === connectionKind) && <p role="status" style={settingsTextStyle}>No supported provider for this connection method is available in this runtime. Choose another method.</p>}
       {provider && (
         <>
           <div style={{ padding: 10, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg2)' }}>
@@ -6501,10 +6597,12 @@ function AIModelsSettings({ sessionId, readOnly }: { sessionId: string; readOnly
               {provider.models.map((model) => <option key={model.id} value={model.id}>{model.displayName}</option>)}
             </select>
           </label>
+          {provider.authKinds.includes('local') && <p style={settingsTextStyle}>Start Ollama on this computer and install a model, then select Refresh models. Aiden does not download models automatically.</p>}
+          {provider.models.length === 0 && <p role="status" style={settingsTextStyle}>No models are available. Check the provider connection and refresh models.</p>}
           {provider.authKinds.includes('api_key') && (
             <form onSubmit={(event) => { void submitCredential(event) }} style={{ display: 'grid', gap: 7 }}>
-              <input name="credential" type="password" autoComplete="off" placeholder={provider.configured ? 'Enter replacement API key' : 'Enter API key'} style={{ padding: 8, background: 'var(--bg2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6 }} />
-              <button type="submit" className="nav-btn" disabled={busy !== null || !modelId}>{provider.configured ? 'Replace credential' : 'Connect and verify'}</button>
+              <input name="credential" aria-label="Provider API key" disabled={busy !== null || !snapshot.secretStorage.available || !snapshot.secretStorage.protectedByOs} type="password" autoComplete="off" placeholder={provider.configured ? 'Enter replacement API key' : 'Enter API key'} style={{ padding: 8, background: 'var(--bg2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6 }} />
+              <button type="submit" className="nav-btn" disabled={busy !== null || !modelId || !snapshot.secretStorage.available || !snapshot.secretStorage.protectedByOs}>{provider.configured ? 'Replace credential' : 'Connect and verify'}</button>
             </form>
           )}
           {provider.authKinds.includes('oauth') && (
@@ -6536,7 +6634,7 @@ function SettingsDrawer() {
     validateKey, refreshCommercialStatus, setPricingOpen, runtimeVersion, runtimeEdition,
     activeProvider, activeModel, runtimeConnection, executionAvailable,
     executionQueue, workbenchReadOnly, capabilities, startNewChat, clearCurrentView,
-    appearance, setAppearance, density, setDensity, setMainView, openWorkbenchDestination, sessionId,
+    appearance, setAppearance, density, setDensity, setMainView, openWorkbenchDestination, resumeOnboarding, sessionId,
     selectedContext, currentConvId,
   } = useDevOS()
   const modelSessionId = selectedContext.sessionId || currentConvId || sessionId
@@ -6647,6 +6745,7 @@ function SettingsDrawer() {
           {settingsTab === 'runtime' && (
             <>
               <SettingsSection title="System Readiness">
+                <ProductButton variant="secondary" onClick={resumeOnboarding}>Resume guided setup</ProductButton>
                 <p style={settingsTextStyle}><strong style={{ color: 'var(--text)' }}>Aiden v{runtimeVersion}</strong></p>
                 <p style={settingsTextStyle}>Connection: <strong style={{ color: 'var(--text)' }}>{runtimeConnection}</strong></p>
                 <p style={settingsTextStyle}>Execution: <strong style={{ color: executionAvailable ? 'var(--green)' : 'var(--red)' }}>
@@ -6745,7 +6844,8 @@ function SettingsDrawer() {
           {settingsTab === 'capabilities' && (
             <SettingsSection title="Capabilities">
               <CapabilitiesSettings />
-              <details style={{ marginTop: 16 }}><summary>Advanced protocols and extensions</summary><PluginsList /><MCPView /></details>
+              <details style={{ marginTop: 16 }}><summary>Installed extensions</summary><PluginsList /></details>
+              <ProductButton onClick={() => openWorkbenchDestination({ settings: 'mcp' })}>Open MCP &amp; external agents</ProductButton>
             </SettingsSection>
           )}
 
@@ -6774,7 +6874,10 @@ function SettingsDrawer() {
             </SettingsSection>
           )}
 
-          {settingsTab === 'channels' && <TelegramSettingsTab />}
+          {settingsTab === 'channels' && <MessagingSetupPanel />}
+          {settingsTab === 'account' && <AccountSetupPanel />}
+
+          {settingsTab === 'mcp' && <SettingsSection title="MCP & external agents"><p style={settingsTextStyle}>Manage saved connections and review their available tools. Server access never bypasses normal tool approvals.</p><MCPView /></SettingsSection>}
 
           {settingsTab === 'security' && <SecurityScan />}
 
@@ -7020,11 +7123,12 @@ export default function Home() {
 
   useEffect(() => {
     let current = true
-    const stored = window.localStorage.getItem('aiden:first-run:v1')
+    let stored: string | null = null
+    try { stored = window.localStorage.getItem('aiden:first-run:v1') } catch { /* Continue without browser persistence. */ }
     void aiden.listSessions().then((sessions) => {
       if (!current) return
       const resolved = resolveWorkbenchOnboarding(stored, sessions.length)
-      if (resolved.persist) window.localStorage.setItem('aiden:first-run:v1', 'complete')
+      if (resolved.persist) { try { window.localStorage.setItem('aiden:first-run:v1', 'complete') } catch { /* Continue without browser persistence. */ } }
       setOnboardingDone(resolved.done)
       if (resolved.done) setOnboardingVisible(false)
     }).catch(() => {
@@ -8281,7 +8385,9 @@ export default function Home() {
     uiMode, setUIMode, execMode, setExecMode,
     historyOpen, setHistoryOpen, liveViewOpen, setLiveViewOpen, collapseLiveExecution, reopenLiveExecution,
     activityOpen, setActivityOpen, settingsOpen, setSettingsOpen,
-    settingsTab, setSettingsTab, mainView, setMainView, openWorkbenchDestination, appearance, setAppearance, density, setDensity,
+    settingsTab, setSettingsTab, mainView, setMainView, openWorkbenchDestination,
+    resumeOnboarding: () => { setSettingsOpen(false); setOnboardingDone(false); setOnboardingVisible(true) },
+    appearance, setAppearance, density, setDensity,
     isExecuting, isStreaming, thinking, budget, activeModel, activeProvider, runtimeConnection, runtimeVersion, runtimeEdition,
     executionAvailable, executionQueue, workbenchReadOnly,
     runProjection, runArtifacts, capabilities, browserSession, controlBrowser,
@@ -8373,7 +8479,7 @@ export default function Home() {
           <HistorySidebar />
           <div className="workbench-main" style={{ display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
             <div style={{ flex: 1, minHeight: 0, display: mainView === 'chat' ? 'flex' : 'none', flexDirection: 'column' }}>
-              <ChatPanel />
+              <ChatPanel visible={mainView === 'chat'} />
             </div>
             {mainView === 'activity' && (
               <ActivityView
@@ -8398,6 +8504,8 @@ export default function Home() {
             )}
             {mainView === 'artifacts' && <ArtifactsView />}
             {mainView === 'apps' && <AppsView />}
+            {mainView === 'connections' && <ConnectionsWorkspace onNavigate={openWorkbenchDestination} />}
+            {mainView === 'skills' && <section className="workspace-surface" aria-label="Skills and tools"><h1>Skills &amp; Tools</h1><SkillsManager /><ProductButton onClick={() => openWorkbenchDestination({ settings: 'capabilities' })}>Manage capability extensions</ProductButton></section>}
             {mainView === 'brain' && <section className="workspace-surface" aria-label="Brain"><LearningSettingsTab standalone /></section>}
             {mainView === 'automations' && <AutomationsView />}
             {mainView === 'sponsors' && <SponsorsView />}
@@ -8430,11 +8538,14 @@ export default function Home() {
         )}
         {onboardingDone === false && onboardingVisible && (
           <OnboardingModal
-            onOpenSettings={(tab) => { openWorkbenchDestination({ settings: tab }) }}
+            onOpenSettings={(tab, connectionKind) => { openWorkbenchDestination({ settings: tab, connectionKind }) }}
             onOpenApps={() => { openWorkbenchDestination({ view: 'apps' }) }}
+            onDismiss={() => { setOnboardingVisible(false) }}
             onComplete={(choice) => {
-              window.localStorage.setItem('aiden:first-run:v1', 'complete')
-              window.localStorage.removeItem('aiden:first-run:step:v1')
+              try {
+                window.localStorage.setItem('aiden:first-run:v1', 'complete')
+                window.localStorage.removeItem('aiden:first-run:step:v1')
+              } catch { /* Completion does not require browser storage. */ }
               setMainView('chat')
               setInput(choice)
               setOnboardingDone(true)

@@ -18,6 +18,7 @@ import { IntegrationResolver } from './integrationResolver';
 import { SecretAuthority, type SecretBackend } from './secretAuthority';
 import { registerIntegrationTools, type IntegrationToolScope } from './tools';
 import { IntegrationTriggerBoundary } from './triggerBoundary';
+import { AccountClient, type AccountClientPort } from '../product/accountClient';
 
 export function integrationLocalScope(cwd = process.cwd()): IntegrationToolScope {
   const absolute = path.resolve(cwd);
@@ -29,6 +30,7 @@ export function integrationLocalScope(cwd = process.cwd()): IntegrationToolScope
 }
 
 export interface IntegrationRuntime {
+  accountClient?: AccountClientPort;
   scope: IntegrationToolScope;
   providers: IntegrationProviderRegistry;
   accounts: ConnectedAccountAuthority;
@@ -76,6 +78,7 @@ export function createIntegrationRuntime(options: {
   const triggers = new IntegrationTriggerBoundary({ db: options.db, accounts });
   if (options.toolRegistry) registerIntegrationTools(options.toolRegistry, actions, scope, resolver);
   return {
+    accountClient: new AccountClient({ db: options.db, secrets, scope, origin: () => process.env.AIDEN_BILLING_ORIGIN }),
     scope, providers, accounts, schemas, secrets, actions, resolver, triggers,
     ...(fakeProvider ? { fakeProvider } : {}),
   };

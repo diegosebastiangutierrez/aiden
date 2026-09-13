@@ -1,3 +1,20 @@
+## v4.21.2 — 2026-09-13
+
+### Setup, connections and terminal reliability
+
+- Added shared Web/CLI discovery for existing capabilities, with clear local, API-key and subscription-provider setup choices.
+- Improved Apps connection requests, least-privilege configuration, the official GitHub mark, cancellation and truthful approval-denial messages.
+- Exposed existing MCP and messaging configuration through Workbench connection surfaces, including bound authorization requests and confirmation before removal.
+- Kept account linking optional; local work does not require an account. Hosted account services and proprietary product implementations are not included in this package.
+- Fixed rapid editing and coalesced input in the optional terminal renderer. Bracketed multiline paste remains literal and cannot submit commands automatically.
+- Replaced the archived IMAP transport with a maintained dependency while preserving UID-based email triggers and enforcing verified TLS. Updated HTTP dependencies so bundled patched versions satisfy upstream dependency ranges.
+
+### Release boundaries
+
+- Public AGPL runtime and Web/CLI package only. No Windows desktop installer is included; prior installer/uninstall and startup-performance limitations remain unresolved.
+- External GitHub/Gmail and remote MCP connections require service configuration and user consent. This release does not claim completed acceptance of every third-party service.
+- Hosted optional-email account deployment, local-model physical acceptance, and macOS/Ubuntu physical acceptance remain separate scopes.
+
 ## v4.21.1 — 2026-09-12
 
 ### Workbench and execution continuity

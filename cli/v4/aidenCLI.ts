@@ -658,6 +658,13 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
     }));
   appsCommand.command('complete <connection>').description('Complete an authorized connection')
     .action(async (connection: string) => runAppsAction({ action: 'complete', connectionId: connection }));
+  appsCommand.command('pending').description('List recoverable app connections')
+    .action(async () => runAppsAction({ action: 'pending' }));
+  appsCommand.command('resume <connection>').description('Reopen a pending authorization')
+    .option('--no-open', 'Show the authorization link without opening it')
+    .action(async (connection: string, command: { open?: boolean }) => runAppsAction({ action: 'resume', connectionId: connection, open: command.open !== false }));
+  appsCommand.command('cancel <connection>').description('Cancel a pending request in Aiden')
+    .action(async (connection: string) => runAppsAction({ action: 'cancel', connectionId: connection }));
   appsCommand.command('reconnect <account>').description('Reconnect an account')
     .option('--no-open', 'Do not open the authorization URL')
     .action(async (account: string, command: { open?: boolean }) => runAppsAction({
@@ -874,6 +881,19 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
         edition: editionAuthority,
         a2aRuntime,
       });
+      const { createWorkbenchMcpManagement } = await import('../../core/v4/workbench/mcpManagement');
+      const { createWorkbenchMcpAuthorization } = await import('../../core/v4/workbench/mcpAuthorization');
+      const mcpIdle = () => {
+        const state = executionHost?.snapshot();
+        return Boolean(state && state.inflight === 0 && state.claimed === 0 && state.pending === 0);
+      };
+      const mcpManagement = workbenchRuntime?.mcpClient ? createWorkbenchMcpManagement({
+        client: workbenchRuntime.mcpClient,
+        config: workbenchRuntime.config,
+        enabled: () => editionAuthority.can('mcp.external'),
+        isIdle: mcpIdle,
+        authorization: createWorkbenchMcpAuthorization({ paths, config: workbenchRuntime.config, client: workbenchRuntime.mcpClient, enabled: () => editionAuthority.can('mcp.external'), isIdle: mcpIdle }),
+      }) : undefined;
       const automationsPort = createWorkbenchAutomationPort({
         db, triggerBus, edition: editionAuthority,
         ownerId: workbenchIntegrationRuntime.scope.ownerId,
@@ -1052,7 +1072,9 @@ export async function main(argv: string[], opts: MainOptions = {}): Promise<numb
           },
         },
         apps: appsPort,
+        account: workbenchIntegrationRuntime.accountClient,
         externalProtocols,
+        mcpManagement,
         automations: automationsPort,
         presence: presencePort,
         learning: learningPort,

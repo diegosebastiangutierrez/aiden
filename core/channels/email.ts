@@ -28,6 +28,8 @@
 //   EMAIL_POLL_INTERVAL     — polling interval in seconds (default 60)
 
 import nodemailer from 'nodemailer'
+import { simpleParser } from 'mailparser'
+import { createImapConnection } from '../v4/daemon/triggers/email/imapConnection'
 import { gateway } from '../gateway'
 import type { ChannelAdapter } from './adapter'
 import { noopLogger, type Logger } from '../v4/logger'
@@ -159,51 +161,29 @@ export class EmailAdapter implements ChannelAdapter {
   private async poll(): Promise<void> {
     if (!this.healthy) return
 
-    let imapSimple: any
+    const connection = createImapConnection({ config: {
+      host: this.imapHost, port: this.imapPort, tls: true,
+      user: this.imapUser, password: this.imapPassword, authTimeoutMs: 5000,
+    } })
     try {
-      imapSimple = require('imap-simple')
-    } catch {
-      return
-    }
+      await connection.connect()
+      const { uidValidity } = await connection.openMailbox('INBOX')
+      const uids = await connection.searchUnseen()
 
-    let connection: any = null
-    try {
-      const config = {
-        imap: {
-          host:           this.imapHost,
-          port:           this.imapPort,
-          tls:            true,
-          tlsOptions:     { rejectUnauthorized: false }, // user-configured IMAP server may use self-signed cert
-          user:           this.imapUser,
-          password:       this.imapPassword,
-          authTimeout:    5000,
-        },
-      }
-
-      connection = await imapSimple.connect(config)
-      await connection.openBox('INBOX')
-
-      // Fetch unseen messages
-      const messages: any[] = await connection.search(
-        ['UNSEEN'],
-        { bodies: ['HEADER', 'TEXT'], markSeen: false },
-      )
-
-      for (const item of messages) {
-        const all      = item.parts.find((p: any) => p.which === 'TEXT')
-        const header   = item.parts.find((p: any) => p.which === 'HEADER')
-        const msgId    = item.attributes.uid?.toString() ?? ''
+      for (const uid of uids) {
+        const msgId = `${uidValidity}:${uid}`
 
         if (this.processedIds.has(msgId)) continue
-
-        const headers   = imapSimple.getParts ? {} : (header?.body ?? {})
-        const fromRaw   = (headers['from']?.[0] ?? '').toLowerCase()
-        const subject   = (headers['subject']?.[0] ?? '')
-        const aidenHdr  = headers['x-aiden-reply']?.[0]
+        const item = await connection.fetchMessage(uid)
+        if (!item) continue
+        const parsed = await simpleParser(item.raw)
+        const senderEmail = (parsed.from?.value[0]?.address ?? '').toLowerCase()
+        const subject = parsed.subject ?? ''
+        const aidenHdr = parsed.headers.get('x-aiden-reply')
 
         // ── Loop prevention ──────────────────────────────────
         // 1. Skip messages from ourselves
-        if (fromRaw.includes(this.smtpUser.toLowerCase())) {
+        if (senderEmail === this.smtpUser.toLowerCase()) {
           this.processedIds.add(msgId)
           continue
         }
@@ -213,16 +193,12 @@ export class EmailAdapter implements ChannelAdapter {
           continue
         }
 
-        // Extract sender email
-        const senderMatch = fromRaw.match(/<([^>]+)>/) ?? [null, fromRaw.trim()]
-        const senderEmail = senderMatch[1] ?? fromRaw.trim()
-
-        if (!this.isAllowed(senderEmail)) {
+        if (!senderEmail || !this.isAllowed(senderEmail)) {
           this.processedIds.add(msgId)
           continue
         }
 
-        const body = all?.body ?? ''
+        const body = parsed.text ?? ''
         if (!body.trim()) {
           this.processedIds.add(msgId)
           continue
@@ -239,17 +215,15 @@ export class EmailAdapter implements ChannelAdapter {
 
         // Mark message as seen
         try {
-          await connection.addFlags(item.attributes.uid, '\\Seen')
+          await connection.markSeen(uid)
         } catch {}
       }
     } catch (e: any) {
       if (this.healthy) {
-        this.log.error(`poll error:${e.message}`)
+        this.log.error('Email poll failed; check server, TLS and credentials')
       }
     } finally {
-      if (connection) {
-        try { connection.end() } catch {}
-      }
+      await connection.disconnect().catch(() => undefined)
     }
   }
 

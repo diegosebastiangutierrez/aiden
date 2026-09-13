@@ -77,6 +77,8 @@ describe('cli/v4/commands/help — Phase 22 Task 2', () => {
     expect(subsectionFor('help')).toBe('Help');
     expect(subsectionFor('doctor')).toBe('System');
     expect(subsectionFor('apps')).toBe('System');
+    expect(subsectionFor('discover')).toBe('System');
+    expect(subsectionFor('account')).toBe('Authentication');
     expect(subsectionFor('yolo')).toBe('System');
   });
 

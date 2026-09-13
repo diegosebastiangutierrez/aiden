@@ -14,6 +14,7 @@ import {
   resolveCommercialDeviceId,
 } from './commercialActivation';
 import { ProductProcessHost, type ProductProcessHandle } from './productProcessHost';
+import { safeAccountPortal } from '../product/accountPortal';
 
 const identifier = /^[a-z0-9][a-z0-9-]{1,62}$/;
 const versionPattern = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?$/;
@@ -192,6 +193,9 @@ export class CommercialProductRuntime {
         entitlementPublicKey: this.options.entitlementPublicKey });
     const record = this.running.get(current.product.id);
     const projection = publicProjection(current, Boolean(record));
+    const accountUrl = safeAccountPortal(this.options.serviceOrigin) ?? safeAccountPortal(projection.accountUrl);
+    if (accountUrl) projection.accountUrl = accountUrl;
+    else delete projection.accountUrl;
     if (record && projection.accessMode !== 'DENIED') record.mode = projection.accessMode;
     return projection;
   }

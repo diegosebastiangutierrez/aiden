@@ -67,7 +67,7 @@ export interface LoopbackServer {
   port: number;
   redirectUri: string;
   /** Resolve with the first /callback's params; reject on error param or timeout. */
-  waitForCallback(timeoutMs?: number): Promise<LoopbackCapture>;
+  waitForCallback(timeoutMs?: number, signal?: AbortSignal): Promise<LoopbackCapture>;
   close(): Promise<void>;
 }
 
@@ -125,6 +125,8 @@ export async function startLoopbackServer(
     resolveCb = res;
     rejectCb = rej;
   });
+  // The browser may return before the caller starts waiting.
+  void captured.catch(() => undefined);
 
   const server = create((req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
@@ -159,7 +161,10 @@ export async function startLoopbackServer(
   return {
     port,
     redirectUri: `http://127.0.0.1:${port}${CALLBACK_PATH}`,
-    async waitForCallback(timeoutMs = DEFAULT_CALLBACK_TIMEOUT_MS) {
+    async waitForCallback(timeoutMs = DEFAULT_CALLBACK_TIMEOUT_MS, signal?: AbortSignal) {
+      const cancel = () => { if (!settled) { settled = true; rejectCb(new Error('OAuth authorization cancelled')); } };
+      signal?.addEventListener('abort', cancel, { once: true });
+      if (signal?.aborted) cancel();
       const timer = setTimeout(() => {
         if (!settled) {
           settled = true;
@@ -170,9 +175,11 @@ export async function startLoopbackServer(
         return await captured;
       } finally {
         clearTimeout(timer);
+        signal?.removeEventListener('abort', cancel);
       }
     },
     close() {
+      if (!settled) { settled = true; rejectCb(new Error('OAuth authorization cancelled: listener closed')); }
       return new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };
@@ -207,13 +214,17 @@ export async function runLoopbackAuthFlow(deps: {
   /** DI seams for tests. */
   startServer?: typeof startLoopbackServer;
   makeState?: () => string;
+  signal?: AbortSignal;
 }): Promise<OAuthFlowResult> {
+  const checkCancelled = () => { if (deps.signal?.aborted) throw new Error('OAuth authorization cancelled'); };
+  checkCancelled();
   const fetchImpl = deps.fetchImpl ?? (fetch as unknown as FetchImpl);
   const pkce = generatePkce();
   const state = (deps.makeState ?? (() => generatePkce().verifier))();
 
   const loop = await (deps.startServer ?? startLoopbackServer)();
   try {
+    checkCancelled();
     const authUrl = buildAuthorizeUrl(
       {
         authorizationEndpoint: deps.config.endpoints.authorizationEndpoint,
@@ -230,9 +241,12 @@ export async function runLoopbackAuthFlow(deps: {
     deps.ua.log(`Authorize Aiden to access the "${deps.server}" MCP server.`);
     deps.ua.log('Opening your browser — if it does not open, paste this URL:');
     deps.ua.log(`  ${authUrl}`);
+    await deps.ua.onAuthorization?.({ url: authUrl, expiresAt: Date.now() + DEFAULT_CALLBACK_TIMEOUT_MS });
+    checkCancelled();
     await deps.ua.openBrowser(authUrl).catch(() => undefined);
 
-    const cb = await loop.waitForCallback();
+    const cb = await loop.waitForCallback(undefined, deps.signal);
+    checkCancelled();
     if (cb.state !== state) {
       throw new Error('OAuth state mismatch — possible CSRF; aborting.');
     }

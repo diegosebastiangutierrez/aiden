@@ -35,6 +35,7 @@ import {
 import { makeInitialState, reducer, type FrameState, type FrameAction } from './state';
 import { makeComposer, type InkComponents } from './composer';
 import { emitComposerReadyForTests } from '../composerReadiness';
+import { makeFrameInputHook } from './inputTransport';
 
 // Lazily imported Ink module (ESM). Captured once per process so the
 // dynamic import cost is paid only on first frame mount.
@@ -69,6 +70,7 @@ interface InkModule {
   Box:      React.ComponentType<unknown>;
   Text:     React.ComponentType<unknown>;
   useInput: (handler: (input: string, key: Record<string, boolean>) => void, opts?: { isActive?: boolean }) => void;
+  useStdin: () => { stdin: NodeJS.ReadStream };
 }
 let inkModuleP: Promise<InkModule> | null = null;
 // `new Function('return import(m)')` defers the import-specifier
@@ -111,7 +113,7 @@ export async function createFrameRuntime(): Promise<FrameRuntime> {
   const inkComponents: InkComponents = {
     Box:       ink.Box      as InkComponents['Box'],
     Text:      ink.Text     as InkComponents['Text'],
-    useInput:  ink.useInput as InkComponents['useInput'],
+    useInput:  makeFrameInputHook(ink.useStdin, unsafeWrite),
   };
   const Composer = makeComposer(inkComponents);
 
@@ -157,11 +159,11 @@ export async function createFrameRuntime(): Promise<FrameRuntime> {
     function RootComponent(): React.ReactElement {
       const [s, setS] = React.useState<FrameState>(state);
       dispatch = (action: FrameAction): void => {
-        const next = reducer(s, action);
+        const next = reducer(state, action);
         state = next;
         setS(next);
       };
-      getState = (): FrameState => s;
+      getState = (): FrameState => state;
 
       return React.createElement(Composer, {
         state:     s,

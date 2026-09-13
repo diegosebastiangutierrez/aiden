@@ -20,18 +20,21 @@ export function buildOnboardingPlan(readiness: SystemReadinessProjection): Onboa
     if (!item) return { id, title, state: skippable ? 'optional' : 'action_required', detail: 'Readiness information is unavailable. Recheck.', skippable };
     return {
       id, title,
-      state: item.healthy ? 'complete' : skippable ? 'optional' : 'action_required',
+      state: item.ready === true ? 'complete' : skippable ? 'optional' : 'action_required',
       detail: item.detail,
       skippable,
     };
   };
+  const canStart = readiness.overall === 'ready'
+    && readiness.items.some(item => item.id === 'chat-provider' && item.ready === true)
+    && readiness.items.every(item => !item.blocking || item.ready === true);
   return [
     step('computer', 'Check this computer', 'workspace', false),
     step('ai', 'Connect AI', 'chat-provider', false),
     step('browser', 'Browser access', 'browser', true),
     step('coding', 'Coding setup', 'coding-provider', true),
     step('apps', 'Apps', 'apps', true),
-    { id: 'ready', title: 'Ready', state: readiness.overall === 'ready' ? 'ready' : 'action_required', detail: readiness.overall === 'ready' ? 'Aiden is ready.' : 'Complete required setup, then recheck.', skippable: false },
+    { id: 'ready', title: 'Ready', state: canStart ? 'ready' : 'action_required', detail: canStart ? 'Aiden is ready.' : 'Complete required setup, then recheck.', skippable: false },
   ];
 }
 

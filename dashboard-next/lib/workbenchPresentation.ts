@@ -262,6 +262,19 @@ function actionName(toolName: string): string {
 export function presentApproval(approval: WorkbenchApprovalCard): ApprovalPresentation {
   const actionable = approval.state === 'created' || approval.state === 'displayed';
   const risk = approval.riskTier.trim().toLowerCase();
+  if (approval.toolName === 'app_connect') {
+    const connection = approval.appConnection;
+    const names: Record<string, string> = { github: 'GitHub', gmail: 'Gmail', composio: 'Composio' };
+    return {
+      what: 'Connect an app',
+      where: connection ? `${names[connection.toolkitId] || connection.toolkitId} via ${names[connection.providerId] || connection.providerId}` : 'Connection details unavailable',
+      why: 'You requested an app connection. Review the app and connection service before starting sign-in.',
+      impact: 'This starts a connection request; it does not grant account access or perform app actions.',
+      risk: `${risk ? risk[0]!.toUpperCase() + risk.slice(1) : 'Unknown'} risk`,
+      afterApproval: 'Review permissions on the provider’s consent page. Aiden confirms connection only after provider readback.',
+      actionable: actionable && Boolean(connection),
+    };
+  }
   return {
     what: actionName(approval.toolName),
     where: approval.localProcess?.script || approval.target || approval.externalCoding?.repository || 'The selected work',

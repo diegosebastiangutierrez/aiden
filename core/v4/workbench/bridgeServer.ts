@@ -305,6 +305,7 @@ export interface WorkbenchBridgeOptions {
   /** Generic commercial product projection and launcher. Product execution
    * remains owned by the public product host, never by the renderer. */
   commercial?: WorkbenchCommercialPort;
+  account?: import('../product/accountClient').AccountClientPort;
   /** Reliable automation projection and commands over canonical SQLite authority. */
   automations?: WorkbenchAutomationPort;
   /** Durable Agentic Presence projection. It cannot execute work directly. */
@@ -315,6 +316,7 @@ export interface WorkbenchBridgeOptions {
   skillIntelligence?: WorkbenchSkillIntelligencePort;
   /** Private projection plus exact durable A2A cancel/reconcile controls. */
   externalProtocols?: WorkbenchExternalProtocolsPort;
+  mcpManagement?: import('./mcpManagement').WorkbenchMcpManagement;
   /** Per-launch local write token. REQUIRED for any write to execute — POST
    *  /api/tasks must present it (x-workbench-token / Bearer). Absent → all
    *  mutations and identity-bearing projections are refused. Injected into
@@ -571,6 +573,19 @@ export function startWorkbenchBridge(opts: WorkbenchBridgeOptions): Promise<Work
     // non-GET is rejected.
     if (req.method === 'POST' && url.pathname === '/api/tasks') { handlePostTask(req, res); return; }
     if (req.method === 'POST' && url.pathname === '/api/attachments') { handleAttachmentUpload(req, res); return; }
+    const accountAction = url.pathname.match(/^\/api\/account\/(status|begin|disconnect)$/);
+    if (req.method === 'POST' && accountAction) {
+      if (!passesTokenGate(req, res)) return;
+      if (!opts.account) { sendJson(res, 503, { error: 'Account linking is unavailable. Local use is unaffected.' }); return; }
+      void readJsonBody(req, 1024).then(body => {
+        if (Object.keys(body).length) throw new Error('Account action takes no credential input');
+        return accountAction[1] === 'begin' ? opts.account!.begin('workbench')
+          : accountAction[1] === 'disconnect' ? opts.account!.disconnect() : opts.account!.status();
+      }).then(value => sendJson(res, 200, value)).catch(() => sendJson(res, 409, {
+        error: 'Account connection could not be checked or changed. Retry, or review connections in your account portal. Local use is unaffected.',
+      }));
+      return;
+    }
     if (req.method === 'POST' && url.pathname === '/api/commercial/activate') {
       if (!passesTokenGate(req, res)) return;
       if (!opts.commercial) { sendJson(res, 503, { error: 'commercial authority unavailable' }); return; }
@@ -655,6 +670,31 @@ export function startWorkbenchBridge(opts: WorkbenchBridgeOptions): Promise<Work
     const appProviderConfigureMatch = url.pathname.match(/^\/api\/apps\/providers\/([^/]+)\/configure$/);
     if (req.method === 'POST' && appProviderConfigureMatch) {
       handleAppsProviderConfigure(req, res, appProviderConfigureMatch[1]); return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/apps/connections/pending') {
+      if (!passesWriteGate(req, res)) return;
+      req.resume();
+      if (!opts.apps?.pending) { sendJson(res, 503, { error: 'Connection recovery unavailable' }); return; }
+      sendJson(res, 200, { connections: opts.apps.pending() }); return;
+    }
+    const appRecoveryMatch = url.pathname.match(/^\/api\/apps\/connections\/([^/]+)\/(resume|cancel|check)$/);
+    if (req.method === 'POST' && appRecoveryMatch) {
+      if (!passesWriteGate(req, res)) return;
+      const apps = opts.apps;
+      if (!apps?.resume || !apps.cancel) { sendJson(res, 503, { error: 'Connection recovery unavailable' }); return; }
+      readJsonBody(req, 1024).then(async body => {
+        if (Object.keys(body).length) { sendJson(res, 400, { error: 'Unexpected connection fields' }); return; }
+        const id = decodeURIComponent(appRecoveryMatch[1]);
+        try {
+          if (appRecoveryMatch[2] === 'resume') sendJson(res, 200, await apps.resume!(id));
+          else if (appRecoveryMatch[2] === 'cancel') { await apps.cancel!(id); sendJson(res, 200, { state: 'cancelled' }); }
+          else sendJson(res, 200, { state: 'completed', account: await apps.complete(id) });
+        } catch (error) {
+          if (error instanceof Error && 'category' in error && error.category === 'authorization_pending') sendJson(res, 200, { state: 'pending' });
+          else sendAppsError(res, error);
+        }
+      }).catch(() => sendJson(res, 400, { error: 'Invalid connection request' }));
+      return;
     }
     const appConnectionMatch = url.pathname.match(/^\/api\/apps\/connections\/([^/]+)\/complete$/);
     if (req.method === 'POST' && appConnectionMatch) {
@@ -834,6 +874,35 @@ export function startWorkbenchBridge(opts: WorkbenchBridgeOptions): Promise<Work
     const proposalAcceptMatch = url.pathname.match(/^\/api\/presence\/proposals\/([^/]+)\/accept$/);
     if (req.method === 'POST' && proposalAcceptMatch) {
       handlePresenceProposalAccept(req, res, proposalAcceptMatch[1]); return;
+    }
+    if (url.pathname === '/api/mcp/management' || url.pathname === '/api/mcp/management/preview' || url.pathname === '/api/mcp/management/confirm' || url.pathname === '/api/mcp/management/add' || url.pathname === '/api/mcp/management/cancel-authorization') {
+      if (!passesWriteGate(req, res)) return;
+      if (!opts.mcpManagement) { sendJson(res, 503, { error: 'MCP management is unavailable' }); return; }
+      if (req.method === 'GET' && url.pathname === '/api/mcp/management') {
+        try { sendJson(res, 200, opts.mcpManagement.snapshot()); }
+        catch { sendJson(res, 503, { error: 'MCP configuration could not be read' }); }
+        return;
+      }
+      if (req.method !== 'POST' || url.pathname === '/api/mcp/management') { sendJson(res, 405, { error: 'method not allowed' }); return; }
+      readJsonBody(req, url.pathname.endsWith('/add') ? 65536 : 2048).then(async (body) => {
+        try {
+          if (url.pathname.endsWith('/add')) {
+            if (typeof body.name !== 'string') { sendJson(res, 400, { error: 'name is required' }); return; }
+            sendJson(res, 200, opts.mcpManagement!.previewAdd(body.name, body.configuration));
+          } else if (url.pathname.endsWith('/preview')) {
+            if (typeof body.name !== 'string' || typeof body.action !== 'string') { sendJson(res, 400, { error: 'name and action are required' }); return; }
+            sendJson(res, 200, opts.mcpManagement!.preview(body.name, body.action as import('./mcpManagement').McpManagementAction));
+          } else if (url.pathname.endsWith('/cancel-authorization')) {
+            if (typeof body.id !== 'string' || body.id.length > 128 || !opts.mcpManagement!.cancelAuthorization) { sendJson(res, 400, { error: 'Active authorization request is required' }); return; }
+            await opts.mcpManagement!.cancelAuthorization(body.id);
+            sendJson(res, 200, opts.mcpManagement!.snapshot());
+          } else {
+            if (typeof body.confirmationId !== 'string' || body.confirmationId.length > 128) { sendJson(res, 400, { error: 'confirmationId is required' }); return; }
+            sendJson(res, 200, await opts.mcpManagement!.confirm(body.confirmationId));
+          }
+        } catch (error) { sendJson(res, 400, { error: managementError(error) }); }
+      }).catch(() => sendJson(res, 400, { error: 'Invalid MCP management request' }));
+      return;
     }
     const externalTaskActionMatch = url.pathname.match(
       /^\/api\/external-protocols\/a2a\/tasks\/([^/]+)\/(cancel|reconcile)$/,
@@ -2267,13 +2336,16 @@ export function startWorkbenchBridge(opts: WorkbenchBridgeOptions): Promise<Work
       resolve({
         port: boundPort,
         host,
-        close: () => new Promise<void>((done) => {
+        close: async () => {
+          await opts.mcpManagement?.close?.();
+          return new Promise<void>((done) => {
           for (const stream of eventStreams) {
             try { stream.end(); } catch { /* stream already closed */ }
           }
           eventStreams.clear();
           server.close(() => done());
-        }),
+          });
+        },
       });
     });
   });

@@ -82,29 +82,44 @@ export function makeComposer(ink: InkComponents): React.ComponentType<{
     const { state, callbacks } = props;
     const { value, cursor, prompt } = state.composer;
     const isBusy = state.status.phase === 'busy';
+    // Input callbacks can arrive in one event burst before React commits.
+    // Keep the editing cursor synchronous; rendered state remains authoritative
+    // on the next render. Closing the prompt also closes this input handler.
+    const pending = React.useRef({ value, cursor, closed: false });
+    pending.current.value = value;
+    pending.current.cursor = cursor;
+    const change = (next: string, caret: number) => {
+      pending.current.value = next;
+      pending.current.cursor = caret;
+      callbacks.onChange(next, caret);
+    };
 
     // Block input while busy (we render one "thinking…" tick then
     // unmount — but if anything keeps us alive briefly, the user's
     // keypresses shouldn't leak into the next prompt).
     useInput((input, key) => {
-      if (isBusy) return;
-      if (key.ctrl && input === 'c') { callbacks.onCancel(); return; }
-      if (key.escape)                { callbacks.onCancel(); return; }
-      if (key.return)                { callbacks.onSubmit(value); return; }
+      if (isBusy || pending.current.closed) return;
+      const { value, cursor } = pending.current;
+      if ((key.ctrl && input === 'c') || key.escape) {
+        pending.current.closed = true; callbacks.onCancel(); return;
+      }
+      if (key.return) {
+        pending.current.closed = true; callbacks.onSubmit(value); return;
+      }
       if (key.backspace || key.delete) {
         if (cursor > 0) {
           const next = value.slice(0, cursor - 1) + value.slice(cursor);
-          callbacks.onChange(next, cursor - 1);
+          change(next, cursor - 1);
         }
         return;
       }
-      if (key.leftArrow)  { callbacks.onChange(value, Math.max(0, cursor - 1)); return; }
-      if (key.rightArrow) { callbacks.onChange(value, Math.min(value.length, cursor + 1)); return; }
+      if (key.leftArrow)  { change(value, Math.max(0, cursor - 1)); return; }
+      if (key.rightArrow) { change(value, Math.min(value.length, cursor + 1)); return; }
       // Printable input (Ink delivers it as a possibly-multi-char
       // string for fast typing / paste).
       if (input && !key.ctrl) {
         const next = value.slice(0, cursor) + input + value.slice(cursor);
-        callbacks.onChange(next, cursor + input.length);
+        change(next, cursor + input.length);
       }
     }, { isActive: true });
 

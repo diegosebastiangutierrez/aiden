@@ -65,6 +65,8 @@ export type FetchImpl = (
 
 /** UI surface the flow uses to talk to the user. */
 export interface OAuthUserAgent {
+  /** Transient authorization presentation; never includes an access token. */
+  onAuthorization?(request: { url: string; userCode?: string; expiresAt: number }): void | Promise<void>;
   log(line: string):                    void;
   openBrowser(url: string):             Promise<void>;
   prompt(question: string):             Promise<string>;

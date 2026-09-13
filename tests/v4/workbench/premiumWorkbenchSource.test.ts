@@ -45,7 +45,7 @@ describe('premium Workbench source contracts', () => {
   });
 
   it('restores durable approval activity even when browser-local messages are empty', () => {
-    const chatPanel = page.slice(page.indexOf('function ChatPanel()'), page.indexOf('function GrowthCard'));
+    const chatPanel = page.slice(page.indexOf('function ChatPanel('), page.indexOf('function GrowthCard'));
     const emptyBranch = chatPanel.slice(
       chatPanel.indexOf('messages.length === 0'),
       chatPanel.indexOf('messages.map('),
@@ -55,12 +55,12 @@ describe('premium Workbench source contracts', () => {
   });
 
   it('never renders approval controls from a terminal durable projection', () => {
-    const activity = page.slice(page.indexOf('function LiveActivitySurface()'), page.indexOf('function ChatPanel()'));
+    const activity = page.slice(page.indexOf('function LiveActivitySurface()'), page.indexOf('function ChatPanel('));
     expect(activity).toContain('runProjection?.receipt.terminal ? []');
   });
 
   it('lets an operator discard a drift-blocked coding candidate without offering an unsafe apply', () => {
-    const activity = page.slice(page.indexOf('function LiveActivitySurface()'), page.indexOf('function ChatPanel()'));
+    const activity = page.slice(page.indexOf('function LiveActivitySurface()'), page.indexOf('function ChatPanel('));
     const driftBlock = activity.slice(
       activity.indexOf("codingSession.promotion?.state === 'blocked_drift'"),
       activity.indexOf("codingSession.promotion?.state === 'blocked_drift'") + 700,
@@ -82,7 +82,7 @@ describe('premium Workbench source contracts', () => {
   });
 
   it('removes settled execution telemetry from Chat while retaining artifacts', () => {
-    const activity = page.slice(page.indexOf('function LiveActivitySurface()'), page.indexOf('function ChatPanel()'));
+    const activity = page.slice(page.indexOf('function LiveActivitySurface()'), page.indexOf('function ChatPanel('));
     expect(activity).toContain('shouldShowChatTelemetry');
     expect(activity).toContain('selectChatLiveActivity');
     expect(activity).toContain('telemetryVisible');
@@ -93,7 +93,7 @@ describe('premium Workbench source contracts', () => {
   });
 
   it('expands live work and removes it after terminal settlement', () => {
-    const activity = page.slice(page.indexOf('function LiveActivitySurface()'), page.indexOf('function ChatPanel()'));
+    const activity = page.slice(page.indexOf('function LiveActivitySurface()'), page.indexOf('function ChatPanel('));
     expect(activity).toContain('useState(false)');
     expect(activity).toContain('setExpanded(false)');
     expect(activity).toContain('setTelemetryLeaving(true)');
@@ -133,7 +133,7 @@ describe('premium Workbench source contracts', () => {
     expect(page).toContain('className="history-sidebar sidebar-rail"');
     expect(page).toContain("openView('artifacts')");
     const navigation = page.slice(page.indexOf('function HistorySidebar()'), page.indexOf('// ── EmptyState'));
-    for (const label of ['New Chat', 'Home', 'Active Work', 'Apps', 'Artifacts', 'Settings']) {
+    for (const label of ['New Chat', 'Home', 'Active Work', 'Connections', 'Skills &amp; Tools', 'Artifacts', 'Settings']) {
       expect(navigation).toContain(label);
     }
     for (const hiddenLabel of ['>Skills<', '>Plugins<', '>Sponsors<', '>Activity<']) {
@@ -231,7 +231,12 @@ describe('premium Workbench source contracts', () => {
     expect(page).toContain('function AppsView()');
     expect(page).toContain('aiden.loadApps()');
     expect(page).toContain('aiden.connectApp');
-    expect(page).toContain('aiden.completeAppConnection');
+    expect(page).toContain('<AppConnectionRequests');
+    const connections = fs.readFileSync(path.join(root, 'dashboard-next/components/AppConnectionRequests.tsx'), 'utf8');
+    expect(connections).toContain('aiden.checkAppConnection');
+    expect(connections).toContain("result.state === 'completed'");
+    expect(connections).toContain('aiden.resumeAppConnection');
+    expect(connections).toContain('aiden.cancelAppConnection');
     expect(page).toContain('aiden.refreshAppAccount');
     expect(page).toContain('aiden.reconnectAppAccount');
     expect(page).toContain('aiden.disconnectAppAccount');
@@ -333,7 +338,7 @@ describe('premium Workbench source contracts', () => {
   });
 
   it('lets the conversation shell own the available height so the composer stays at the bottom', () => {
-    const chatPanel = page.slice(page.indexOf('function ChatPanel()'), page.indexOf('function GrowthCard'));
+    const chatPanel = page.slice(page.indexOf('function ChatPanel('), page.indexOf('function GrowthCard'));
     expect(chatPanel).toContain("flex: 1, minHeight: 0");
     expect(chatPanel).toContain("overflowY: 'auto'");
     expect(chatPanel).toContain("flexShrink: 0");

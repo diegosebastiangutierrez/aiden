@@ -3959,6 +3959,7 @@ const MIGRATIONS: ReadonlyArray<Migration> = [
   { version: 55, name: 'durable automation removal tombstones', apply: applyV55 },
   { version: 56, name: 'durable terminal Job retry lineage', apply: applyV56 },
   { version: 57, name: 'repair durable automation tombstones', apply: applyV57 },
+  { version: 58, name: 'protected app authorization recovery', sql: 'ALTER TABLE integration_connection_sessions ADD COLUMN authorization_secret_handle TEXT;' },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

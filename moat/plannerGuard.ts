@@ -96,6 +96,8 @@ interface KeywordRule {
 }
 
 const RULES: KeywordRule[] = [
+  // App discovery and connection must remain available alongside file/web work.
+  { keywords: /\b(apps?|integrations?|gmail|github|connected\s+accounts?)\b/i, toolsets: ['apps'] },
   // Files (file_*, fs operations)
   {
     keywords:

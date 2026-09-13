@@ -107,6 +107,35 @@ function activeJob(key: string) {
 }
 
 describe('integration action schemas', () => {
+  it.each(['allow', 'deny'] as const)('app connection uses durable %s approval without granting account access', async decision => {
+    const job = activeJob(`connection-${decision}`);
+    const registry = new ToolRegistry();
+    registerIntegrationTools(registry, actions, { ownerId: 'owner-a', workspaceId: 'workspace-a' });
+    const started = vi.spyOn(provider, 'initiateConnection');
+    const promptUser = vi.fn(async () => decision);
+    const executor = registry.buildExecutor({ cwd: root, paths: resolveAidenPaths({ rootOverride: root }),
+      approvalEngine: new ApprovalEngine('manual', { promptUser }),
+      actionAuthority: createActionAuthority({ db, jobEngine: engine }),
+    });
+    const context = { engine, jobId: job.jobId, attemptId: job.attemptId, generation: job.generation, fenceToken: job.fenceToken, producer: 'integration-test' };
+    const execute = (id: string) => runWithJobExecutionContext(context, () => executor({ id, name: 'app_connect', arguments: { provider_id: 'fake', toolkit_id: 'projects' } }));
+    const result = await execute('connection-first');
+    expect(promptUser).toHaveBeenCalledOnce();
+    if (decision === 'deny') {
+      expect(result.error).toMatch(/denied/i);
+      expect(started).not.toHaveBeenCalled();
+      expect(actions.listConnections({ ownerId: 'owner-a', workspaceId: 'workspace-a' })).toHaveLength(0);
+    } else {
+      expect(result.error).toBeUndefined();
+      expect(result.result).toMatchObject({ connected: false, state: 'awaiting_user_authorization' });
+      expect(JSON.stringify(result)).not.toContain('example.invalid');
+      expect((await execute('connection-repeat')).error).toBeUndefined();
+      expect(started).toHaveBeenCalledOnce();
+      expect(actions.listConnections({ ownerId: 'owner-a', workspaceId: 'workspace-a' })).toHaveLength(1);
+      expect(actions.listConnections({ ownerId: 'other', workspaceId: 'workspace-a' })).toHaveLength(0);
+    }
+    expect(db.prepare('SELECT COUNT(*) AS n FROM connected_accounts').get()).toMatchObject({ n: 0 });
+  });
   it.each(['allow', 'deny'] as const)('runs the typed app workflow through real durable %s approval and Evidence', async (decision) => {
     const account = await connected();
     const job = activeJob(`typed-${decision}`);

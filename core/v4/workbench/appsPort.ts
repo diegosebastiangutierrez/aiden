@@ -44,6 +44,7 @@ export interface WorkbenchConnectedAccount {
 }
 
 export interface WorkbenchAppsSnapshot {
+  pendingConnections?: Array<{ connectionId: string; providerId: string; toolkitId: string; label: string | null; expiresAt: number | null; createdAt: number }>;
   providers: WorkbenchAppProvider[];
   toolkits: WorkbenchAppToolkit[];
   accounts: WorkbenchConnectedAccount[];
@@ -51,6 +52,9 @@ export interface WorkbenchAppsSnapshot {
 }
 
 export interface WorkbenchAppsPort {
+  pending?(): NonNullable<WorkbenchAppsSnapshot['pendingConnections']>;
+  resume?(connectionId: string): Promise<{ connectionId: string; providerId: string; toolkitId: string; authorizationUrl?: string; userCode?: string; expiresAt?: number }>;
+  cancel?(connectionId: string): Promise<void>;
   actions?(accountId: string): Promise<IntegrationActionDescriptor[]>;
   preview?(input: WorkbenchAppPreviewInput): Promise<WorkbenchAppPreview>;
   snapshot(): Promise<WorkbenchAppsSnapshot>;
@@ -107,6 +111,9 @@ export function createWorkbenchAppsPort(runtime: IntegrationRuntime): WorkbenchA
   };
 
   return {
+    pending: () => runtime.actions.listConnections(scope),
+    resume: connectionId => runtime.actions.resumeConnection({ connectionId, ...scope }),
+    cancel: connectionId => runtime.actions.cancelConnection({ connectionId, ...scope }),
     async actions(accountId) {
       const account = runtime.accounts.requireInScope(accountId, scope);
       runtime.accounts.resolve({ ...scope, providerId: account.providerId, toolkitId: account.toolkitId, accountId });
@@ -152,6 +159,7 @@ export function createWorkbenchAppsPort(runtime: IntegrationRuntime): WorkbenchA
       return {
         providers,
         toolkits,
+        pendingConnections: runtime.actions.listConnections(scope),
         accounts: runtime.accounts.list({ ...scope, includeRevoked: true }).map(projectAccount),
         configuration: { workbench: true },
       };

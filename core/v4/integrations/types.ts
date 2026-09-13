@@ -16,6 +16,7 @@ export type ConnectedAccountHealth =
   | 'revoked';
 
 export type IntegrationErrorCategory =
+  | 'authorization_pending'
   | 'auth_expired'
   | 'permission_denied'
   | 'account_not_found'
@@ -153,7 +154,7 @@ export interface IntegrationProvider {
     label?: string;
     providerCredential?: string;
   }): Promise<ProviderConnectionStart>;
-  completeConnection(input: { connectionId: string; providerCredential?: string }): Promise<ProviderConnectionResult>;
+  completeConnection(input: { connectionId: string; providerCredential?: string; ownerId?: string; workspaceId?: string }): Promise<ProviderConnectionResult>;
   refreshAccount(input: { providerAccountRef: string; credentials?: { provider?: string; account?: string } }): Promise<{
     status: ConnectedAccountStatus;
     health: ConnectedAccountHealth;
